@@ -69,3 +69,40 @@ func TestRemoteOpenThroughTheAdminSocket(t *testing.T) {
 	d.mustCLI("close", "remote")
 	d.waitGone("remote")
 }
+
+// TestRemoteOpenDefaultsToThisMachine: a daemon without allow_remote exposes loopback targets on request, and refuses
+// a LAN address and a link-local one (cloud metadata) with not_allowed.
+func TestRemoteOpenDefaultsToThisMachine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the admin socket is a unix socket")
+	}
+	skipUnlessCurrentClient(t)
+	if os.Getenv(envServerBin) != "" {
+		t.Skip("remote open needs the portholed of the working tree")
+	}
+	dir, err := os.MkdirTemp("", "ph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "admin.sock")
+	e, tok := setup(t, fmt.Sprintf("admin_socket: %q\n", sock))
+	httpPort, _ := backend(t)
+	d := startDaemon(t, e, tok, "version: 1\n")
+
+	admin := func(args ...string) (string, error) {
+		return output(portholed, append([]string{"admin", "open", "-c", e.cfgPath, "--socket", sock}, args...)...)
+	}
+	if out, err := admin("home", "http", fmt.Sprint(httpPort), "--name", "local"); err != nil {
+		t.Fatalf("loopback target: %v\n%s", err, out)
+	}
+	e.mustServe(t, "local-home")
+	for _, target := range []string{"192.168.1.1:80", "169.254.169.254:80"} {
+		out, err := admin("home", "tcp", target, "--name", "lan")
+		if err == nil || !strings.Contains(out, "not_allowed") {
+			t.Errorf("%s: err=%v\n%s", target, err, out)
+		}
+	}
+	d.mustCLI("close", "local")
+	d.waitGone("local")
+}

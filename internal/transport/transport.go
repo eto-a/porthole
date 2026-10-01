@@ -122,7 +122,12 @@ func DialWebSocket(ctx context.Context, url string, opts DialOptions) (Session, 
 		tr.TLSClientConfig = opts.TLSConfig
 	}
 	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		HTTPClient:      &http.Client{Transport: tr},
+		// The token travels in the hello message on the resulting connection, so a redirect (to another host, or from
+		// https to http) must not be followed.
+		HTTPClient: &http.Client{
+			Transport:     tr,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		HTTPHeader:      opts.Header,
 		Subprotocols:    []string{proto.WSSubprotocol},
 		CompressionMode: websocket.CompressionDisabled,

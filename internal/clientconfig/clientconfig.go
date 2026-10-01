@@ -51,8 +51,8 @@ type File struct {
 	// Tunnels maps the tunnel name (auth.ValidName) to its definition.
 	Tunnels map[string]Tunnel `yaml:"tunnels"`
 	// AllowRemote limits the local targets the server may ask this machine to expose (`porthole remote open`, an
-	// agent's request_tunnel): a list of targets ("ssh", "3000", "host:port") or `none`. Nil, the key missing, allows
-	// every target. The server cannot widen it.
+	// agent's request_tunnel): a list of targets ("ssh", "3000", "host:port"), `none` or `any`. Nil (the key is
+	// missing) allows only targets on this machine: loopback addresses, localhost and ssh. The server cannot widen it.
 	AllowRemote *RemoteAllow `yaml:"allow_remote,omitempty"`
 }
 
@@ -112,6 +112,9 @@ func Parse(data []byte) (*File, error) {
 	if err := rejectToken(data); err != nil {
 		return nil, err
 	}
+	if err := rejectNullAllowRemote(data); err != nil {
+		return nil, err
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var f File
@@ -153,6 +156,21 @@ func rejectToken(data []byte) error {
 		if probe.Tunnels[name].Token.Kind != 0 {
 			return fmt.Errorf("tunnel %q: %s", name, msg)
 		}
+	}
+	return nil
+}
+
+// rejectNullAllowRemote turns `allow_remote:` without a value (also null and ~) into an error. yaml.v3 does not call
+// UnmarshalYAML for a null node and leaves the field nil, which would silently mean "the default policy" for an
+// operator who emptied the list (or commented out all its items) to say "nothing".
+func rejectNullAllowRemote(data []byte) error {
+	var probe struct {
+		AllowRemote yaml.Node `yaml:"allow_remote"`
+	}
+	// Errors are ignored on purpose: the strict decode that follows reports malformed input.
+	_ = yaml.Unmarshal(data, &probe)
+	if probe.AllowRemote.Kind == yaml.ScalarNode && probe.AllowRemote.Tag == "!!null" {
+		return fmt.Errorf("line %d: allow_remote has no value: write a list of targets, none or any (or remove the key)", probe.AllowRemote.Line)
 	}
 	return nil
 }
@@ -368,20 +386,26 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// RemoteAllow is the value of the allow_remote key: `none`, or a list of local targets. "ssh" stands for
-// DefaultSSHAddr, the rest follows ParseTarget. An empty list is the same as `none`.
+// RemoteAllow is the value of the allow_remote key: `none`, `any`, or a list of local targets. "ssh" stands for
+// DefaultSSHAddr, the rest follows ParseTarget. An empty list is the same as `none`. `any` permits every target except
+// link-local addresses, which must be listed verbatim.
 type RemoteAllow struct {
 	Targets []string
+	Any     bool
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
 func (r *RemoteAllow) UnmarshalYAML(n *yaml.Node) error {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		if n.Value != "none" {
-			return fmt.Errorf("line %d: allow_remote must be a list of targets or none, got %q", n.Line, n.Value)
+		switch n.Value {
+		case "none":
+			r.Targets, r.Any = nil, false
+		case "any":
+			r.Targets, r.Any = nil, true
+		default:
+			return fmt.Errorf("line %d: allow_remote must be a list of targets, none or any, got %q", n.Line, n.Value)
 		}
-		r.Targets = nil
 		return nil
 	case yaml.SequenceNode:
 		targets := make([]string, 0, len(n.Content))
@@ -399,17 +423,18 @@ func (r *RemoteAllow) UnmarshalYAML(n *yaml.Node) error {
 			}
 			targets = append(targets, norm)
 		}
-		r.Targets = targets
+		r.Targets, r.Any = targets, false
 		return nil
 	default:
-		return fmt.Errorf("line %d: allow_remote must be a list of targets or none", n.Line)
+		return fmt.Errorf("line %d: allow_remote must be a list of targets, none or any", n.Line)
 	}
 }
 
-// RemotePolicy converts the allow_remote key to a client policy: nil (everything) when the key is missing.
+// RemotePolicy converts the allow_remote key to a client policy: nil (this machine only, see client.RemotePolicy)
+// when the key is missing.
 func (f *File) RemotePolicy() *client.RemotePolicy {
 	if f == nil || f.AllowRemote == nil {
 		return nil
 	}
-	return &client.RemotePolicy{Targets: slices.Clone(f.AllowRemote.Targets)}
+	return &client.RemotePolicy{Targets: slices.Clone(f.AllowRemote.Targets), Any: f.AllowRemote.Any}
 }

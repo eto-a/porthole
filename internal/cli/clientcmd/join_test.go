@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,5 +188,103 @@ func TestParseJoinTarget(t *testing.T) {
 	}
 	if base, _, err := parseJoinTarget(" "+code+" ", "http://127.0.0.1:8080/"); err != nil || base != "http://127.0.0.1:8080" {
 		t.Errorf("code with a fallback: %q %v", base, err)
+	}
+}
+
+func TestJoinRefusesToReplaceOtherServer(t *testing.T) {
+	code, token := joinCode(t), testToken(t)
+	srv, calls := joinServer(t, code, token, nil, 0)
+	oldTok := testToken(t)
+	path := writeConfig(t, "https://old.example.com", oldTok)
+
+	_, _, err := execute(t, testDeps(nil), "--config", path, "join", srv.URL+"/j/"+code)
+	var ee *exitcode.Error
+	if !errors.As(err, &ee) || ee.Code != exitcode.Usage {
+		t.Fatalf("join over a config of another server: %v, want a usage error", err)
+	}
+	for _, want := range []string{"old.example.com", srv.URL, "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q lacks %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), oldTok) || strings.Contains(err.Error(), token) {
+		t.Errorf("message %q leaks a token", err)
+	}
+	if *calls != 0 {
+		t.Errorf("the link was redeemed (%d calls) although the join was refused; the one-time code would be burnt", *calls)
+	}
+	if fc, _ := loadConfig(path); fc.Server != "https://old.example.com" || fc.Token != oldTok {
+		t.Errorf("config changed: %+v", fc)
+	}
+
+	// --force replaces it.
+	if _, _, err := execute(t, testDeps(nil), "--config", path, "join", "--force", srv.URL+"/j/"+code); err != nil {
+		t.Fatalf("--force: %v", err)
+	}
+	if fc, _ := loadConfig(path); fc.Server != srv.URL || fc.Token != token {
+		t.Errorf("config after --force: %+v", fc)
+	}
+}
+
+func TestJoinRefusesToDropExistingCredentials(t *testing.T) {
+	code := joinCode(t)
+	srv, calls := joinServer(t, code, testToken(t), nil, 0)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := saveConfig(path, fileConfig{TokenFile: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := execute(t, testDeps(nil), "--config", path, "join", srv.URL+"/j/"+code); err == nil {
+		t.Fatal("join dropped an existing token_file setting")
+	}
+	if *calls != 0 {
+		t.Errorf("%d calls", *calls)
+	}
+}
+
+func TestJoinRefusesPlainHTTP(t *testing.T) {
+	code := joinCode(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	_, _, err := execute(t, testDeps(nil), "--config", path, "join", "http://tun.example.com/j/"+code)
+	var ee *exitcode.Error
+	if !errors.As(err, &ee) || ee.Code != exitcode.Usage || !strings.Contains(err.Error(), "--insecure-http") {
+		t.Fatalf("join over plain http: %v, want a usage error naming --insecure-http", err)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("a config was written")
+	}
+	// A bare code with an http server from the environment is refused as well.
+	_, _, err = execute(t, testDeps(map[string]string{envServer: "http://tun.example.com"}), "--config", path, "join", code)
+	if err == nil || !strings.Contains(err.Error(), "--insecure-http") {
+		t.Fatalf("bare code over plain http: %v", err)
+	}
+}
+
+func TestCheckJoinTarget(t *testing.T) {
+	existing := fileConfig{Server: "https://old.example.com", Token: "x"}
+	for _, tc := range []struct {
+		name     string
+		cur      fileConfig
+		base     string
+		force    bool
+		insecure bool
+		wantErr  string
+	}{
+		{"fresh", fileConfig{}, "https://new.example.com", false, false, ""},
+		{"same server", fileConfig{Server: "https://new.example.com/", Token: "x"}, "https://new.example.com", false, false, ""},
+		{"other server", existing, "https://new.example.com", false, false, "--force"},
+		{"other server forced", existing, "https://new.example.com", true, false, ""},
+		{"token without server", fileConfig{Token: "x"}, "https://new.example.com", false, false, "--force"},
+		{"plain http", fileConfig{}, "http://tun.example.com", false, false, "--insecure-http"},
+		{"plain http allowed", fileConfig{}, "http://tun.example.com", false, true, ""},
+		{"plain http force does not help", fileConfig{}, "http://tun.example.com", true, false, "--insecure-http"},
+		{"loopback http", fileConfig{}, "http://127.0.0.1:8080", false, false, ""},
+	} {
+		err := checkJoinTarget(tc.cur, tc.base, tc.force, tc.insecure)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Errorf("%s: error %v, want %q", tc.name, err, tc.wantErr)
+		}
 	}
 }
