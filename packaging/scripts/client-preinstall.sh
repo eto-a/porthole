@@ -2,8 +2,8 @@
 # Pre-install script of the porthole (client) .deb and .rpm packages.
 #
 # Creates the "porthole-client" system group and user that the porthole.service daemon runs as. It runs before the
-# files are unpacked, because /etc/porthole/tunnels.yaml is shipped as root:porthole-client and the group has to exist
-# by then (the rpm packaging guidelines put user creation in %pre for the same reason). The user has no login shell and
+# files are unpacked, because the post-install script creates /etc/porthole/tunnels.yaml as root:porthole-client and
+# the group has to exist by then (the rpm packaging guidelines put user creation in %pre for the same reason). The user has no login shell and
 # no home directory. It is deliberately not the server's "porthole" user: a machine may run both, and the client must
 # not be able to read the server's database. The group also controls access to the daemon's socket (see the unit).
 #

@@ -9,7 +9,7 @@
 #        chown porthole-client: /etc/porthole/config.yaml && chmod 0600 /etc/porthole/config.yaml
 #      Or keep the token in its own file and point `token_file` in config.yaml at it:
 #        install -m 0600 -o porthole-client -g porthole-client /dev/null /etc/porthole/token   # then put the token in it
-#   2. List the tunnels that must always be up in /etc/porthole/tunnels.yaml (see /usr/share/doc/porthole/).
+#   2. List the tunnels that must always be up in /etc/porthole/tunnels.yaml (see /usr/share/porthole/).
 #   3. systemctl enable --now porthole
 #   4. Let your users add tunnels on the fly (`porthole http 3000` attaches to the daemon); takes effect at next login:
 #        usermod -aG porthole-client <user>
