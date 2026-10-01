@@ -223,11 +223,58 @@ No root and no extra user: copy [deploy/porthole.user.service](../deploy/porthol
 `systemctl --user enable --now porthole` (the header of the unit has the details, including `loginctl enable-linger`).
 The socket is then `$XDG_RUNTIME_DIR/porthole/porthole.sock`, which only you can reach.
 
-### macOS and Windows
+### macOS
 
-There are no service definitions yet. Run `porthole daemon` yourself, for example in a terminal or from your login
-items or Task Scheduler. It uses the per-user configuration directory (`porthole login` writes the credentials there)
-and a per-user socket, so `porthole http 3000` finds it by itself.
+`porthole service install` is available from v0.4 ([ADR 0006](adr/0006-windows-and-macos-clients.md)). The binary
+must already be in its final place (not in `Downloads`), for example `/usr/local/bin/porthole`.
+
+```console
+$ porthole join <link>                    # credentials of your own user
+$ porthole service install --user         # a LaunchAgent: runs while you are logged in
+$ sudo porthole service install           # or a system LaunchDaemon: runs from boot, as root
+$ porthole service status
+```
+
+The agent is `~/Library/LaunchAgents/io.github.eto-a.porthole.plist` and uses `~/Library/Application Support/porthole/`;
+the daemon is `/Library/LaunchDaemons/io.github.eto-a.porthole.plist` and uses
+`/Library/Application Support/porthole/{config,tunnels}.yaml` (readable by root and the `admin` group). Logs are in
+`~/Library/Logs/porthole/` or `/Library/Logs/porthole/`. launchd cannot stop a restart loop on a bad file, so a broken
+tunnels file is retried every 10 seconds and logged; `service install` validates the files first. Other subcommands:
+`start`, `stop`, `restart`, `uninstall`.
+
+Before v0.4, or if you prefer, run `porthole daemon` yourself in a terminal or from your login items. It uses the
+per-user configuration directory (`porthole login` writes the credentials there) and a per-user socket, so
+`porthole http 3000` finds it by itself.
+
+### Windows
+
+`porthole service install` is available from v0.4. Run it in an **Administrator** terminal; it never asks for
+elevation by itself and fails with a hint instead.
+
+```console
+> porthole login https://tun.example.com ph_... --system
+> porthole service install --allow "BUILTIN\Users"
+> porthole service status
+```
+
+It registers the Windows service `porthole` (display name "porthole tunnel client", automatic delayed start, restart
+after failures, runs as LocalSystem). Configuration is `%ProgramData%\porthole\{config,tunnels}.yaml`, readable only
+by SYSTEM and Administrators; the log is `%ProgramData%\porthole\logs\porthole.log`. The CLI talks to the service
+over the named pipe `\\.\pipe\ProtectedPrefix\Administrators\porthole`: by default only administrators may open
+it, so to let an ordinary user run `porthole http 3000` against the service, pass `--allow <user-or-group>` to
+`service install` (repeatable; re-running it updates the service). Adding a tunnel publishes a local service to the
+Internet, so treat that group like Docker's. There is no per-user Windows service.
+
+To run without a system service, start the daemon at logon with Task Scheduler (this runs as you, with your
+`%AppData%\porthole` configuration, and needs no administrator rights):
+
+```console
+> schtasks /Create /TN porthole /SC ONLOGON /RL LIMITED /TR "\"C:\Program Files\porthole\porthole.exe\" daemon"
+> schtasks /Run /TN porthole
+> schtasks /Delete /TN porthole /F
+```
+
+The task is not restarted after a crash (the service is).
 
 ## Talking to the daemon
 
