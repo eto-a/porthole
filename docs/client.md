@@ -173,8 +173,55 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 | `porthole daemon`, `status`, `tunnels`, `reload`, `close <name>` | See [Talking to the daemon](#talking-to-the-daemon) |
 | `porthole version` | Print the version |
 
-Global flags: `--config` (default `<user config dir>/porthole/config.yaml`), `--socket`, `-v, --verbose`. Run
+Global flags: `--config` (default `<user config dir>/porthole/config.yaml`), `--socket`, `-v, --verbose`, `--json`. Run
 `porthole <command> --help` for everything.
+
+### Machine-readable output (`--json`)
+
+With `--json`, stdout carries only JSON; messages for people go to stderr or are left out. A command that ends by
+itself (`login`, `status`, `tunnels`, `reload`, `close`, `version`, `http|tcp|ssh --detach`) writes one JSON
+document. A command that keeps running (`http`, `tcp`, `ssh`, `start`) writes
+[JSON Lines](https://jsonlines.org/): one compact object per line, each with an `event` member:
+
+| `event` | Other members |
+|---|---|
+| `connected` | `client` |
+| `tunnel_ready` | `name`, `kind` (`http`, `tcp` or `ssh`), `local_addr`, `public_url` (http and tcp), `ssh_jump` (ssh through the gateway), `private` |
+| `tunnel_closed` | `name`, `reason` |
+| `disconnected` | `error`, `retry_in_ms`, and `attempt`, `max_attempts` while no session has been established yet |
+
+```console
+$ porthole http 8080 --json
+{"event":"connected","client":"home"}
+{"event":"tunnel_ready","name":"http-8080","kind":"http","local_addr":"127.0.0.1:8080","public_url":"https://http-8080-home.tun.example.com","private":false}
+```
+
+`porthole http 8080 --detach --json` prints the tunnel object (the same as one element of `porthole tunnels --json`).
+`porthole login --json` prints `{"saved":true,"server":...,"config":...}` plus a `check` object with `--check`; it never
+prints the token. `porthole daemon --json` writes its log to stderr as JSON and nothing to stdout.
+
+A failure writes `{"error":{"code":"...","message":"..."}}` to stdout and exits with a non-zero status (without
+`--json` the message goes to stderr as `porthole: <message>`). `code` is the server's error code where there is one
+(`unauthorized`, `token_revoked`, `token_expired`, `name_taken`, `forbidden`, `limit_exceeded`, `port_unavailable`,
+...), otherwise one of `usage`, `connect_failed`, `auth_failed`, `tunnel_rejected`, `daemon_unavailable`,
+`permission_denied`, `config` or `error`. `porthole reload --json` prints its result document even when some tunnels
+failed (they are in `errors`) and then exits with status 5, without a second document.
+
+### Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Success (also Ctrl-C of a foreground tunnel) |
+| 1 | Any other failure |
+| 2 | Usage error: unknown command, bad flag or argument |
+| 3 | The server could not be reached (`--max-initial-attempts` reached, unknown host, TLS verification failed) |
+| 4 | Authentication failed: `unauthorized`, `token_revoked`, `token_expired` |
+| 5 | The server refused a tunnel: `name_taken`, `forbidden`, `limit_exceeded`, `port_unavailable`; also a `reload` in which a tunnel failed |
+| 6 | The daemon is not running, or this user may not use its socket |
+| 78 | Configuration problem that a restart cannot fix: missing or broken config or tunnels file, no credentials. The system service does not restart on it |
+
+A token that the server rejects while `porthole daemon` or the system service runs also exits with 78, so that
+the service does not retry forever; the foreground commands report it as 4.
 
 ## Docker (sidecar)
 

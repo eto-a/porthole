@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/exitcode"
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/server"
 )
@@ -23,11 +25,11 @@ func NewHostKey(load func() (*config.Config, error)) *cobra.Command {
 		Short:         "Print the fingerprint of the SSH gateway host key",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := load()
 			if err != nil {
-				return fmt.Errorf("load config: %w", err)
+				return exitcode.ConfigError(fmt.Errorf("load config: %w", err))
 			}
 			fp, err := server.HostKeyFingerprint(cfg.DataDir)
 			if errors.Is(err, fs.ErrNotExist) {
@@ -36,6 +38,12 @@ func NewHostKey(load func() (*config.Config, error)) *cobra.Command {
 			}
 			if err != nil {
 				return err
+			}
+			if jsonout.Enabled(cmd) {
+				return jsonout.Write(cmd.OutOrStdout(), struct {
+					Fingerprint string `json:"fingerprint"`
+					Path        string `json:"path"`
+				}{fp, filepath.Join(cfg.DataDir, server.HostKeyFile)})
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), fp)
 			return nil

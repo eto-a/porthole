@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/daemon"
 	"github.com/eto-a/porthole/internal/localapi"
@@ -102,6 +103,7 @@ func newRoot(version string, d deps) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.socket, "socket", "",
 		"socket of the porthole daemon (default: $"+envSocket+", then the user socket, then the system socket)")
 	root.PersistentFlags().BoolVarP(&a.verbose, "verbose", "v", false, "verbose logging")
+	jsonout.AddFlag(root)
 
 	root.AddCommand(
 		a.newLoginCmd(),
@@ -125,6 +127,11 @@ func (a *app) newVersionCmd() *cobra.Command {
 		Short: "Print the porthole version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if jsonout.Enabled(cmd) {
+				return jsonout.Write(cmd.OutOrStdout(), map[string]string{
+					"name": "porthole", "version": a.version, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH,
+				})
+			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "porthole %s (%s, %s/%s)\n", a.version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 			return err
 		},

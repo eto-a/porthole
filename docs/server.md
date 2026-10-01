@@ -275,13 +275,39 @@ Design and rejected alternatives: [ADR 0003](adr/0003-ssh-gateway-and-port-reser
 |---|---|
 | `portholed serve [--config] [--log-level]` | Run the server |
 | `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N]` | Create a token |
-| `portholed token list [--all] [--json]` | List tokens |
+| `portholed token list [--all]` | List tokens |
 | `portholed token revoke <id\|name>` | Revoke a token |
 | `portholed ssh-hostkey` | Print the fingerprint of the SSH gateway host key |
 | `portholed version` | Print the version |
 
 The global flag `-c, --config` (default `/etc/porthole/portholed.yaml`; empty means environment variables only)
 applies to all of them.
+
+### Machine-readable output (`--json`)
+
+The global flag `--json` makes a command write JSON to stdout instead of text (one document per command):
+
+| Command | Document |
+|---|---|
+| `token create` | `id`, `name`, `token` (the secret: this is the only place that ever shows it), `last4`, `scopes`, `max_tunnels`, `created_at`, `expires_at`, `server_url`, `login` (the `porthole login ...` command line) |
+| `token list` | An array of tokens, without secrets |
+| `token revoke` | `id`, `name`, `revoked`, `already_revoked` |
+| `ssh-hostkey` | `fingerprint`, `path` |
+| `version` | `name`, `version`, `go`, `os`, `arch` |
+
+`serve` writes nothing to stdout; its log is always JSON on stderr. A failure writes
+`{"error":{"code":"...","message":"..."}}` to stdout (without `--json`: `portholed: <message>` to stderr).
+
+### Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Any other failure: database, a token that does not exist, the server stopping with an error |
+| 2 | Usage error: unknown command, bad flag or argument, an invalid `--name`, `--expires`, `--scopes` or `--log-level` |
+| 78 | The configuration could not be loaded or is invalid |
+
+The client-side statuses 3 to 6 are not used by `portholed`; see the [client guide](client.md#exit-status).
 
 ## Security
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eto-a/porthole/internal/auth"
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/store"
 )
@@ -35,6 +36,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) run(args ...string) (string, string, error) {
 	h.t.Helper()
 	cmd := newCmd(func() (*config.Config, error) { return h.cfg, nil }, func() time.Time { return h.now })
+	jsonout.AddFlag(cmd) // the portholed root provides --json
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)

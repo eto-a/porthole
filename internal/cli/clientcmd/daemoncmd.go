@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/clientconfig"
 	"github.com/eto-a/porthole/internal/daemon"
@@ -73,7 +74,7 @@ func (a *app) newDaemonCmd() *cobra.Command {
 }
 
 func (a *app) runDaemonCmd(cmd *cobra.Command, tunnelsFlag string) error {
-	cfgErr := func(err error) error { return &ExitError{Code: ExitConfig, Err: err} }
+	cfgErr := configErr
 
 	tunnels, err := a.tunnelsPath(tunnelsFlag)
 	if err != nil {
@@ -124,7 +125,11 @@ func (a *app) daemonLogger(cmd *cobra.Command) *slog.Logger {
 	if a.verbose {
 		level = slog.LevelDebug
 	}
-	return slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: level}))
+	opts := &slog.HandlerOptions{Level: level}
+	if jsonout.Enabled(cmd) { // structured logs on stderr; stdout stays empty
+		return slog.New(slog.NewJSONHandler(cmd.ErrOrStderr(), opts))
+	}
+	return slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), opts))
 }
 
 func (a *app) newStartCmd() *cobra.Command {
@@ -153,21 +158,21 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 	}
 	file, err := clientconfig.Load(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("tunnels file %s does not exist; create it or pass --tunnels", path)
+		return configErr(fmt.Errorf("tunnels file %s does not exist; create it or pass --tunnels", path))
 	}
 	if err != nil {
-		return err
+		return configErr(err)
 	}
 	specs, err := file.Specs(names...)
 	if err != nil {
-		return err
+		return configErr(err)
 	}
 	if len(specs) == 0 {
-		return fmt.Errorf("%s defines no enabled tunnels; add some, or name the tunnels to start", path)
+		return configErr(fmt.Errorf("%s defines no enabled tunnels; add some, or name the tunnels to start", path))
 	}
 	creds, err := a.resolveCreds(cf)
 	if err != nil {
-		return err
+		return configErr(err)
 	}
 	server := creds.server
 	if server == "" {
@@ -183,7 +188,7 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 
 	ctx, stop := signalContext(cmd)
 	defer stop()
-	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	errOut := cmd.ErrOrStderr()
 	// A daemon that uses the same token would be replaced by this session and then evict it again.
 	if _, socket, err := a.findDaemon(ctx); err == nil {
 		fmt.Fprintf(errOut, "note: a porthole daemon is running (%s); if it uses the same token, this session replaces "+
@@ -191,22 +196,12 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 	}
 
 	err = a.d.run(ctx, client.Options{
-		ServerURL: server,
-		Token:     token,
-		Tunnels:   specs,
-		Version:   a.version,
-		Logger:    a.logger(cmd),
-		OnEvent: func(e client.Event) {
-			if r, ok := e.(client.TunnelReady); ok { // several tunnels: say which is which
-				if r.SSHJump != "" {
-					fmt.Fprintf(out, "%s: ssh via %s -> %s\n", r.Name, r.SSHJump, r.Spec.LocalAddr)
-					return
-				}
-				fmt.Fprintf(out, "%s: %s -> %s\n", r.Name, r.PublicURL, r.Spec.LocalAddr)
-				return
-			}
-			printEvent(out, errOut, e, nil)
-		},
+		ServerURL:          server,
+		Token:              token,
+		Tunnels:            specs,
+		Version:            a.version,
+		Logger:             a.logger(cmd),
+		OnEvent:            eventSink(cmd, nil, true), // several tunnels: the text form says which is which
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})
 	if err != nil {
