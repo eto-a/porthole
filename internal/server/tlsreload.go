@@ -65,12 +65,31 @@ func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		ci, cerr := os.Stat(c.certFile)
 		ki, kerr := os.Stat(c.keyFile)
 		if cerr == nil && kerr == nil && (!ci.ModTime().Equal(c.certMod) || !ki.ModTime().Equal(c.keyMod)) {
-			if err := c.load(); err != nil {
-				c.log.Warn("tls certificate reload failed, keeping the previous one", "err", err)
-			} else {
-				c.log.Info("tls certificate reloaded")
-			}
+			_ = c.reloadLocked("mtime")
 		}
 	}
 	return c.cert, nil
+}
+
+// reload re-reads the certificate files right away, regardless of their modification times and of the check
+// interval (the SIGHUP path). On failure the previous certificate stays in use and the error is returned.
+func (c *certReloader) reload(reason string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checked = c.now()
+	return c.reloadLocked(reason)
+}
+
+// reloadLocked loads the files and logs the outcome. It must be called with c.mu held.
+func (c *certReloader) reloadLocked(reason string) error {
+	if err := c.load(); err != nil {
+		c.log.Warn("tls certificate reload failed, keeping the previous one", "reason", reason, "err", err)
+		return err
+	}
+	attrs := []any{"reason", reason}
+	if leaf := c.cert.Leaf; leaf != nil {
+		attrs = append(attrs, "not_after", leaf.NotAfter.UTC().Format(time.RFC3339))
+	}
+	c.log.Info("tls certificate reloaded", attrs...)
+	return nil
 }

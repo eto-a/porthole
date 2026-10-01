@@ -83,6 +83,7 @@ type Server struct {
 
 	mu       sync.Mutex // guards everything below and the tunnel maps of every session
 	closed   bool
+	certs    *certReloader          // nil until Serve has loaded the TLS certificate (and always nil without TLS)
 	sessions map[string]*session    // by client name
 	labels   map[string]*tunnel     // HTTP tunnels by DNS label
 	ports    map[int]*tunnel        // live TCP tunnels by public port
@@ -169,6 +170,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			_ = ln.Close()
 			return err
 		}
+		s.mu.Lock()
+		s.certs = cr
+		s.mu.Unlock()
 		// HTTP/1.1 only: WebSocket upgrades need connection hijacking, which HTTP/2 does not offer.
 		ln = tls.NewListener(ln, &tls.Config{
 			MinVersion:     tls.VersionTLS12,
@@ -207,6 +211,22 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return s.Close()
 }
 
+// ReloadTLS re-reads the TLS certificate and key files immediately instead of waiting for the periodic
+// modification-time check; portholed calls it on SIGHUP. A failed reload keeps the previous certificate. The
+// outcome is logged here; the error is returned for callers that want to react to it. It fails when TLS is not
+// configured or Serve has not loaded the certificate yet.
+func (s *Server) ReloadTLS() error {
+	s.mu.Lock()
+	cr := s.certs
+	s.mu.Unlock()
+	if cr == nil {
+		err := errors.New("server: tls certificate reload: TLS is not enabled or the server has not started yet")
+		s.log.Warn("tls certificate reload skipped", "err", err)
+		return err
+	}
+	return cr.reload("sighup")
+}
+
 // Close ends every session (clients receive a shutting_down error), closes all TCP listeners and transports
 // and waits for all goroutines started by the server. It is safe to call more than once.
 func (s *Server) Close() error {
@@ -239,7 +259,22 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveTunnel(w, r, label)
 		return
 	}
+	// Load balancers and orchestrators probe by IP, with no usable Host. Hosts outside our domain get /healthz
+	// as well; anything inside it (a deeper name such as a.b.<domain>) stays a 404.
+	if r.URL.Path == healthPath && !strings.HasSuffix(host, "."+s.domain) {
+		serveHealth(w)
+		return
+	}
 	http.NotFound(w, r)
+}
+
+// healthPath is the liveness endpoint. It is answered on the bare domain and on any Host that is not under the
+// domain; on <label>.<domain> the path belongs to the tunnelled application.
+const healthPath = "/healthz"
+
+func serveHealth(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "ok")
 }
 
 // labelOf returns the tunnel label if host is exactly <label>.<domain>.
@@ -255,9 +290,8 @@ func (s *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case proto.ConnectPath:
 		s.handleConnect(w, r)
-	case "/healthz":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, "ok")
+	case healthPath:
+		serveHealth(w)
 	default:
 		http.NotFound(w, r)
 	}
