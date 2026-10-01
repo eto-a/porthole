@@ -41,8 +41,8 @@ tcp://tun.example.com:20018 -> 127.0.0.1:22
   `porthole ssh` is a TCP tunnel to your local sshd that prints a ready-to-use `ssh` command.
 - **Single static binary per side**, no CGO, trivial to deploy with systemd or Docker.
 
-Roadmap (not in v0.1): UDP tunnels, an SSH gateway (`ssh home.ssh.tun.example.com`), QUIC transport, private
-tunnels, a client daemon, automatic certificates. See the roadmap in [DESIGN.md](DESIGN.md#7-roadmap).
+Roadmap: v0.2 one-line install, deb/rpm and Docker, a client daemon, an SSH gateway (`ssh home.tun.example.com`) and
+private tunnels; v0.3 management by LLM agents (admin API + MCP server) instead of a web UI; v0.4 QUIC and UDP. See the roadmap in [DESIGN.md](DESIGN.md#7-roadmap).
 
 ## Quickstart
 

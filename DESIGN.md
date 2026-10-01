@@ -41,7 +41,7 @@ Detailed wire format: [docs/protocol.md](docs/protocol.md). Individual decisions
 - A hosted public service. porthole is meant to be self-hosted; a public free instance invites abuse
   (see bore's phishing problems: ekzhang/bore#150, #141).
 - Multi-node HA server cluster (single server first; the design must not preclude it).
-- Request inspection UI, traffic replay (ngrok features; maybe later).
+- A web UI, request inspection UI, traffic replay. Management is CLI- and agent-first (§3.11).
 
 ## 2. Prior art and what we take from it
 
@@ -133,7 +133,7 @@ dependency for ~10 message types.
 - Revocation takes effect on live sessions: the server re-validates the tokens of live sessions every 30 s and on
   every `register`, and closes sessions whose token is revoked or expired.
 - Management (v0.1): `portholed token create|list|revoke` operate directly on the server's database (SQLite WAL
-  allows this while the server runs). An admin HTTP API bound to localhost/unix socket comes with the web UI.
+  allows this while the server runs). An admin API bound to localhost/unix socket replaces this in v0.3 (§3.11).
 - Future: one-time setup token printed at first start (Pangolin), short-lived join tokens that enroll a machine and
   are exchanged for a long-lived identity (Teleport, zrok).
 
@@ -187,6 +187,8 @@ wildcard, obtained once rather than per tunnel (boringproxy issues one per domai
   reconnect.
 - v0.2: `porthole daemon` (systemd unit `porthole.service`) holds the session; the CLI talks to it over a unix
   socket (tailscale `tailscaled` model); tunnels persist across reboots.
+- v0.2: a client config file declares several tunnels at once (`porthole start` reads `tunnels.yaml`), like
+  `ngrok.yml` and frp's `frpc.toml`; the daemon is driven by the same file.
 
 ### 3.7 Lifecycle and resource safety
 
@@ -228,6 +230,27 @@ data_dir: /var/lib/porthole
 `log/slog` (JSON on the server, text on the CLI); tokens are never logged (only `id`). `/healthz` on the main
 listener; `/metrics` (Prometheus) and `/debug/pprof` on a separate listener bound to localhost (v0.2). Graceful
 shutdown on SIGINT/SIGTERM with a configurable grace period.
+
+### 3.11 Management by LLM agents (v0.3)
+
+porthole deliberately has **no web UI**. Operators manage it from the CLI or by delegating to an LLM agent
+(Claude Code or any MCP client): "issue a 7-day token for the laptop", "who is connected?", "close the tunnel on
+8080". The building blocks:
+
+1. **Admin API** on the server, bound to a unix socket or `127.0.0.1` only, authenticated with tokens carrying an
+   `admin:*` scope. It exposes clients, tunnels and tokens; the `portholed token` CLI moves onto it instead of
+   opening the database directly. This is the only management surface; everything below is a thin client.
+2. **MCP server**: `portholed mcp` (stdio) for operators and `porthole mcp` for a client machine, built on the
+   official `github.com/modelcontextprotocol/go-sdk` (also used by github/github-mcp-server and
+   hashicorp/terraform-mcp-server). Tools are grouped into toolsets with a `--read-only` mode that takes priority
+   over everything else, following github-mcp-server's `--toolsets`/`--read-only` design: e.g. `clients`
+   (`list_clients`, `disconnect_client`), `tunnels` (`list_tunnels`, `open_tunnel`, `close_tunnel`), `tokens`
+   (`create_token`, `revoke_token`, `list_tokens`).
+3. **Machine-readable CLI**: `--json` on every command and documented exit codes, so an agent without MCP can
+   drive porthole through a shell just as well.
+4. **Least privilege and audit**: an agent gets its own token with narrow scopes (`admin:read`, `admin:tokens`, ...);
+   every mutating admin call is written to an append-only audit log with the acting token id. Secrets are only ever
+   returned once (token creation) and never echoed into logs or tool results afterwards.
 
 ## 4. Security model
 
@@ -281,8 +304,11 @@ Everything is `internal/` until someone needs a public Go API (tailscale and pro
 | Version | Scope |
 |---|---|
 | **0.1** | `portholed` + `porthole`; WebSocket+yamux transport; tokens (create/list/revoke/expire) in SQLite; HTTP (incl. WebSocket) and TCP tunnels; `porthole ssh` as TCP:22; reconnect; cert from files; CI, lint, e2e tests |
-| 0.2 | QUIC transport with auto fallback; UDP tunnels; SSH gateway by name + `porthole ssh-config`; private tunnels; client daemon + systemd; persisted port reservations; certmagic DNS-01; metrics |
-| 0.3 | Admin API + web UI; join tokens; bandwidth limits; Docker image, deb/rpm; signed releases; threat model |
+| 0.2 — install and forget | `install.sh`, deb/rpm packages, GHCR image; client daemon + systemd; client config with several tunnels; SSH gateway by name + `porthole ssh-config`; private tunnels; persisted port reservations |
+| 0.3 — managed by agents | Admin API (unix socket / localhost); MCP server with toolsets and read-only mode; `--json` everywhere; narrow admin scopes; audit log; join tokens; threat model |
+| 0.4 — protocols | QUIC transport with auto fallback; UDP tunnels; basic auth and IP allowlists for HTTP tunnels; certmagic DNS-01; Prometheus metrics; bandwidth limits; TLS passthrough |
+
+A web UI is a non-goal (see §3.11).
 
 ## 8. Open questions
 
