@@ -28,7 +28,7 @@ may observe about traffic.
 ### Least privilege and secrets
 
 - Each agent gets its own token with narrow scopes: `admin:read`, `admin:tunnels`, `admin:clients`, `admin:tokens`,
-  `admin:traffic` (request details and bodies).
+  `admin:remote` (open tunnels on machines), `admin:traffic` (request details and bodies).
 - **No long-lived secret ever reaches an agent.** Instead of returning a token, `create_join_link` returns
   `porthole join https://<domain>/j/<code>`: single use, expires in 15 minutes by default, bound to a client name and
   scopes chosen at creation. The machine redeems it and receives its permanent token directly; the server stores only
@@ -38,9 +38,16 @@ may observe about traffic.
 
 ### Remote tunnel requests
 
-- An operator agent may ask a machine to open a tunnel (`request_tunnel`), only if that machine allows it in its
-  `tunnels.yaml` (`allow_remote: [ssh, 3000]`). Default: nothing allowed. The client checks the request against its
-  own list; the server cannot widen it.
+- The user's request "open me a new tunnel from home" must work end to end: an operator agent calls `request_tunnel`
+  (client, kind, local address, options), the server forwards it over the client's live session, and the client
+  opens the tunnel and reports its public address.
+- Permission is per machine and given once: a machine enrolled through a join link created with remote control
+  enabled (the default for links an agent creates) accepts remote requests for any local address. The machine can
+  narrow or refuse this in its own `tunnels.yaml` (`allow_remote: [ssh, 3000]`, or `allow_remote: none`); the client
+  enforces its list and the server cannot widen it.
+- Requires the `admin:remote` scope; every remote request is audited with the acting token. Remotely opened tunnels
+  are runtime tunnels of the daemon (ADR 0002): they survive reconnects, not a daemon restart, and are listed and
+  closed like any other.
 
 ### Observability and traffic analysis
 
