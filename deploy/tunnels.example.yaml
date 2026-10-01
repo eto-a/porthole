@@ -1,5 +1,5 @@
 # Tunnels that the porthole daemon keeps up (`porthole daemon`, the systemd service) or that `porthole start` runs in
-# the foreground. The deb and rpm packages install this file as /etc/porthole/tunnels.yaml, and it is kept on upgrade;
+# the foreground. The deb and rpm packages copy this file to /etc/porthole/tunnels.yaml if that does not exist yet, and never touch it again;
 # in user mode copy it to ~/.config/porthole/tunnels.yaml (on macOS and Windows: the "porthole" folder of your user
 # configuration directory).
 #

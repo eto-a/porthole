@@ -129,7 +129,7 @@ $ porthole status
 
 The daemon runs as the `porthole-client` user (created by the package; it is not the server's `porthole` user), so that user must be able to read the credentials: the commands above hand `config.yaml` to that user, readable by nobody else. Instead of keeping the token in `config.yaml` you can put it in a file of its own, for example `/etc/porthole/token` (one line, owned by `porthole-client`, mode `0600`; porthole refuses a token file that its group or others can read, like ssh does for private keys), and set `token_file: /etc/porthole/token` in `config.yaml` instead of `token`.
 
-The tunnels file of the package is `/etc/porthole/tunnels.yaml`; a copy of the example is also installed as `/usr/share/doc/porthole/tunnels.example.yaml`. The entries of the shipped file are all disabled, so installing the package never publishes anything by accident: set `enabled: true` (or delete the line) for the ones you want.
+The tunnels file of the package is `/etc/porthole/tunnels.yaml`; a pristine copy of the example is also installed as `/usr/share/porthole/tunnels.example.yaml`. The package creates `/etc/porthole/tunnels.yaml` from it only when the file does not exist, and never overwrites or asks about it on upgrade. The entries of the shipped file are all disabled, so installing the package never publishes anything by accident: set `enabled: true` (or delete the line) for the ones you want.
 
 After editing it run `sudo systemctl reload porthole` or `porthole reload`: the file is validated first, a broken file is rejected and the running tunnels stay as they are. A broken file at start stops the service for good (exit code 78) instead of restarting it in a loop; look at `journalctl -u porthole`.
 
