@@ -162,6 +162,29 @@ func TestServerURL(t *testing.T) {
 	}
 }
 
+func TestAdminSocketPath(t *testing.T) {
+	c, err := Load(write(t, "version: 1\ndomain: tun.example.com\ndata_dir: /srv/ph\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.AdminSocketPath(), filepath.Join(c.DataDir, "admin.sock"); got != want {
+		t.Errorf("default %q, want %q", got, want)
+	}
+	c.AdminSocket = "/run/ph.sock"
+	if got := c.AdminSocketPath(); got != "/run/ph.sock" {
+		t.Errorf("explicit %q", got)
+	}
+	c.AdminSocket = "-"
+	if got := c.AdminSocketPath(); got != "" {
+		t.Errorf("off %q, want empty", got)
+	}
+	t.Setenv("PORTHOLED_ADMIN_SOCKET", "-")
+	c, err = Load(write(t, "version: 1\ndomain: tun.example.com\ndata_dir: /srv/ph\n"))
+	if err != nil || c.AdminSocketPath() != "" {
+		t.Errorf("env override: %q, %v", c.AdminSocketPath(), err)
+	}
+}
+
 func TestEnvOverrides(t *testing.T) {
 	t.Setenv("PORTHOLED_DOMAIN", "env.example")
 	t.Setenv("PORTHOLED_PUBLIC_PORT", "8080")

@@ -56,8 +56,8 @@ func TestMigrationAppliesToEmptyAndToV1(t *testing.T) {
 		t.Errorf("token lost by migration: %v", err)
 	}
 	var n int
-	if err := s2.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 2 {
-		t.Errorf("schema_migrations rows = %d, %v; want 2", n, err)
+	if err := s2.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 3 {
+		t.Errorf("schema_migrations rows = %d, %v; want 3", n, err)
 	}
 }
 

@@ -34,10 +34,15 @@ type session struct {
 	srv     *Server
 	id      string
 	tokenID string
-	name    string // client name = token name
-	ts      transport.Session
-	ctrl    net.Conn
-	log     *slog.Logger
+
+	remote        string // peer address, for the admin API
+	since         time.Time
+	clientVersion string
+	os            string
+	name          string // client name = token name
+	ts            transport.Session
+	ctrl          net.Conn
+	log           *slog.Logger
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -132,18 +137,23 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 
 	id := randHex(8)
 	sess := &session{
-		srv:      s,
-		id:       id,
-		tokenID:  tok.ID,
-		name:     tok.Name,
-		ts:       ts,
-		ctrl:     ctrl,
-		log:      s.log.With("client", tok.Name, "session", id, "token_id", tok.ID),
-		ctx:      ctx,
-		cancel:   cancel,
-		ctrlDone: make(chan struct{}),
-		tunnels:  make(map[string]*tunnel),
-		names:    make(map[string]*tunnel),
+		srv:     s,
+		id:      id,
+		tokenID: tok.ID,
+		name:    tok.Name,
+
+		remote:        ts.RemoteAddr().String(),
+		since:         s.now(),
+		clientVersion: hello.ClientVersion,
+		os:            hello.OS,
+		ts:            ts,
+		ctrl:          ctrl,
+		log:           s.log.With("client", tok.Name, "session", id, "token_id", tok.ID),
+		ctx:           ctx,
+		cancel:        cancel,
+		ctrlDone:      make(chan struct{}),
+		tunnels:       make(map[string]*tunnel),
+		names:         make(map[string]*tunnel),
 	}
 	if err := s.adopt(sess); err != nil {
 		return nil, reject(&proto.Error{Code: proto.CodeShuttingDown, Message: "server is shutting down"})
