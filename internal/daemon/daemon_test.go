@@ -727,3 +727,41 @@ func TestFatalServerErrorEndsRunAsConfigError(t *testing.T) {
 		t.Fatalf("Run = %v, want a *ConfigError wrapping the unauthorized error", err)
 	}
 }
+
+func TestRemoteOpenIsARuntimeTunnelAndFollowsAllowRemote(t *testing.T) {
+	fs := newFakeServer(t)
+	h := startDaemon(t, fs, "version: 1\nallow_remote: [3000]\n")
+	waitFor(t, "the session", func() bool { fs.mu.Lock(); defer fs.mu.Unlock(); return fs.hello != nil })
+	if f := fs.hello.Features; !slices.Contains(f, proto.FeatureRemoteOpen) {
+		t.Fatalf("the daemon did not announce remote_open: %v", f)
+	}
+
+	if res := fs.ask(&proto.OpenRequest{ReqID: 1, Kind: proto.KindHTTP, LocalAddr: "4000", Name: "no"}); res.OK || res.Error.Code != proto.CodeNotAllowed {
+		t.Fatalf("target outside allow_remote: %+v %+v", res, res.Error)
+	}
+	res := fs.ask(&proto.OpenRequest{ReqID: 2, Kind: proto.KindHTTP, LocalAddr: "3000", Name: "remote"})
+	if !res.OK || res.Tunnel.PublicURL != "https://remote-home.tun.test" {
+		t.Fatalf("allowed target: %+v %+v", res, res.Error)
+	}
+	if tn := h.tunnels()["remote"]; tn.Source != localapi.SourceRuntime || tn.State != localapi.TunnelReady {
+		t.Fatalf("remote tunnel in the daemon: %+v", tn)
+	}
+
+	// A reload that changes allow_remote applies to the next request and keeps the open tunnel.
+	h.writeFile("version: 1\nallow_remote: none\n")
+	if _, err := h.cl.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if res := fs.ask(&proto.OpenRequest{ReqID: 3, Kind: proto.KindHTTP, LocalAddr: "3000", Name: "again"}); res.OK {
+		t.Fatalf("request allowed after allow_remote: none: %+v", res)
+	}
+	if _, ok := h.tunnels()["remote"]; !ok {
+		t.Fatal("reload closed the remotely opened tunnel")
+	}
+
+	// It can be closed like any runtime tunnel.
+	if err := h.cl.RemoveTunnel(context.Background(), "remote"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "unregister", func() bool { return !slices.Contains(fs.liveTunnels(), "remote") })
+}

@@ -279,10 +279,10 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 		}
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.SecretHash, t.Last4, strings.Join(t.Scopes, ","), t.MaxTunnels,
-		t.CreatedAt.UnixMilli(), msOrNull(t.ExpiresAt), msOrNull(t.RevokedAt), msOrNull(t.LastUsedAt))
+		t.CreatedAt.UnixMilli(), msOrNull(t.ExpiresAt), msOrNull(t.RevokedAt), msOrNull(t.LastUsedAt), t.RemoteControl)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("token name %q: %w", t.Name, ErrNameTaken)
@@ -292,7 +292,7 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 	return nil
 }
 
-const tokenColumns = `id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at`
+const tokenColumns = `id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -304,7 +304,7 @@ func scanToken(sc scanner) (*Token, error) {
 		expires, revoked, lu sql.NullInt64
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.SecretHash, &t.Last4, &scopes, &t.MaxTunnels,
-		&created, &expires, &revoked, &lu); err != nil {
+		&created, &expires, &revoked, &lu, &t.RemoteControl); err != nil {
 		return nil, err
 	}
 	if scopes != "" {

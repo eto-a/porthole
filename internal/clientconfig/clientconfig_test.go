@@ -75,6 +75,7 @@ func TestParseValid(t *testing.T) {
 		{"max name", "version: 1\ntunnels:\n  " + strings.Repeat("a", 32) + ":\n    type: http\n    addr: 1\n", 1, ""},
 		{"remote port on public-port ssh", "version: 1\ntunnels:\n  s:\n    type: ssh\n    public_port: true\n    remote_port: 2222\n", 1, ""},
 		{"private ssh", "version: 1\ntunnels:\n  s:\n    type: ssh\n    private: true\n", 1, ""},
+		{"inspect http", "version: 1\ntunnels:\n  w:\n    type: http\n    addr: 3000\n    inspect: true\n", 1, ""},
 		{"enabled true", "version: 1\ntunnels:\n  s:\n    type: ssh\n    enabled: true\n", 1, ""},
 	}
 	for _, tc := range tests {
@@ -137,6 +138,7 @@ func TestParseInvalid(t *testing.T) {
 		{"remote port negative", tunnelFile("db", "type: tcp\naddr: 1\nremote_port: -1"), []string{`tunnel "db": remote_port -1 out of range`}},
 		{"remote port on http", tunnelFile("a", "type: http\naddr: 1\nremote_port: 80"), []string{`tunnel "a": remote_port is only valid for tcp tunnels and ssh tunnels with public_port`}},
 		{"remote port on gateway ssh", tunnelFile("a", "type: ssh\nremote_port: 2222"), []string{`tunnel "a": remote_port on an ssh tunnel needs public_port: true`}},
+		{"inspect on tcp", tunnelFile("a", "type: tcp\naddr: 1\ninspect: true"), []string{`inspect is only valid for http`}},
 		{"private on tcp", tunnelFile("a", "type: tcp\naddr: 1\nprivate: true"), []string{`tunnel "a": private and public_port are only valid for ssh`}},
 		{"public_port on http", tunnelFile("a", "type: http\naddr: 1\npublic_port: true"), []string{`private and public_port are only valid for ssh`}},
 		{"private and public_port", tunnelFile("a", "type: ssh\nprivate: true\npublic_port: true"), []string{`cannot be combined`}},

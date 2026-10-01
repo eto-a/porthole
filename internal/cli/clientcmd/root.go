@@ -107,6 +107,7 @@ func newRoot(version string, d deps) *cobra.Command {
 
 	root.AddCommand(
 		a.newLoginCmd(),
+		a.newJoinCmd(),
 		a.newHTTPCmd(),
 		a.newTCPCmd(),
 		a.newSSHCmd(),
@@ -116,6 +117,7 @@ func newRoot(version string, d deps) *cobra.Command {
 		a.newTunnelsCmd(),
 		a.newReloadCmd(),
 		a.newCloseCmd(),
+		a.newMCPCmd(),
 		a.newVersionCmd(),
 	)
 	return root

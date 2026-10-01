@@ -38,6 +38,9 @@ type TunnelSpec struct {
 	// Private (ssh only) asks the gateway to require a porthole token. A server that does not confirm it is an
 	// error: the tunnel is never left public silently.
 	Private bool
+	// Inspect (http only) asks the server to store request and response bodies and headers of the tunnel for the
+	// inspector and replay. A server that refuses it fails the registration.
+	Inspect bool
 }
 
 // Options configures Run and Check.
@@ -70,6 +73,13 @@ type Options struct {
 	// accepted the handshake) the limit no longer applies and Run reconnects forever. DefaultMaxInitialAttempts is
 	// the value the porthole CLI uses.
 	MaxInitialAttempts int
+	// AcceptRemoteOpen announces the remote_open feature in hello: the server may then ask this client to open
+	// tunnels (proto.OpenRequest), subject to RemoteOpen. Only a Manager (the daemon, `porthole start`) can serve such
+	// requests; Run and Check ignore it.
+	AcceptRemoteOpen bool
+	// RemoteOpen limits the local targets a server request may expose. Nil permits every target; see RemotePolicy.
+	// Change it at run time with Manager.SetRemoteOpen.
+	RemoteOpen *RemotePolicy
 }
 
 // DefaultMaxInitialAttempts is the default for Options.MaxInitialAttempts in the porthole CLI.
@@ -304,6 +314,9 @@ func normalizeSpec(s TunnelSpec) (TunnelSpec, error) {
 	}
 	if s.RemotePort != 0 && s.Kind != proto.KindTCP {
 		return TunnelSpec{}, errors.New("remote port is only valid for tcp tunnels")
+	}
+	if s.Inspect && s.Kind != proto.KindHTTP {
+		return TunnelSpec{}, errors.New("inspect is only valid for http tunnels")
 	}
 	if s.Private && s.Kind != proto.KindSSH {
 		return TunnelSpec{}, errors.New("private is only valid for ssh tunnels")

@@ -15,10 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -41,7 +39,7 @@ const (
 	TypeSSH  = "ssh"
 
 	// DefaultSSHAddr is the local target of an ssh tunnel that has no addr.
-	DefaultSSHAddr = "127.0.0.1:22"
+	DefaultSSHAddr = client.DefaultSSHAddr
 )
 
 // File is a parsed tunnels file.
@@ -52,6 +50,10 @@ type File struct {
 	Server string `yaml:"server,omitempty"`
 	// Tunnels maps the tunnel name (auth.ValidName) to its definition.
 	Tunnels map[string]Tunnel `yaml:"tunnels"`
+	// AllowRemote limits the local targets the server may ask this machine to expose (`porthole remote open`, an
+	// agent's request_tunnel): a list of targets ("ssh", "3000", "host:port") or `none`. Nil, the key missing, allows
+	// every target. The server cannot widen it.
+	AllowRemote *RemoteAllow `yaml:"allow_remote,omitempty"`
 }
 
 // Tunnel is one entry of the tunnels file.
@@ -65,6 +67,9 @@ type Tunnel struct {
 	RemotePort int `yaml:"remote_port,omitempty"`
 	// Private (ssh only) makes the SSH gateway require a porthole token to reach the tunnel.
 	Private bool `yaml:"private,omitempty"`
+	// Inspect (http only) stores request and response bodies up to 64 KiB, with headers, on the server for the
+	// inspector and replay (porthole http --inspect).
+	Inspect bool `yaml:"inspect,omitempty"`
 	// PublicPort (ssh only) is the v0.1 mode: a public TCP port instead of the SSH gateway.
 	PublicPort bool `yaml:"public_port,omitempty"`
 	// Enabled is nil (meaning true) unless the file says otherwise.
@@ -224,6 +229,9 @@ func (t Tunnel) spec(name string) (client.TunnelSpec, error) {
 	if t.Private && t.PublicPort {
 		bad("private and public_port cannot be combined: a public port has no gateway to authenticate")
 	}
+	if t.Inspect && t.Type != TypeHTTP && t.Type != "" {
+		bad("inspect is only valid for http tunnels")
+	}
 	if t.RemotePort != 0 {
 		switch {
 		case t.RemotePort < 1 || t.RemotePort > 65535:
@@ -237,7 +245,7 @@ func (t Tunnel) spec(name string) (client.TunnelSpec, error) {
 	if len(errs) > 0 {
 		return client.TunnelSpec{}, errors.Join(errs...)
 	}
-	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: t.RemotePort, Private: t.Private}, nil
+	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: t.RemotePort, Private: t.Private, Inspect: t.Inspect}, nil
 }
 
 // normalizeServer mirrors `porthole login`: trailing slashes are dropped and client.ConnectURL must accept the URL
@@ -349,42 +357,7 @@ func DiffSpecs(oldSpecs, newSpecs []client.TunnelSpec) Diff {
 
 // ParseTarget turns a local target into "host:port". A bare port means 127.0.0.1:<port>, and so does ":port".
 // The grammar is the one of the `porthole http|tcp|ssh` argument (internal/cli/clientcmd.parseTarget).
-func ParseTarget(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", errors.New("missing local port or address")
-	}
-	if !strings.Contains(s, ":") {
-		port, err := parsePort(s)
-		if err != nil {
-			return "", fmt.Errorf("invalid local target %q: want a port or host:port", s)
-		}
-		return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
-	}
-	host, portStr, err := net.SplitHostPort(s)
-	if err != nil {
-		return "", fmt.Errorf("invalid local target %q: want a port or host:port", s)
-	}
-	port, err := parsePort(portStr)
-	if err != nil {
-		return "", fmt.Errorf("invalid local target %q: %w", s, err)
-	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if strings.ContainsAny(host, " \t/\\") {
-		return "", fmt.Errorf("invalid local target %q: bad host", s)
-	}
-	return net.JoinHostPort(host, strconv.Itoa(port)), nil
-}
-
-func parsePort(s string) (int, error) {
-	p, err := strconv.Atoi(s)
-	if err != nil || p < 1 || p > 65535 {
-		return 0, fmt.Errorf("port %q must be a number from 1 to 65535", s)
-	}
-	return p, nil
-}
+func ParseTarget(s string) (string, error) { return client.ParseTarget(s) }
 
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
@@ -393,4 +366,50 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// RemoteAllow is the value of the allow_remote key: `none`, or a list of local targets. "ssh" stands for
+// DefaultSSHAddr, the rest follows ParseTarget. An empty list is the same as `none`.
+type RemoteAllow struct {
+	Targets []string
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (r *RemoteAllow) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if n.Value != "none" {
+			return fmt.Errorf("line %d: allow_remote must be a list of targets or none, got %q", n.Line, n.Value)
+		}
+		r.Targets = nil
+		return nil
+	case yaml.SequenceNode:
+		targets := make([]string, 0, len(n.Content))
+		for _, item := range n.Content {
+			if item.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: allow_remote entries must be \"ssh\", a port or host:port", item.Line)
+			}
+			if item.Value == "ssh" {
+				targets = append(targets, DefaultSSHAddr)
+				continue
+			}
+			norm, err := ParseTarget(item.Value)
+			if err != nil {
+				return fmt.Errorf("line %d: allow_remote: %w", item.Line, err)
+			}
+			targets = append(targets, norm)
+		}
+		r.Targets = targets
+		return nil
+	default:
+		return fmt.Errorf("line %d: allow_remote must be a list of targets or none", n.Line)
+	}
+}
+
+// RemotePolicy converts the allow_remote key to a client policy: nil (everything) when the key is missing.
+func (f *File) RemotePolicy() *client.RemotePolicy {
+	if f == nil || f.AllowRemote == nil {
+		return nil
+	}
+	return &client.RemotePolicy{Targets: slices.Clone(f.AllowRemote.Targets)}
 }

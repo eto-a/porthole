@@ -140,6 +140,9 @@ func New(opts Options) (*Daemon, error) {
 		Version:   opts.Version,
 		Logger:    log,
 		TLSConfig: opts.TLSConfig,
+		// The machine owner decides in the tunnels file (allow_remote) what the server may ask for; see ADR 0005.
+		AcceptRemoteOpen: true,
+		RemoteOpen:       file.RemotePolicy(),
 		// The daemon keeps retrying until it is stopped (see ADR 0002), except for failures that retrying cannot fix.
 		MaxInitialAttempts: 0,
 	})

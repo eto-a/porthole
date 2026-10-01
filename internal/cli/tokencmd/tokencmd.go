@@ -137,24 +137,7 @@ func validateScopes(in []string) ([]string, error) {
 }
 
 // loginURL is the server URL for the "porthole login" hint: server_url when set, else derived from the public settings.
-func loginURL(cfg *config.Config) string {
-	if u := cfg.ClientURL(); u != "" {
-		return u
-	}
-	scheme := cfg.PublicScheme
-	if scheme == "" {
-		scheme = "https"
-	}
-	host := cfg.Domain
-	if host == "" {
-		host = "<domain>"
-	}
-	u := scheme + "://" + host
-	if cfg.PublicPort != 0 {
-		u += ":" + strconv.Itoa(cfg.PublicPort)
-	}
-	return u
-}
+func loginURL(cfg *config.Config) string { return cfg.PublicURL() }
 
 func (e *env) createCmd() *cobra.Command {
 	var (
@@ -162,6 +145,7 @@ func (e *env) createCmd() *cobra.Command {
 		expires    string
 		scopes     []string
 		maxTunnels int
+		noRemote   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create --name <name>",
@@ -198,13 +182,14 @@ func (e *env) createCmd() *cobra.Command {
 			}
 			now := e.now()
 			rec := &store.Token{
-				ID:         tok.ID,
-				Name:       name,
-				SecretHash: tok.Hash(),
-				Last4:      tok.Last4(),
-				Scopes:     sc,
-				MaxTunnels: maxTunnels,
-				CreatedAt:  now,
+				ID:            tok.ID,
+				Name:          name,
+				SecretHash:    tok.Hash(),
+				Last4:         tok.Last4(),
+				Scopes:        sc,
+				MaxTunnels:    maxTunnels,
+				CreatedAt:     now,
+				RemoteControl: !noRemote,
 			}
 			if d > 0 {
 				exp := now.Add(d)
@@ -220,16 +205,17 @@ func (e *env) createCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			if jsonout.Enabled(cmd) {
 				return jsonout.Write(out, createdJSON{
-					ID:         tok.ID,
-					Name:       name,
-					Token:      tok.String(),
-					Last4:      tok.Last4(),
-					Scopes:     sc,
-					MaxTunnels: maxTunnels,
-					CreatedAt:  now.UTC(),
-					ExpiresAt:  utcPtr(rec.ExpiresAt),
-					ServerURL:  loginURL(cfg),
-					Login:      fmt.Sprintf("porthole login %s %s", loginURL(cfg), tok.String()),
+					ID:            tok.ID,
+					Name:          name,
+					Token:         tok.String(),
+					Last4:         tok.Last4(),
+					Scopes:        sc,
+					MaxTunnels:    maxTunnels,
+					RemoteControl: !noRemote,
+					CreatedAt:     now.UTC(),
+					ExpiresAt:     utcPtr(rec.ExpiresAt),
+					ServerURL:     loginURL(cfg),
+					Login:         fmt.Sprintf("porthole login %s %s", loginURL(cfg), tok.String()),
 				})
 			}
 			fmt.Fprintf(out, "Created token %q (id %s, scopes %s, expires %s).\n\n",
@@ -246,6 +232,7 @@ func (e *env) createCmd() *cobra.Command {
 	f.StringVar(&expires, "expires", "0", "token lifetime: 30d, 720h or 0 for no expiry")
 	f.StringSliceVar(&scopes, "scopes", slices.Clone(auth.DefaultScopes), "comma-separated scopes")
 	f.IntVar(&maxTunnels, "max-tunnels", 0, "maximum simultaneous tunnels (0 = server default)")
+	f.BoolVar(&noRemote, "no-remote-control", false, "do not let operators open tunnels on this client remotely (default: allowed)")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
@@ -278,31 +265,33 @@ func status(t *store.Token, now time.Time) string {
 
 // tokenJSON is the --json form of a token: never contains the hash or the secret.
 type tokenJSON struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Last4      string     `json:"last4"`
-	Scopes     []string   `json:"scopes"`
-	MaxTunnels int        `json:"max_tunnels"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	Status     string     `json:"status"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Last4         string     `json:"last4"`
+	Scopes        []string   `json:"scopes"`
+	MaxTunnels    int        `json:"max_tunnels"`
+	RemoteControl bool       `json:"remote_control"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	RevokedAt     *time.Time `json:"revoked_at"`
+	LastUsedAt    *time.Time `json:"last_used_at"`
+	Status        string     `json:"status"`
 }
 
 // createdJSON is the --json output of `token create`. It is the only place that ever shows the secret: "token" is the
 // full token and "login" the command that stores it on a client.
 type createdJSON struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Token      string     `json:"token"`
-	Last4      string     `json:"last4"`
-	Scopes     []string   `json:"scopes"`
-	MaxTunnels int        `json:"max_tunnels"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at"`
-	ServerURL  string     `json:"server_url"`
-	Login      string     `json:"login"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Token         string     `json:"token"`
+	Last4         string     `json:"last4"`
+	Scopes        []string   `json:"scopes"`
+	MaxTunnels    int        `json:"max_tunnels"`
+	RemoteControl bool       `json:"remote_control"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	ServerURL     string     `json:"server_url"`
+	Login         string     `json:"login"`
 }
 
 // revokedJSON is the --json output of `token revoke`.
@@ -365,16 +354,17 @@ func writeJSON(w io.Writer, toks []*store.Token, now time.Time) error {
 			scopes = []string{}
 		}
 		arr = append(arr, tokenJSON{
-			ID:         t.ID,
-			Name:       t.Name,
-			Last4:      t.Last4,
-			Scopes:     scopes,
-			MaxTunnels: t.MaxTunnels,
-			CreatedAt:  t.CreatedAt.UTC(),
-			ExpiresAt:  utcPtr(t.ExpiresAt),
-			RevokedAt:  utcPtr(t.RevokedAt),
-			LastUsedAt: utcPtr(t.LastUsedAt),
-			Status:     status(t, now),
+			ID:            t.ID,
+			Name:          t.Name,
+			Last4:         t.Last4,
+			Scopes:        scopes,
+			MaxTunnels:    t.MaxTunnels,
+			RemoteControl: t.RemoteControl,
+			CreatedAt:     t.CreatedAt.UTC(),
+			ExpiresAt:     utcPtr(t.ExpiresAt),
+			RevokedAt:     utcPtr(t.RevokedAt),
+			LastUsedAt:    utcPtr(t.LastUsedAt),
+			Status:        status(t, now),
 		})
 	}
 	return jsonout.Write(w, arr)
@@ -386,11 +376,11 @@ func writeTable(w io.Writer, toks []*store.Token, now time.Time) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tSECRET\tSCOPES\tCREATED\tEXPIRES\tLAST USED\tSTATUS")
+	fmt.Fprintln(tw, "ID\tNAME\tSECRET\tSCOPES\tREMOTE\tCREATED\tEXPIRES\tLAST USED\tSTATUS")
 	for _, t := range toks {
 		created := t.CreatedAt
-		fmt.Fprintf(tw, "%s\t%s\t…%s\t%s\t%s\t%s\t%s\t%s\n",
-			t.ID, t.Name, t.Last4, strings.Join(t.Scopes, ","),
+		fmt.Fprintf(tw, "%s\t%s\t…%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			t.ID, t.Name, t.Last4, strings.Join(t.Scopes, ","), yesNo(t.RemoteControl),
 			formatTime(&created), formatTime(t.ExpiresAt), formatTime(t.LastUsedAt), status(t, now))
 	}
 	return tw.Flush()
@@ -454,4 +444,11 @@ func resolve(ctx context.Context, st *store.SQLite, idOrName string) (*store.Tok
 		}
 	}
 	return nil, fmt.Errorf("no active token with id or name %q: %w", idOrName, store.ErrNotFound)
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

@@ -85,6 +85,7 @@ func (d *Daemon) toTunnel(ts client.TunnelState) localapi.Tunnel {
 		RemotePort: ts.Spec.RemotePort,
 		PublicURL:  ts.PublicURL,
 		Private:    ts.Spec.Private,
+		Inspect:    ts.Spec.Inspect,
 		SSHJump:    ts.SSHJump,
 		State:      tunnelState(ts.Status),
 		Source:     e.source(),
@@ -191,6 +192,9 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 	default:
 		return client.TunnelSpec{}, bad("type must be http, tcp or ssh")
 	}
+	if req.Inspect && req.Type != localapi.TypeHTTP {
+		return client.TunnelSpec{}, bad("inspect is only valid for http tunnels")
+	}
 	if (req.Private || req.PublicPort) && req.Type != localapi.TypeSSH {
 		return client.TunnelSpec{}, bad("private and public_port are only valid for ssh tunnels")
 	}
@@ -222,18 +226,15 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 			name = kind + "-" + port
 		}
 	}
-	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: req.RemotePort, Private: req.Private}, nil
+	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: req.RemotePort, Private: req.Private, Inspect: req.Inspect}, nil
 }
 
 // RemoveTunnel implements [localapi.Backend]. Tunnels of the tunnels file cannot be removed this way.
 func (d *Daemon) RemoveTunnel(_ context.Context, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	e, ok := d.meta[name]
-	if !ok {
-		return localapi.NewError(localapi.CodeNotFound, "no tunnel named %q", name)
-	}
-	if e.lifetime == localapi.LifetimeFile {
+	// A tunnel opened at the server's request (Options.AcceptRemoteOpen) has no entry: it is a runtime tunnel.
+	if d.meta[name].lifetime == localapi.LifetimeFile {
 		return localapi.NewError(localapi.CodeConflict,
 			"tunnel %q is defined in %s; edit it and run `porthole reload`", name, d.fileName())
 	}
@@ -249,7 +250,7 @@ func (d *Daemon) RemoveTunnel(_ context.Context, name string) error {
 		}
 	}
 	delete(d.meta, name)
-	d.log.Info("tunnel removed", "tunnel", name, "lifetime", e.lifetime)
+	d.log.Info("tunnel removed", "tunnel", name)
 	return nil
 }
 
@@ -300,6 +301,7 @@ func (d *Daemon) Reload(context.Context) (localapi.ReloadResult, error) {
 		}
 		all = append(all, current[i].Spec)
 	}
+	d.mgr.SetRemoteOpen(file.RemotePolicy())
 	added, removed, changed, err := d.mgr.Replace(all)
 	if err != nil {
 		if errors.Is(err, client.ErrStopped) {

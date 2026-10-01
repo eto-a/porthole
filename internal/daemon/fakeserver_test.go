@@ -32,12 +32,15 @@ type fakeServer struct {
 	unregs   []string          // tunnel ids
 	refuse   map[string]string // tunnel name -> error code to answer with
 	sessions []transport.Session
+	hello    *proto.Hello           // of the last session
+	sendLast func(m proto.Message)  // writes to the control stream of the last session
+	openRes  chan *proto.OpenResult // every open_result received
 	wg       sync.WaitGroup
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
-	fs := &fakeServer{t: t, live: map[string]string{}, refuse: map[string]string{}}
+	fs := &fakeServer{t: t, live: map[string]string{}, refuse: map[string]string{}, openRes: make(chan *proto.OpenResult, 8)}
 	mux := http.NewServeMux()
 	mux.HandleFunc(proto.ConnectPath, func(w http.ResponseWriter, r *http.Request) {
 		sess, err := transport.AcceptWebSocket(w, r, &net.TCPAddr{})
@@ -74,7 +77,8 @@ func (fs *fakeServer) serve(sess transport.Session, n int) {
 		return
 	}
 	_ = ctl.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := proto.ReadAs[*proto.Hello](ctl); err != nil {
+	hello, err := proto.ReadAs[*proto.Hello](ctl)
+	if err != nil {
 		return
 	}
 	_ = ctl.SetReadDeadline(time.Time{})
@@ -84,6 +88,9 @@ func (fs *fakeServer) serve(sess transport.Session, n int) {
 		defer wmu.Unlock()
 		_ = proto.WriteMessage(ctl, m)
 	}
+	fs.mu.Lock()
+	fs.hello, fs.sendLast = hello, send
+	fs.mu.Unlock()
 	send(&proto.HelloOK{SessionID: "s" + strconv.Itoa(n), ClientName: "home", ServerVersion: "fake", HeartbeatIntervalMS: 15000})
 	for {
 		m, err := proto.ReadMessage(ctl)
@@ -126,6 +133,8 @@ func (fs *fakeServer) serve(sess transport.Session, n int) {
 				}
 			}
 			fs.mu.Unlock()
+		case *proto.OpenResult:
+			fs.openRes <- m
 		case *proto.Pong:
 		}
 	}
@@ -161,4 +170,20 @@ func (fs *fakeServer) refuseName(name, code string) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.refuse[name] = code
+}
+
+// ask sends an open_request on the last session and returns the client's answer.
+func (fs *fakeServer) ask(req *proto.OpenRequest) *proto.OpenResult {
+	fs.t.Helper()
+	fs.mu.Lock()
+	send := fs.sendLast
+	fs.mu.Unlock()
+	send(req)
+	select {
+	case res := <-fs.openRes:
+		return res
+	case <-time.After(10 * time.Second):
+		fs.t.Fatal("no open_result")
+		return nil
+	}
 }

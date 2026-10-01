@@ -15,7 +15,7 @@ import (
 
 func TestRoundTrip(t *testing.T) {
 	msgs := []Message{
-		&Hello{ProtocolVersion: Version, Token: "ph_abc_def", ClientVersion: "0.1.0", OS: "linux/amd64"},
+		&Hello{ProtocolVersion: Version, Token: "ph_abc_def", ClientVersion: "0.1.0", OS: "linux/amd64", Features: []string{FeatureRemoteOpen}},
 		&HelloOK{SessionID: "s1", ClientName: "home", HeartbeatIntervalMS: 15000},
 		&Register{ReqID: 7, Kind: KindTCP, Name: "ssh", RemotePort: 20022},
 		&Register{ReqID: 8, Kind: KindSSH, Name: "nas", Private: true},
@@ -23,6 +23,9 @@ func TestRoundTrip(t *testing.T) {
 		&Registered{ReqID: 7, TunnelID: "t1", Kind: KindHTTP, Name: "web", PublicURL: "https://web-home.example.com"},
 		&Unregister{TunnelID: "t1"},
 		&TunnelClosed{TunnelID: "t1", Reason: "token revoked"},
+		&OpenRequest{ReqID: 4, Kind: KindTCP, LocalAddr: "ssh", Name: "nas", Private: true, RemotePort: 20022, RequestedBy: "tok1"},
+		&OpenResult{ReqID: 4, OK: true, Tunnel: &OpenedTunnel{Name: "nas", Kind: KindTCP, PublicURL: "tcp://x:20022"}},
+		&OpenResult{ReqID: 5, Error: &OpenError{Code: CodeNotAllowed, Message: "no"}},
 		&Ping{Seq: 42},
 		&Pong{Seq: 42},
 		&Error{ReqID: 3, Code: CodeNameTaken, Message: "taken", RetryAfterMS: 500, Fatal: true},

@@ -26,6 +26,12 @@ const (
 	KindSSH  = "ssh" // reachable only through the server's SSH gateway; no public listener
 )
 
+// Client features announced in Hello.Features.
+const (
+	// FeatureRemoteOpen means the client answers OpenRequest with OpenResult.
+	FeatureRemoteOpen = "remote_open"
+)
+
 // Error codes carried in Error.Code.
 const (
 	CodeUnsupportedVersion = "unsupported_version"
@@ -40,6 +46,9 @@ const (
 	CodeInternal           = "internal"
 	CodeShuttingDown       = "shutting_down"
 	CodeSessionReplaced    = "session_replaced"
+	CodeClientUnsupported  = "client_unsupported"
+	CodeTimeout            = "timeout"
+	CodeNotAllowed         = "not_allowed"
 )
 
 // Message is implemented by every protocol message.
@@ -54,6 +63,8 @@ type Hello struct {
 	Token           string `json:"token"`
 	ClientVersion   string `json:"client_version,omitempty"`
 	OS              string `json:"os,omitempty"`
+	// Features lists optional capabilities of this client (see FeatureRemoteOpen). Unknown values are ignored.
+	Features []string `json:"features,omitempty"`
 }
 
 // HelloOK accepts a session (server → client).
@@ -72,6 +83,9 @@ type Register struct {
 	RemotePort int    `json:"remote_port,omitempty"`
 	// Private (kind ssh only) makes the gateway require a porthole token before it opens the tunnel.
 	Private bool `json:"private,omitempty"`
+	// Inspect (kind http only) asks the server to store request and response bodies and headers of this tunnel
+	// for the inspector and replay (ADR 0005). The server may refuse it by configuration.
+	Inspect bool `json:"inspect,omitempty"`
 }
 
 // Registered confirms a tunnel and carries its public address (server → client).
@@ -86,6 +100,10 @@ type Registered struct {
 	Private bool `json:"private,omitempty"`
 	// SSHJump is the host:port of the SSH gateway (kind ssh only).
 	SSHJump string `json:"ssh_jump,omitempty"`
+	// Inspect echoes Register.Inspect: the server stores headers and bodies of this tunnel's requests. A client that
+	// asked for inspection and gets false (or nothing) back is talking to a server that ignored the field; the tunnel
+	// works, but there is nothing to inspect.
+	Inspect bool `json:"inspect,omitempty"`
 }
 
 // Unregister releases a tunnel (client → server).
@@ -97,6 +115,43 @@ type Unregister struct {
 type TunnelClosed struct {
 	TunnelID string `json:"tunnel_id"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+// OpenRequest asks the client to open a tunnel on behalf of an operator (server → client). The client applies its own
+// allow_remote policy and answers with OpenResult carrying the same ReqID.
+type OpenRequest struct {
+	ReqID int `json:"req_id"`
+	// Kind is http, tcp or ssh.
+	Kind string `json:"kind"`
+	// LocalAddr is the local target (host:port, a bare port, or "ssh" for 127.0.0.1:22).
+	LocalAddr  string `json:"local_addr,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Private    bool   `json:"private,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
+	// RequestedBy names the acting token, for the client's log. Informational, never an authorization.
+	RequestedBy string `json:"requested_by,omitempty"`
+}
+
+// OpenedTunnel describes a tunnel opened by an OpenRequest.
+type OpenedTunnel struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	PublicURL string `json:"public_url"`
+	SSHJump   string `json:"ssh_jump,omitempty"`
+}
+
+// OpenResult answers an OpenRequest (client → server). Exactly one of Tunnel and Error is set.
+type OpenResult struct {
+	ReqID  int           `json:"req_id"`
+	OK     bool          `json:"ok"`
+	Tunnel *OpenedTunnel `json:"tunnel,omitempty"`
+	Error  *OpenError    `json:"error,omitempty"`
+}
+
+// OpenError is the failure part of OpenResult.
+type OpenError struct {
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
 }
 
 // Ping is a liveness probe (server → client).
@@ -147,6 +202,8 @@ func (*Register) MsgType() string     { return "register" }
 func (*Registered) MsgType() string   { return "registered" }
 func (*Unregister) MsgType() string   { return "unregister" }
 func (*TunnelClosed) MsgType() string { return "tunnel_closed" }
+func (*OpenRequest) MsgType() string  { return "open_request" }
+func (*OpenResult) MsgType() string   { return "open_result" }
 func (*Ping) MsgType() string         { return "ping" }
 func (*Pong) MsgType() string         { return "pong" }
 func (*Error) MsgType() string        { return "error" }
@@ -167,6 +224,10 @@ func newMessage(typ string) Message {
 		return &Unregister{}
 	case "tunnel_closed":
 		return &TunnelClosed{}
+	case "open_request":
+		return &OpenRequest{}
+	case "open_result":
+		return &OpenResult{}
 	case "ping":
 		return &Ping{}
 	case "pong":

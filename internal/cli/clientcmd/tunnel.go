@@ -133,6 +133,7 @@ type tunnelRequest struct {
 	remotePort int
 	sshUser    string // non-empty for `porthole ssh`: print the ssh command line
 	private    bool   // ssh only: the gateway requires a porthole token
+	inspect    bool   // http only: the server stores request and response bodies for the inspector
 	publicPort bool   // ssh only: a public TCP port instead of the gateway (v0.1 behaviour)
 }
 
@@ -144,12 +145,12 @@ func (r tunnelRequest) spec() client.TunnelSpec {
 	case r.typ == localapi.TypeSSH && !r.publicPort:
 		kind = proto.KindSSH
 	}
-	return client.TunnelSpec{Kind: kind, Name: r.name, LocalAddr: r.addr, RemotePort: r.remotePort, Private: r.private}
+	return client.TunnelSpec{Kind: kind, Name: r.name, LocalAddr: r.addr, RemotePort: r.remotePort, Private: r.private, Inspect: r.inspect}
 }
 
 func (r tunnelRequest) apiRequest() localapi.AddTunnelRequest {
 	return localapi.AddTunnelRequest{
-		Type: r.typ, Name: r.name, Addr: r.addr, RemotePort: r.remotePort, Private: r.private, PublicPort: r.publicPort,
+		Type: r.typ, Name: r.name, Addr: r.addr, RemotePort: r.remotePort, Private: r.private, Inspect: r.inspect, PublicPort: r.publicPort,
 	}
 }
 
@@ -176,6 +177,7 @@ func (r tunnelRequest) hint() *sshHint {
 
 func (a *app) newHTTPCmd() *cobra.Command {
 	var cf connFlags
+	var inspect bool
 	var rf routeFlags
 	var name string
 	cmd := &cobra.Command{
@@ -184,19 +186,21 @@ func (a *app) newHTTPCmd() *cobra.Command {
 		Long: "Expose a local HTTP service. A bare port means 127.0.0.1:<port>.\n\n" +
 			"If a porthole daemon is running the tunnel is added to it and removed again when this command ends.",
 		Example: "  porthole http 8080\n" +
-			"  porthole http 192.168.1.10:3000 --name blog",
+			"  porthole http 192.168.1.10:3000 --name blog\n" +
+			"  porthole http 8080 --inspect",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := parseTarget(args[0])
 			if err != nil {
 				return usageErr(err)
 			}
-			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeHTTP, name: name, addr: target})
+			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeHTTP, name: name, addr: target, inspect: inspect})
 		},
 	}
 	cf.add(cmd)
 	rf.add(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "tunnel name (default http-<port>)")
+	cmd.Flags().BoolVar(&inspect, "inspect", false, "store request and response bodies (up to 64 KiB each) and headers on the server for inspection and replay; Authorization and Cookie headers are masked")
 	return cmd
 }
 

@@ -435,3 +435,27 @@ func TestParseExpires(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteControlFlag(t *testing.T) {
+	h := newHarness(t)
+	h.create("--name", "open")
+	h.now = h.now.Add(time.Minute)
+	h.create("--name", "locked", "--no-remote-control")
+
+	var arr []map[string]any
+	out := h.mustRun("list", "--json")
+	if err := json.Unmarshal([]byte(out), &arr); err != nil || len(arr) != 2 {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	if arr[0]["name"] != "open" || arr[0]["remote_control"] != true || arr[1]["name"] != "locked" || arr[1]["remote_control"] != false {
+		t.Errorf("remote_control in the list: %v", arr)
+	}
+	table := h.mustRun("list")
+	if !strings.Contains(table, "REMOTE") || !strings.Contains(table, "yes") || !strings.Contains(table, "no") {
+		t.Errorf("table lacks the REMOTE column:\n%s", table)
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(h.mustRun("create", "--name", "third", "--no-remote-control", "--json")), &created); err != nil || created["remote_control"] != false {
+		t.Errorf("create --json: %v %v", created, err)
+	}
+}

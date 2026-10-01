@@ -3,7 +3,25 @@
 `porthole` is the client. It opens one outbound TLS connection to your `portholed` server (port 443), so it works from
 behind NAT and most corporate firewalls, and publishes local services under a public address. Install it first, see
 [Installation](install.md): `curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh`. You
-need a token from the server operator, see [Server setup: Tokens](server.md#tokens).
+need a join link or a token from the server operator, see [Server setup: Join links](server.md#join-links) and
+[Tokens](server.md#tokens).
+
+## Join with a link
+
+The easiest way to get credentials: the server operator runs `portholed join create --name <name>` and sends you a
+one-time link.
+
+```console
+$ porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...
+joined as home
+```
+
+`join` redeems the link, then stores the server and the new token exactly as `login` does (same config file and
+precedence). The link works once and expires after 15 minutes by default; opening it in a browser only shows this
+command. With a bare code (`pj_...`) the server comes from `--server`, `$PORTHOLE_SERVER` or the existing config file.
+`--json` prints `{"joined":true,"client_name":...,"server":...,"config":...}` and never the token. A refused link
+exits with status 4 (`invalid_code`, `join_code_used`, `join_code_expired`, `join_code_revoked`), a taken name with 5
+(`name_taken`), an unreachable server with 3.
 
 ## Log in
 
@@ -33,9 +51,26 @@ Commands run in the foreground, print the public address, and reconnect automati
 
 | Command | Public address |
 |---|---|
-| `porthole http <port\|host:port> [--name]` | `https://<name>-<client>.<domain>`; default name `http-<port>`, so the URL is stable across restarts. HTTP(S) and WebSocket; TLS is terminated on the server |
+| `porthole http <port\|host:port> [--name] [--inspect]` | `https://<name>-<client>.<domain>`; default name `http-<port>`, so the URL is stable across restarts. HTTP(S) and WebSocket; TLS is terminated on the server |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | `tcp://<domain>:<port>`, a port from the server's range (`--remote-port` asks for a specific one); default name `tcp-<port>` |
 | `porthole ssh [--local-port 22] [--user] [--name] [--private] [--public-port] [--remote-port]` | By default no public port: `ssh -J <gateway> <user>@<client>` through the server's SSH gateway. Default name `ssh`. See [SSH by name](ssh.md) |
+
+`porthole http --inspect` (or `inspect: true` in the tunnels file) asks the server to keep what passes through the
+tunnel so that you or an agent can look at it later and replay a request:
+
+- Stored: for every request, the headers and the first 64 KiB of the request body and of the response body (with the
+  real size and a `truncated` flag), the response headers and the unmasked request path and query (needed for replay;
+  the logged query has `token`, `key`, `password`, `secret` and `auth` values masked). Large responses still reach the
+  visitor in full and stream as usual; only the stored copy is cut. WebSocket and other upgraded connections are
+  never inspected. Bodies are stored as sent, so a compressed response is stored compressed.
+- Masked: `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are always stored as `REDACTED`. A replay
+  therefore reaches your service without them; a service that needs a credential header will answer `401` to a replay.
+  Other headers and bodies are stored as they are, so do not use `--inspect` on a tunnel that carries data you would not
+  want the server operator to read. This was always technically possible for HTTP tunnels (TLS ends at the server); now
+  it is explicit and opt-in per tunnel.
+- The data lives in the server's memory only, up to the server's `traffic.max_detail_bytes`, and is lost when the server
+  restarts. A server may forbid inspection (`traffic.allow_inspect: false`); the tunnel is then refused.
+  See [Request log and inspection](server.md#request-log-and-inspection) for how to read it.
 
 `porthole ssh` flags: `--local-port` (default 22) is the port of your sshd, `--user` is the user name in the printed
 `ssh` command (default: current user), `--private` makes the gateway ask for a porthole token first (and never falls
@@ -72,6 +107,7 @@ tunnels:
 - `type` is `http`, `tcp` or `ssh`; `addr` is `3000`, `:3000` or `host:port`; `enabled: false` disables an entry (the
   default is `true`).
 - `remote_port` is valid for `tcp`, and for `ssh` only together with `public_port: true`.
+- `inspect: true` (`http` only) stores request and response bodies on the server, as `porthole http --inspect` does.
 - For `type: ssh`, `private: true` makes the SSH gateway ask for a porthole token, and `public_port: true` is the older
   mode with a public TCP port instead of the gateway.
 - An optional top-level `server:` overrides the server of the config file (the token still comes from there).
@@ -86,6 +122,27 @@ $ porthole start blog db --tunnels ./tunnels.yaml # exactly these tunnels, enabl
 
 The server is taken from `--server`, `$PORTHOLE_SERVER`, the `server` key of the tunnels file, or the config file, in
 this order.
+
+### Remote requests
+
+The daemon and `porthole start` accept requests from the server to open a tunnel (an operator runs
+`portholed admin open`, or an agent calls `request_tunnel`; see the [server guide](server.md#opening-a-tunnel-on-a-clients-machine)).
+The one-off `porthole http|tcp|ssh` commands never do. The token of the machine must allow remote control, and the machine
+has the last word: `allow_remote` in the tunnels file lists the local targets that may be exposed this way.
+
+```yaml
+version: 1
+allow_remote: [ssh, 3000, "192.168.1.5:80"]   # only these local targets
+# allow_remote: none                          # refuse every remote request
+# (no key)                                    # allow every target
+```
+
+- An entry is `ssh` (that is `127.0.0.1:22`), a port (`127.0.0.1:<port>`) or `host:port`. A request matches when its
+  target equals an entry exactly (`localhost:3000` is not `127.0.0.1:3000`).
+- The server cannot widen the list. A refused request is answered with `not_allowed` and logged by the client.
+- `porthole reload` applies a changed `allow_remote` to the running daemon. Tunnels that are already open stay open.
+- A remotely opened tunnel is a runtime tunnel: `porthole tunnels` shows it, `porthole close <name>` removes it, a
+  daemon restart forgets it.
 
 ## Run the client as a service
 
@@ -165,8 +222,9 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 
 | Command | Purpose |
 |---|---|
+| `porthole join <link\|code> [--server]` | Enrol with a one-time join link and store credentials |
 | `porthole login <url> <token> [--check]` | Store credentials |
-| `porthole http <port\|host:port> [--name]` | Expose a local web service |
+| `porthole http <port\|host:port> [--name] [--inspect]` | Expose a local web service; `--inspect` stores bodies for the inspector |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | Expose a local TCP service |
 | `porthole ssh [--local-port 22] [--user] [--name] [--private] [--public-port]` | Expose the local SSH server |
 | `porthole start [names...]` | Run the tunnels of the tunnels file in the foreground, without a daemon |

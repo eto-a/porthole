@@ -17,6 +17,7 @@ import (
 	"github.com/eto-a/porthole/internal/adminapi"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/store"
+	"github.com/eto-a/porthole/internal/traffic"
 )
 
 const adminReadHeaderTimeout = 10 * time.Second
@@ -30,6 +31,7 @@ func (s *Server) newAdminAPI() (*adminapi.API, error) {
 		ClientIP:     func(r *http.Request) string { return ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders)) },
 		Now:          s.now,
 		Logger:       s.log,
+		ServerURL:    s.cfg.PublicURL(),
 	})
 }
 
@@ -171,7 +173,7 @@ func (b adminBackend) Tunnels(context.Context) ([]adminapi.Tunnel, error) {
 	for _, c := range s.sessions {
 		for _, t := range c.tunnels {
 			at := adminapi.Tunnel{
-				ID: t.id, Client: c.name, Name: t.name, Kind: t.kind, URL: s.publicURL(t), Private: t.private,
+				ID: t.id, Client: c.name, Name: t.name, Kind: t.kind, URL: s.publicURL(t), Private: t.private, Inspect: t.inspect,
 			}
 			if t.kind == proto.KindTCP {
 				at.Port = t.port
@@ -208,4 +210,40 @@ func (b adminBackend) CloseTunnel(_ context.Context, id string) error {
 		c.kill("control write failed: "+err.Error(), nil)
 	}
 	return nil
+}
+
+func (b adminBackend) Requests(_ context.Context, f traffic.RequestFilter) ([]traffic.Request, error) {
+	return b.s.traffic.Requests().Query(f), nil
+}
+
+func (b adminBackend) RequestAggregates(_ context.Context, f traffic.RequestFilter, topN int) (traffic.Aggregates, error) {
+	return b.s.traffic.Requests().Aggregate(f, topN), nil
+}
+
+func (b adminBackend) Request(_ context.Context, id uint64) (traffic.Request, error) {
+	r, ok := b.s.traffic.Requests().Get(id)
+	if !ok {
+		return traffic.Request{}, adminapi.ErrNotFound
+	}
+	return r, nil
+}
+
+// ReplayRequest maps the refusals of Server.ReplayRequest to admin API errors.
+func (b adminBackend) ReplayRequest(ctx context.Context, id uint64) (traffic.Request, error) {
+	r, err := b.s.ReplayRequest(ctx, id)
+	switch {
+	case errors.Is(err, ErrRequestNotFound):
+		return traffic.Request{}, adminapi.ErrNotFound
+	case errors.Is(err, ErrReplayRefused):
+		return traffic.Request{}, &adminapi.ConflictError{Message: strings.TrimPrefix(err.Error(), ErrReplayRefused.Error()+": ")}
+	}
+	return r, err
+}
+
+func (b adminBackend) Connections(_ context.Context, f traffic.ConnFilter) ([]traffic.Conn, error) {
+	return b.s.traffic.Conns().Query(f), nil
+}
+
+func (b adminBackend) AuthFailures(_ context.Context, since time.Time, limit int) ([]traffic.Conn, error) {
+	return b.s.traffic.AuthFailures(since, limit), nil
 }

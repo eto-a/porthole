@@ -122,6 +122,9 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
+| `traffic.max_requests`, `traffic.max_conns` | `PORTHOLED_TRAFFIC_MAX_REQUESTS`, `PORTHOLED_TRAFFIC_MAX_CONNS` | `10000` each | Size of the in-memory request log and connection log; `0` turns a log off. Lost on restart (see [Request log and inspection](#request-log-and-inspection)) |
+| `traffic.allow_inspect` | `PORTHOLED_TRAFFIC_ALLOW_INSPECT` | `true` | Let clients ask for body inspection of an HTTP tunnel (`porthole http --inspect`); with `false` such a tunnel is refused |
+| `traffic.max_detail_bytes` | `PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES` | `67108864` (64 MiB) | Memory for stored headers and bodies of inspected requests; when exceeded the oldest details are dropped (the log entries stay). `0` stores no details |
 | `shutdown_grace` | - | `10s` | How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut |
 
 ## Firewall
@@ -148,9 +151,51 @@ $ portholed serve --config /etc/porthole/portholed.yaml
 
 `portholed serve` takes `--log-level` (`debug`, `info`, `warn` or `error`; default `info`).
 
+## Join links
+
+The recommended way to give a machine access is a one-time join link: nobody copies a long-lived secret around.
+The command needs the running server (it talks to the local admin unix socket, `admin_socket` in the configuration), so run it as the user the
+service runs as:
+
+```console
+$ sudo -u porthole portholed join create --name home
+Join link for "home" (id 3kq9w2m1z8xa), valid until 2026-10-01 12:15 UTC and usable once.
+
+On the machine, run:
+
+    porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...
+```
+
+On the machine, `porthole join <link>` redeems the link once and stores the server and its own permanent token (see
+[Client guide](client.md#join-with-a-link)). The server keeps only a hash of the code. The link works once, expires
+after 15 minutes by default and cannot be used to create anything but the token it was made for. Opening the link in a
+browser (`GET /j/<code>`) only shows the command and does not use it up. Redemptions are rate-limited per IP with the
+same limiter as failed logins and written to the audit log as `join.redeem`.
+
+| Flag of `join create` | Meaning |
+|---|---|
+| `--name` | Client name, required; becomes part of tunnel URLs. Fails if an active token already has it |
+| `--ttl` | Lifetime of the link: `15m` (default) up to `7d` |
+| `--scopes` | Scopes of the token the link creates (default `tunnel:http,tunnel:tcp,tunnel:udp`) |
+| `--max-tunnels` | Maximum simultaneous tunnels (`0`: the server default) |
+| `--expires` | Lifetime of the created token, longer than `--ttl` (default: no expiry) |
+| `--no-remote-control` | Do not let operators open tunnels on this machine remotely (the default allows it) |
+
+```console
+$ portholed join list             # --all also shows used, revoked and expired links; --json prints the list
+$ portholed join revoke 3kq9w2m1z8xa
+```
+
+The same operations are in the admin API with a token that has the scope `admin:tokens`:
+`POST /_porthole/admin/v1/join` (`client_name`, `scopes`, `ttl`, `max_tunnels`, `token_expires_in`, `remote_control`),
+`GET /_porthole/admin/v1/join` and `POST /_porthole/admin/v1/join/{id}/revoke`. A token can hand out the tunnel and
+`connect:` scopes and, besides those, only scopes it holds itself. The link uses `server_url` from the configuration, or
+`<public_scheme>://<domain>[:<public_port>]` when it is not set.
+
 ## Tokens
 
-Create one token per client machine; the name becomes the client name in the public URLs:
+`portholed token create` is the alternative for scripted setups and for machines that cannot reach the server over
+HTTP(S) at enrolment time. Create one token per client machine; the name becomes the client name in the public URLs:
 
 ```console
 $ sudo -u porthole portholed token create --name home
@@ -270,6 +315,30 @@ or `PORTHOLED_SSH_LISTEN=:2222`. Open that port in the firewall (port 22 of the 
 
 Design and rejected alternatives: [ADR 0003](adr/0003-ssh-gateway-and-port-reservations.md).
 
+## Request log and inspection
+
+The server terminates TLS for HTTP tunnels, so it records every proxied request (time, tunnel, visitor IP, method,
+host, path, masked query, status, latency, body bytes, user agent) in a ring buffer in memory. TCP and SSH gateway
+connections are recorded as metadata only. Nothing is written to disk.
+
+A tunnel started with `porthole http --inspect` (or `inspect: true` in `tunnels.yaml`) also keeps request and response
+**headers and bodies**, up to 64 KiB of each body, so an operator or an agent can see what a webhook sent and replay
+it. Bodies carry credentials and personal data, so this is off by default and chosen per tunnel; set
+`traffic.allow_inspect: false` to forbid it on this server. `Authorization`, `Proxy-Authorization`, `Cookie` and
+`Set-Cookie` are always stored as `REDACTED`. `traffic.max_detail_bytes` bounds the memory of all stored details; the
+details of the oldest requests are dropped first.
+
+The admin API (unix socket, or a bearer token over the public listener) serves the logs under
+`/_porthole/admin/v1/`:
+
+| Endpoint | Scope | Result |
+|---|---|---|
+| `GET requests` | `admin:read` | Logged requests, newest first. Filters: `tunnel`, `client`, `status_class` (1-5), `path_prefix`, `ip`, `since` (RFC 3339 or a duration such as `15m`), `limit`; `aggregate=1` returns status classes, top paths and visitors, latency percentiles and a per-minute count instead |
+| `GET requests/{id}` | `admin:read`; headers and bodies need `admin:traffic` | One request, with `detail` for inspected requests |
+| `POST requests/{id}/replay` | `admin:traffic` | Sends the recorded request again into its tunnel and returns the new log entry (`replay_of` is the original id). Audited as `request.replay`. Refused with `409` if the tunnel is offline or no longer inspected, the request was not inspected, its detail was dropped, or its body was truncated. Headers that were redacted are not sent |
+| `GET connections` | `admin:read` | TCP and SSH connections (`tunnel`, `client`, `kind`, `ip`, `outcome`, `since`, `limit`) |
+| `GET auth-failures` | `admin:read` | SSH gateway authentication failures (`since`, `limit`) |
+
 ## Metrics
 
 Set `metrics_listen` (for example `127.0.0.1:9090`) to serve Prometheus metrics at `/metrics` and the Go profiler at
@@ -306,14 +375,51 @@ scrape_configs:
 Profiling, for example a 30 second CPU profile: `go tool pprof http://127.0.0.1:9090/debug/pprof/profile?seconds=30`.
 From your workstation use an SSH port forward (`ssh -L 9090:127.0.0.1:9090 tun.example.com`) instead of opening the port.
 
+## Opening a tunnel on a client's machine
+
+An operator can ask a connected machine to open a tunnel, for example "open an SSH tunnel on `home`", without logging
+in to that machine:
+
+```console
+$ portholed admin open home http 3000 --name blog
+tunnel "blog" (http) is open on home: https://blog-home.tun.example.com
+$ portholed admin open home ssh --private          # 127.0.0.1:22 through the SSH gateway
+$ portholed admin open home tcp 192.168.1.5:80 --json
+```
+
+`kind` is `http`, `tcp` or `ssh`; `local` is a port, `host:port` or, for `ssh`, nothing (`127.0.0.1:22`). Flags:
+`--name`, `--private` (ssh), `--remote-port` (tcp). The command talks to the admin socket, so it needs no token. The
+same request is `POST /_porthole/admin/v1/clients/{name}/tunnels` with a JSON body
+(`{"kind":"http","local_addr":"3000","name":"blog"}`) and a bearer token with the `admin:remote` scope. It returns
+`{"ok":true,"tunnel":{"name","kind","public_url","ssh_jump"}}`.
+
+What has to be true, and what the error codes say:
+
+| Code | Meaning |
+|---|---|
+| `not_found` | No client of that name is connected |
+| `client_unsupported` | The client does not accept requests: it is not the `porthole daemon` / `porthole start`, or it is too old |
+| `remote_control_disabled` | The client's token does not allow remote control |
+| `not_allowed` | The machine refused: the target is not in `allow_remote` of its tunnels file ([client guide](client.md#remote-requests)) |
+| `name_taken`, `limit_exceeded`, `port_unavailable` | The server refused to register the tunnel, as for any tunnel |
+| `timeout` | The client did not answer within 15 seconds |
+
+The tunnel is a runtime tunnel of the daemon: it survives reconnects, not a daemon restart, and `porthole tunnels` and
+`porthole close` show and remove it. Every request is written to the audit log as `tunnel.remote_open`, with the
+acting token and the request (kind, local address, name), never a secret. The server cannot widen what the machine
+allows.
+
 ## Command reference
 
 | Command | Purpose |
 |---|---|
 | `portholed serve [--config] [--log-level]` | Run the server |
+| `portholed join create --name N [--ttl 15m] [--scopes ...] [--no-remote-control]` | Create a one-time join link |
+| `portholed join list [--all]`, `join revoke <id>` | List and revoke join links |
 | `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N]` | Create a token |
 | `portholed token list [--all]` | List tokens |
 | `portholed token revoke <id\|name>` | Revoke a token |
+| `portholed admin open <client> <http|tcp|ssh> [local] [--name] [--private] [--remote-port]` | Ask a connected client to open a tunnel; prints its address |
 | `portholed ssh-hostkey` | Print the fingerprint of the SSH gateway host key |
 | `portholed version` | Print the version |
 
@@ -329,6 +435,7 @@ The global flag `--json` makes a command write JSON to stdout instead of text (o
 | `token create` | `id`, `name`, `token` (the secret: this is the only place that ever shows it), `last4`, `scopes`, `max_tunnels`, `created_at`, `expires_at`, `server_url`, `login` (the `porthole login ...` command line) |
 | `token list` | An array of tokens, without secrets |
 | `token revoke` | `id`, `name`, `revoked`, `already_revoked` |
+| `admin open` | `client`, `name`, `kind`, `public_url`, `ssh_jump` |
 | `ssh-hostkey` | `fingerprint`, `path` |
 | `version` | `name`, `version`, `go`, `os`, `arch` |
 
@@ -342,9 +449,10 @@ The global flag `--json` makes a command write JSON to stdout instead of text (o
 | 0 | Success |
 | 1 | Any other failure: database, a token that does not exist, the server stopping with an error |
 | 2 | Usage error: unknown command, bad flag or argument, an invalid `--name`, `--expires`, `--scopes` or `--log-level` |
+| 5 | `admin open`: the request was refused (`not_allowed`, `remote_control_disabled`, `client_unsupported`, `name_taken`, ...) |
 | 78 | The configuration could not be loaded or is invalid |
 
-The client-side statuses 3 to 6 are not used by `portholed`; see the [client guide](client.md#exit-status).
+The client-side statuses 3, 4 and 6 are not used by `portholed`; see the [client guide](client.md#exit-status).
 
 ## Security
 

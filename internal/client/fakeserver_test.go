@@ -54,15 +54,16 @@ type srvConn struct {
 	ctl   net.Conn
 	hello *proto.Hello
 
-	wmu     sync.Mutex
-	mu      sync.Mutex
-	regs    []*proto.Register
-	tunnels map[string]string // tunnel name -> id
-	pongs   chan uint64
-	regCh   chan *proto.Register // every register message, as soon as it is read
-	unregCh chan string          // tunnel id of every unregister message
-	unregs  []string
-	live    map[string]string // tunnel name -> id of tunnels registered and not unregistered
+	wmu       sync.Mutex
+	mu        sync.Mutex
+	regs      []*proto.Register
+	tunnels   map[string]string // tunnel name -> id
+	pongs     chan uint64
+	regCh     chan *proto.Register   // every register message, as soon as it is read
+	unregCh   chan string            // tunnel id of every unregister message
+	openResCh chan *proto.OpenResult // every open_result message
+	unregs    []string
+	live      map[string]string // tunnel name -> id of tunnels registered and not unregistered
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -85,7 +86,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		c := &srvConn{
 			fs: fs, n: len(fs.conns) + 1, at: time.Now(), sess: sess,
 			tunnels: map[string]string{}, pongs: make(chan uint64, 256),
-			regCh: make(chan *proto.Register, 256), unregCh: make(chan string, 256), live: map[string]string{},
+			openResCh: make(chan *proto.OpenResult, 16), regCh: make(chan *proto.Register, 256), unregCh: make(chan string, 256), live: map[string]string{},
 		}
 		fs.conns = append(fs.conns, c)
 		fs.mu.Unlock()
@@ -265,6 +266,11 @@ func (fs *fakeServer) defaultHandler(c *srvConn) {
 			}
 			_ = c.send(reply)
 			answered++
+		case *proto.OpenResult:
+			select {
+			case c.openResCh <- m:
+			default:
+			}
 		case *proto.Pong:
 			select {
 			case c.pongs <- m.Seq:

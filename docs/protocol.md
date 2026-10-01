@@ -49,6 +49,7 @@ All field names are snake_case. Optional fields may be omitted.
 | `token` | string | required, `ph_<id>_<secret>` |
 | `client_version` | string | e.g. `0.1.0` |
 | `os` | string | `GOOS/GOARCH` |
+| `features` | []string | optional capabilities; `remote_open` (see 3.2.1); unknown values are ignored |
 
 `hello_ok` (server → client)
 
@@ -70,6 +71,7 @@ All field names are snake_case. Optional fields may be omitted.
 | `name` | string | optional; `[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?`. Default `http-<n>` / `tcp-<n>` (chosen by the server or the client CLI), `ssh` for kind `ssh` |
 | `remote_port` | int | optional, tcp only: requested public port; must be inside the allowed range |
 | `private` | bool | optional, `ssh` only (`invalid_request` for other kinds): the gateway must require a porthole token before it opens the tunnel |
+| `inspect` | bool | optional, `http` only (`invalid_request` for other kinds): the server stores request and response headers and the first 64 KiB of each body for the inspector and replay (ADR 0005). `forbidden` if the server sets `traffic.allow_inspect: false`. A server that predates the field ignores it and stores nothing |
 
 `registered` (server → client)
 
@@ -82,10 +84,33 @@ All field names are snake_case. Optional fields may be omitted.
 | `public_url` | string | `https://blog-home.tun.example.com` or `tcp://tun.example.com:20017`; empty for kind `ssh` |
 | `private` | bool | optional; echoes `register.private` for kind `ssh`. A client that asked for `private: true` and gets it absent or false MUST treat the reply as a failure (and unregister the tunnel): a server that does not know the field would otherwise expose the tunnel publicly |
 | `ssh_jump` | string | optional, kind `ssh` only: `host:port` of the SSH gateway, for `ssh -J <ssh_jump> <user>@<target>`. `<target>` is the client name (tunnel `ssh`) or `<tunnel>-<client>` |
+| `inspect` | bool | optional; echoes `register.inspect` when the server stores headers and bodies for this tunnel. A client that asked for `inspect: true` and gets it absent or false SHOULD log a warning and MUST NOT treat it as a failure: the tunnel works, but a server that predates the field records nothing to inspect |
 
 `unregister` (client → server): `{tunnel_id}`. No reply; the server releases the tunnel.
 
 `tunnel_closed` (server → client): `{tunnel_id, reason}` — the server dropped the tunnel.
+
+### 3.2.1 Remote open
+
+A client that sends `"features": ["remote_open"]` in `hello` accepts tunnel requests from the server. The server
+never sends `open_request` to a client without the feature (the operator gets `client_unsupported`).
+
+`open_request` (server → client)
+
+| field | type | notes |
+|---|---|---|
+| `req_id` | int | echoed in `open_result` |
+| `kind` | string | `http`, `tcp` or `ssh` |
+| `local_addr` | string | `host:port`, a bare port, or `ssh` (= `127.0.0.1:22`) |
+| `name` | string | optional |
+| `private` | bool | optional, kind `ssh` only |
+| `remote_port` | int | optional, kind `tcp` only |
+| `requested_by` | string | acting token, for the client log; never an authorization |
+
+`open_result` (client → server): `{req_id, ok, tunnel: {name, kind, public_url, ssh_jump}, error: {code, message}}`.
+On `ok` the `tunnel` is set, otherwise the `error`. The client applies its own `allow_remote` policy (error code
+`not_allowed`) before it opens anything. The server waits 15 s for the result and then reports `timeout`; a late
+result is ignored.
 
 ### 3.3 Liveness
 
@@ -107,7 +132,8 @@ arrives for 3 intervals.
 
 Codes: `unsupported_version`, `unauthorized` (bad/unknown token), `token_expired`, `token_revoked`, `forbidden`
 (scope or limit), `name_taken`, `invalid_request`, `port_unavailable`, `limit_exceeded`, `internal`, `shutting_down`,
-`session_replaced` (a newer session with the same token took over; sent to the old session).
+`session_replaced` (a newer session with the same token took over; sent to the old session), `client_unsupported`,
+`timeout`, `not_allowed` (the last three are used in `open_result` and by the admin API).
 
 Clients must not retry automatically on `unauthorized`, `token_expired`, `token_revoked`, `unsupported_version`,
 `session_replaced` (otherwise two processes sharing a token would evict each other forever).

@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,14 @@ type Request struct {
 	BytesOut  int64         `json:"bytes_out"` // response body, tunnel to visitor
 	UserAgent string        `json:"user_agent,omitempty"`
 	Referer   string        `json:"referer,omitempty"` // query masked, fragment dropped
+
+	// ReplayOf is the id of the request this one replays (0 for a real visitor request).
+	ReplayOf uint64 `json:"replay_of,omitempty"`
+	// HasDetail reports that the request was inspected and its Detail is still kept.
+	HasDetail bool `json:"has_detail,omitempty"`
+	// Detail holds headers and bodies of an inspected request. Only Get returns it; Query and Aggregate leave
+	// it nil. It is nil for requests of tunnels that are not inspected and after the detail budget evicted it.
+	Detail *Detail `json:"detail,omitempty"`
 }
 
 // RequestFilter selects requests. Zero fields match everything.
@@ -72,10 +81,79 @@ func (f RequestFilter) Match(r *Request) bool {
 }
 
 // Requests is the thread-safe ring buffer of Request entries.
-type Requests struct{ r *ring[Request] }
+type Requests struct {
+	r *ring[Request]
 
-// NewRequests returns a request journal keeping the last size requests; size <= 0 stores nothing.
-func NewRequests(size int) *Requests { return &Requests{r: newRing[Request](size)} }
+	maxDetail atomic.Int64 // budget of Detail memory, see SetMaxDetailBytes
+	// The fields below are guarded by r.mu.
+	detailBytes int64
+	detailIDs   []uint64 // ids of the entries that hold a Detail, oldest first
+	detailHead  int      // detailIDs[:detailHead] are already gone
+}
+
+// NewRequests returns a request journal keeping the last size requests; size <= 0 stores nothing. Details of
+// inspected requests are limited to DefaultMaxDetailBytes until SetMaxDetailBytes says otherwise.
+func NewRequests(size int) *Requests {
+	q := &Requests{r: newRing[Request](size)}
+	q.maxDetail.Store(DefaultMaxDetailBytes)
+	q.r.onEvict = q.evicting
+	q.r.afterAdd = q.trimDetails
+	return q
+}
+
+// DefaultMaxDetailBytes is the default budget of Detail memory: 64 MiB.
+const DefaultMaxDetailBytes = 64 << 20
+
+// SetMaxDetailBytes sets the memory budget of stored details (headers and bodies of inspected requests). When it
+// is exceeded the details of the oldest requests are dropped; their metadata stays. 0 stores no details. It is
+// safe on a nil *Requests.
+func (q *Requests) SetMaxDetailBytes(n int64) {
+	if q != nil {
+		q.maxDetail.Store(max(n, 0))
+	}
+}
+
+// DetailBytes returns the memory currently charged for stored details.
+func (q *Requests) DetailBytes() int64 {
+	if q == nil {
+		return 0
+	}
+	q.r.mu.RLock()
+	defer q.r.mu.RUnlock()
+	return q.detailBytes
+}
+
+// evicting runs under the ring lock before an entry is overwritten. A stored detail is always the oldest one.
+func (q *Requests) evicting(old *Request) {
+	if old.Detail == nil {
+		return
+	}
+	q.detailBytes -= old.Detail.size
+	q.detailHead++
+	q.compact()
+}
+
+// trimDetails runs under the ring lock after an add and drops the oldest details until the budget holds.
+func (q *Requests) trimDetails() {
+	limit := q.maxDetail.Load()
+	for q.detailBytes > limit && q.detailHead < len(q.detailIDs) {
+		e := q.r.at(q.detailIDs[q.detailHead])
+		q.detailHead++
+		if e == nil || e.Detail == nil {
+			continue
+		}
+		q.detailBytes -= e.Detail.size
+		e.Detail, e.HasDetail = nil, false
+	}
+	q.compact()
+}
+
+func (q *Requests) compact() {
+	if q.detailHead > 64 && q.detailHead*2 > len(q.detailIDs) {
+		q.detailIDs = append(q.detailIDs[:0], q.detailIDs[q.detailHead:]...)
+		q.detailHead = 0
+	}
+}
 
 // Enabled reports whether the journal stores anything (its size is above 0). Callers use it to skip the work of
 // building entries. It is safe on a nil *Requests.
@@ -87,13 +165,29 @@ func (q *Requests) Add(req Request) uint64 {
 	if q == nil {
 		return 0
 	}
+	det := req.Detail
 	req.Host = clip(req.Host, maxHost)
 	req.Tunnel = clip(req.Tunnel, maxName)
 	req.Path = clip(req.Path, maxPath)
 	req.Query = clip(MaskQuery(req.Query), maxQuery)
 	req.UserAgent = clip(req.UserAgent, maxUserAgent)
 	req.Referer = clip(maskURL(req.Referer), maxReferer)
-	return q.r.add(func(id uint64) Request { req.ID = id; return req })
+	req.Detail, req.HasDetail = nil, false
+	var d *Detail
+	if det != nil {
+		if p := det.prepared(); p.size <= q.maxDetail.Load() {
+			d = p
+		}
+	}
+	return q.r.add(func(id uint64) Request {
+		req.ID = id
+		if d != nil {
+			req.Detail, req.HasDetail = d, true
+			q.detailBytes += d.size
+			q.detailIDs = append(q.detailIDs, id)
+		}
+		return req
+	})
 }
 
 // Get returns the request with the given ID while it is still in the buffer.
@@ -121,7 +215,11 @@ func (q *Requests) Query(f RequestFilter) []Request {
 	if limit <= 0 {
 		limit = DefaultLimit
 	}
-	return q.r.collect(f.Match, min(limit, MaxLimit))
+	out := q.r.collect(f.Match, min(limit, MaxLimit))
+	for i := range out {
+		out[i].Detail = nil
+	}
+	return out
 }
 
 // Aggregate summarises every request matching f (Limit is ignored); top lists hold at most topN entries.
