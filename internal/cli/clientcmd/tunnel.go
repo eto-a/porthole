@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -23,13 +24,17 @@ import (
 
 // connFlags are the per-command overrides of the stored credentials.
 type connFlags struct {
-	server string
-	token  string
+	server      string
+	token       string
+	maxAttempts int
 }
 
 func (f *connFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.server, "server", "", "server URL (overrides $"+envServer+" and the config file)")
 	cmd.Flags().StringVar(&f.token, "token", "", "token (overrides $"+envToken+" and the config file)")
+	cmd.Flags().IntVar(&f.maxAttempts, "max-initial-attempts", client.DefaultMaxInitialAttempts,
+		"give up if no connection to the server could be established after this many attempts (0 = retry forever); "+
+			"once connected, the client always reconnects")
 }
 
 // credentials resolves server and token: flag, then environment, then config file.
@@ -177,6 +182,8 @@ func (a *app) runTunnel(cmd *cobra.Command, cf *connFlags, spec client.TunnelSpe
 		Version:   a.version,
 		Logger:    a.logger(cmd),
 		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, sshUser) },
+
+		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})
 	if err != nil {
 		return explain(err)
@@ -200,6 +207,14 @@ func printEvent(out, errOut io.Writer, e client.Event, sshUser string) {
 		fmt.Fprintf(errOut, "tunnel %s closed: %s\n", e.Name, e.Reason)
 	case client.Disconnected:
 		secs := max(1, int(math.Ceil(e.RetryIn.Seconds())))
+		if e.Attempt > 0 {
+			limit := "unlimited"
+			if e.MaxAttempts > 0 {
+				limit = fmt.Sprint(e.MaxAttempts)
+			}
+			fmt.Fprintf(errOut, "cannot connect (attempt %d of %s), retrying in %ds: %v\n", e.Attempt, limit, secs, e.Err)
+			return
+		}
 		fmt.Fprintf(errOut, "reconnecting in %ds: %v\n", secs, e.Err)
 	}
 }
@@ -224,6 +239,10 @@ func (e *explainedError) Unwrap() error { return e.err }
 
 // explain rewrites well-known server errors into actionable messages.
 func explain(err error) error {
+	var ice *client.InitialConnectError
+	if errors.As(err, &ice) {
+		return &explainedError{msg: initialConnectMessage(ice), err: err}
+	}
 	var perr *proto.Error
 	if !errors.As(err, &perr) {
 		return err
@@ -252,4 +271,22 @@ func explain(err error) error {
 		return err
 	}
 	return &explainedError{msg: msg, err: err}
+}
+
+// initialConnectMessage turns a failed first connection into a message with things to check.
+func initialConnectMessage(e *client.InitialConnectError) string {
+	var hint string
+	var dns *net.DNSError
+	switch {
+	case errors.As(e.Err, &dns) && dns.IsNotFound:
+		hint = "the server host name does not resolve; check the server URL for typos"
+	case client.IsTLSVerifyError(e.Err):
+		hint = "the server certificate could not be verified; check that the URL uses the right host name " +
+			"and that the server has a valid certificate"
+	default:
+		hint = "check the server URL (see `porthole login`), that portholed is running, " +
+			"and that no firewall or proxy blocks the connection"
+	}
+	return fmt.Sprintf("could not connect to the server after %d attempt(s): %v\n%s; "+
+		"use --max-initial-attempts 0 to keep retrying", e.Attempts, e.Err, hint)
 }
