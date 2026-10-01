@@ -126,7 +126,7 @@ dependency for ~10 message types.
 - **A token is a client identity.** Each token has a unique `name` (`home`, `office-nas`) that becomes the client
   name. The client name is never taken from the client's request (frp's `user` field mistake).
 - Fields: `id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at`.
-- Scopes (v0.1): `tunnel:http`, `tunnel:tcp`, `tunnel:udp`; default all. Later: `admin`, `connect:<tunnel>`
+- Scopes (v0.1): `tunnel:http`, `tunnel:tcp`, `tunnel:udp`; default all. Later: `admin`, `connect:<client>`
   for private tunnels.
 - Authorization is evaluated on **every** `register` (and for private tunnels on every visitor connection), not only
   at handshake (chisel CVEs). The token row is re-read from the store each time.
@@ -146,15 +146,16 @@ dependency for ~10 message types.
   (sish#313).
 - TCP/UDP: a port from a configured range (default 20000–29999). The port is reserved for `(client, tunnel name)`
   for 24 h after the tunnel goes away, so reconnecting clients get the same address (frp `server/ports.go`).
-  Reservations are persisted in the store in v0.2; in-memory in v0.1.
+  Reservations are persisted in the store in v0.2 (ADR 0003); in-memory in v0.1.
 - SSH (v0.1): `porthole ssh` = TCP tunnel named `ssh` to `localhost:22`, prints a ready `ssh -p` command.
-- SSH gateway (v0.2): `ssh home.ssh.<domain>` via a `ProxyCommand` that `porthole ssh-config` writes into
-  `~/.ssh/config`; the bytes are proxied to the target sshd untouched, so authentication stays end-to-end and the
-  server never sees the plaintext. Routing by SSH username (`ssh home@gw`) was rejected: the gateway would have to
-  terminate SSH and break end-to-end auth (sshpiper model). ProxyJump to a built-in gateway SSH server handling
-  `direct-tcpip` (sish) is the zero-install alternative.
-- Public vs private tunnels (v0.2): `--private` tunnels require the visitor to present a token with
-  `connect:<tunnel>` (HTTP: cookie after a one-time login link; TCP/SSH: through `porthole connect`).
+- SSH gateway (v0.2): `ssh -J <domain>:2222 user@home` (or `ProxyJump` in `~/.ssh/config`) with stock OpenSSH and
+  nothing installed on the visitor. `portholed` runs a forwarding-only SSH server that accepts `direct-tcpip` channels
+  and routes them by name to the client's `ssh` tunnel; the inner SSH session is end to end, so the target's sshd
+  authenticates the user and the server never sees plaintext (sish TCP aliases). Routing by SSH username was rejected:
+  the gateway would have to terminate SSH (sshpiper model). Details: [ADR 0003](docs/adr/0003-ssh-gateway-and-port-reservations.md).
+- Private tunnels (v0.2): only for the SSH gateway. `porthole ssh --private` makes the gateway ask for a porthole token
+  (same client or scope `connect:<client>`) as the SSH password before forwarding. HTTP tunnels stay public: a browser
+  login flow is not planned.
 
 ### 3.5 Server listeners and routing
 
@@ -315,7 +316,7 @@ Everything is `internal/` until someone needs a public Go API (tailscale and pro
 | Version | Scope |
 |---|---|
 | **0.1** | `portholed` + `porthole`; WebSocket+yamux transport; tokens (create/list/revoke/expire) in SQLite; HTTP (incl. WebSocket) and TCP tunnels; `porthole ssh` as TCP:22; reconnect; cert from files; CI, lint, e2e tests |
-| 0.2 — install and forget | `install.sh`, deb/rpm packages, GHCR image; client daemon + systemd; client config with several tunnels; SSH gateway by name + `porthole ssh-config`; private tunnels; persisted port reservations |
+| 0.2 — install and forget | `install.sh`, deb/rpm packages, GHCR image; client daemon + systemd; client config with several tunnels; SSH gateway by name (`ssh -J`); private SSH tunnels; persisted port reservations |
 | 0.3 — managed by agents | Admin API (unix socket / localhost); MCP server with toolsets and read-only mode; `--json` everywhere; narrow admin scopes; audit log; join tokens; threat model |
 | 0.4 — protocols | QUIC transport with auto fallback; UDP tunnels; basic auth and IP allowlists for HTTP tunnels; certmagic DNS-01; Prometheus metrics; bandwidth limits; TLS passthrough |
 
