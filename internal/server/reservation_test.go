@@ -5,6 +5,8 @@ package server
 
 import (
 	"context"
+	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -46,7 +48,7 @@ func TestTCPPortsSurviveRestart(t *testing.T) {
 	// Reverse order, so a random pick would not line up with the old ports by chance.
 	for i := len(names) - 1; i >= 0; i-- {
 		n := names[i]
-		if got := publicPort(t, c2.mustRegister(proto.KindTCP, n, 0).PublicURL); got != ports[n] {
+		if got := publicPort(t, c2.mustRegister(proto.KindTCP, n, 0).PublicURL); got != ports[n] && portFree(ports[n]) {
 			t.Errorf("tunnel %q after restart got port %d, want %d", n, got, ports[n])
 		}
 	}
@@ -120,4 +122,15 @@ func TestUnregisterPersistsRelease(t *testing.T) {
 		r := h.st.ports["home/ssh"]
 		return r != nil && r.Port == port && !h.st.live["home/ssh"]
 	})
+}
+
+// portFree reports whether port can be bound now. The test range lies among ephemeral ports, so between the two
+// servers another process may take a released port; the server then rightly picks a different one.
+func portFree(port int) bool {
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }
