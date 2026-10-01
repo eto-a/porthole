@@ -1,0 +1,11 @@
+# OSV-Scanner configuration, also read by OpenSSF Scorecard (Vulnerabilities check).
+# Format: https://google.github.io/osv-scanner/configuration/
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+# golang.org/x/crypto/openpgp is unmaintained and has no fixed version ("introduced: 0", nothing to upgrade to), so the
+# advisory fires for every project that merely requires golang.org/x/crypto. porthole imports no openpgp package
+# (`go list -deps -test ./... | grep x/crypto/openpgp` is empty) and `go tool govulncheck ./...` reports no called
+# vulnerabilities. Re-evaluate on the date below or when the advisory gets a fixed version.
+ignoreUntil = 2027-04-01
+reason = "x/crypto/openpgp is not imported or called by porthole; the advisory has no fixed version"

@@ -3,7 +3,7 @@
 # Build from the repository root:
 #   docker build -f deploy/Dockerfile --build-arg VERSION=$(git describe --tags --always --dirty) -t portholed .
 
-FROM golang:1.27 AS build
+FROM golang:1.27@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # The data directory must exist and belong to the non-root user (uid/gid 65532) so that a fresh volume is writable.
 RUN mkdir -p /rootfs/var/lib/porthole
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/portholed /usr/local/bin/portholed
 COPY --from=build --chown=65532:65532 /rootfs/var/lib/porthole /var/lib/porthole
