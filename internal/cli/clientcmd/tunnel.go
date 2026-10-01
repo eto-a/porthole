@@ -433,8 +433,13 @@ func sshTarget(tunnelName, clientName string) string {
 // printSSHJump prints the ready-to-use `ssh -J` command and the ~/.ssh/config equivalent.
 func printSSHJump(out io.Writer, h *sshHint, e client.TunnelReady) {
 	target := sshTarget(e.Name, h.client)
-	fmt.Fprintf(out, "  ssh -J %s %s@%s\n", e.SSHJump, h.user, target)
-	fmt.Fprintf(out, "  or once in ~/.ssh/config:  Host %s  /  ProxyJump %s\n", target, e.SSHJump)
+	jump := e.SSHJump
+	if e.Spec.Private {
+		// OpenSSH always tries "none" first; the gateway refuses it, and so asks for a password, only for user "token".
+		jump = "token@" + jump
+	}
+	fmt.Fprintf(out, "  ssh -J %s %s@%s\n", jump, h.user, target)
+	fmt.Fprintf(out, "  or once in ~/.ssh/config:  Host %s  /  ProxyJump %s\n", target, jump)
 	if e.Spec.Private {
 		fmt.Fprintln(out, "  private tunnel: the gateway asks for a porthole token as the password before the usual ssh prompt")
 	}

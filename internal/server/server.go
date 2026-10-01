@@ -60,6 +60,9 @@ type Options struct {
 	RevalidateInterval time.Duration
 	// HandshakeTimeout bounds session establishment (default 10 s).
 	HandshakeTimeout time.Duration
+
+	// SSHIdleTimeout closes SSH gateway connections without open channels after this long (default 60 s).
+	SSHIdleTimeout time.Duration
 }
 
 // Server is the portholed core. Create it with New and always release it with Close (Run and Serve do so).
@@ -75,6 +78,7 @@ type Server struct {
 	hb             time.Duration
 	revalidate     time.Duration
 	hsTimeout      time.Duration
+	sshIdle        time.Duration // gateway connections without channels are closed after this
 	limiter        *failLimiter
 
 	ctx    context.Context
@@ -118,6 +122,7 @@ func New(opts Options) (*Server, error) {
 		hb:         opts.HeartbeatInterval,
 		revalidate: opts.RevalidateInterval,
 		hsTimeout:  opts.HandshakeTimeout,
+		sshIdle:    opts.SSHIdleTimeout,
 		limiter:    newFailLimiter(),
 		sessions:   make(map[string]*session),
 		labels:     make(map[string]*tunnel),
@@ -136,6 +141,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if s.revalidate <= 0 {
 		s.revalidate = defaultRevalidateEvery
+	}
+	if s.sshIdle <= 0 {
+		s.sshIdle = defaultSSHIdleTimeout
 	}
 	if s.hsTimeout <= 0 {
 		s.hsTimeout = defaultHandshakeTimeout
@@ -164,6 +172,11 @@ func (s *Server) Run(ctx context.Context) error {
 // Serve is Run on an existing listener. It takes ownership of ln.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer func() { _ = s.Close() }()
+
+	if err := s.startSSHGateway(ctx); err != nil {
+		_ = ln.Close()
+		return err
+	}
 
 	if s.cfg.TLS.Enabled() {
 		cr, err := newCertReloader(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile, s.log, s.now)
