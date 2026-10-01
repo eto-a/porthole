@@ -1,0 +1,136 @@
+# Installation
+
+You do not need to build anything. Use the install script, a Linux package, a container image, or an archive; all of
+them come from the [GitHub releases](https://github.com/eto-a/porthole/releases) (Linux and macOS on amd64 and arm64;
+Windows has archives only). To build from source instead, see [Building from source](#building-from-source).
+
+> Packages and container images are produced by the release workflow, so they exist for releases made after
+> v0.1.0-alpha.1. That release has archives only; the install script falls back to them.
+
+After installing, continue with [Server setup](server.md) (`portholed`) or the [Client guide](client.md) (`porthole`).
+
+## Install script (Linux and macOS)
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh                   # client: porthole
+$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server    # server: portholed
+```
+
+The script detects your OS and CPU, downloads the release, checks its SHA-256 against `checksums.txt` and installs it,
+using `sudo` only when needed. If [cosign](https://docs.sigstore.dev) is installed it also verifies the signature of
+`checksums.txt`. Nothing is installed when a check fails. To read it first, download it and run it:
+`curl -fsSL -o install.sh https://raw.githubusercontent.com/eto-a/porthole/main/install.sh`, then `sh install.sh --help`.
+
+| Option | Meaning |
+|---|---|
+| `--server` | Install `portholed` instead of `porthole`. On Debian/Ubuntu and RHEL/Fedora (as root or with sudo) this installs the `.deb`/`.rpm`, including the systemd unit and the `porthole` user; elsewhere only the binary |
+| `--version v0.1.0` | Install this release. Default: the latest stable release; while there is no stable release yet, the newest pre-release (the script says so) |
+| `--prerelease` | Take the newest release including pre-releases, even if a stable one exists |
+| `--bin-dir DIR` | Where to put the binary. Default `/usr/local/bin`, or `~/.local/bin` if that is not writable |
+| `--archive` | With `--server`, install the binary from the archive even where a package could be used |
+| `--no-verify-signature` | Skip the cosign check even if cosign is installed (SHA-256 is always checked) |
+| `--dry-run` | Print what would be done and exit |
+
+Without `--version` the script asks the GitHub API for the latest release (60 requests per hour per IP address); with
+`--version` it makes no API call. Without cosign, the SHA-256 check only protects against a corrupted download, not against
+a tampered release: see [Verifying a download](#verifying-a-download).
+
+## Packages (Debian, Ubuntu, Fedora, RHEL and derivatives)
+
+Download the package for your CPU from [Releases](https://github.com/eto-a/porthole/releases) (`portholed_*` is the
+server, `porthole_*` the client; amd64 and arm64) and install it:
+
+```console
+$ sudo apt install ./portholed_<version>_linux_amd64.deb        # Debian, Ubuntu
+$ sudo dnf install ./portholed_<version>_linux_amd64.rpm        # Fedora, RHEL, Rocky, Alma
+$ sudo apt install ./porthole_<version>_linux_amd64.deb         # client
+```
+
+The server package installs the binary in `/usr/bin`, the systemd unit `portholed.service`, an example configuration as
+`/etc/porthole/portholed.yaml` (a conffile: your edits survive upgrades), a `porthole` system user and `/var/lib/porthole`.
+It does **not** start or enable the service, because the configuration has to be edited first (see
+[Server setup](server.md)). Upgrading restarts a running server. Removing the package (`apt remove`, `dnf remove`)
+keeps the configuration, the data directory and the user; `apt purge` also deletes `/var/lib/porthole` (the token
+database) and the user, but leaves anything you added under `/etc/porthole/` (such as certificates).
+
+The client package installs `/usr/bin/porthole`, the systemd unit `porthole.service` of the client daemon, an example
+`/etc/porthole/tunnels.yaml` (kept on upgrade) and the `porthole-client` system user and group. It does not enable or
+start the service either; see [Run the client as a service](client.md#run-the-client-as-a-service). Both packages can be
+installed on one machine: they share only the directory `/etc/porthole`. `apt purge porthole` also deletes
+`/etc/porthole/config.yaml` and `/etc/porthole/token` (the stored credentials) and the user and group.
+
+The packages themselves are not signed (apt and dnf will say so); check them against the signed `checksums.txt` as
+described in [Verifying a download](#verifying-a-download). There is no apt or dnf repository yet.
+
+## Docker
+
+Images are published to GitHub Container Registry for linux/amd64 and linux/arm64, based on distroless and running as
+a non-root user: `ghcr.io/eto-a/porthole/portholed` (server) and `ghcr.io/eto-a/porthole/porthole` (client). Tags are
+the version without the leading `v` (for example `0.1.0`); `latest` follows the newest stable release and is not set
+for pre-releases.
+
+```console
+$ docker run --rm ghcr.io/eto-a/porthole/portholed:<version> version
+$ docker run -d --name portholed --restart unless-stopped \
+    -p 443:443 -p 20000-20099:20000-20099 \
+    -e PORTHOLED_DOMAIN=tun.example.com -e PORTHOLED_TCP_PORT_RANGE=20000-20099 \
+    -e PORTHOLED_TLS_CERT_FILE=/etc/porthole/tls/fullchain.pem -e PORTHOLED_TLS_KEY_FILE=/etc/porthole/tls/privkey.pem \
+    -v /etc/letsencrypt/live/tun.example.com:/etc/porthole/tls:ro \
+    -v porthole-data:/var/lib/porthole \
+    ghcr.io/eto-a/porthole/portholed:<version> serve --config ""
+$ docker exec portholed portholed token create --name home --config ""
+```
+
+The certificate files must be readable by uid 65532 (and `live/` holds symlinks into `archive/`, so mount the
+`/etc/letsencrypt` tree or copy the files). Instead of environment variables you can mount a configuration file at
+`/etc/porthole/portholed.yaml` and drop `--config ""`; see also [deploy/compose.yaml](../deploy/compose.yaml), which builds
+the image from source (more in [Docker Compose](server.md#docker-compose)).
+
+The client image is meant for sidecar use; it reads `PORTHOLE_SERVER` and `PORTHOLE_TOKEN` from the environment and
+reaches targets by host name on the container network:
+
+```console
+$ docker run --rm -e PORTHOLE_SERVER=https://tun.example.com -e PORTHOLE_TOKEN=ph_... \
+    ghcr.io/eto-a/porthole/porthole:<version> http web:8080
+```
+
+## Archives
+
+Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for
+the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static
+binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it.
+
+## Verifying a download
+
+Every release is signed and carries build provenance. `checksums.txt` lists the SHA-256 of every archive and package
+and is signed with cosign (keyless, by the release workflow). To check what you downloaded:
+
+```console
+$ sha256sum --check --ignore-missing checksums.txt
+$ cosign verify-blob --bundle checksums.txt.sigstore.json \
+    --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+$ gh attestation verify porthole_<version>_linux_amd64.tar.gz --repo eto-a/porthole
+```
+
+`gh attestation verify` works the same for the `.deb` and `.rpm` files. Container images are signed with cosign too, and
+their digests carry a build provenance attestation:
+
+```console
+$ cosign verify ghcr.io/eto-a/porthole/portholed:<version> \
+    --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+$ gh attestation verify oci://ghcr.io/eto-a/porthole/portholed:<version> --repo eto-a/porthole
+```
+
+## Building from source
+
+Requires Go 1.27 or newer.
+
+```console
+$ go build ./cmd/...          # binaries in the current directory
+$ make build                  # static, stripped, versioned binaries in ./bin
+$ make lint test              # needs golangci-lint v2
+```
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the development workflow.
