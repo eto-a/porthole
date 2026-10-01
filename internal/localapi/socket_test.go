@@ -5,6 +5,7 @@ package localapi
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -206,13 +207,45 @@ func TestDefaultSocketPaths(t *testing.T) {
 	if len(paths) > 0 {
 		last = paths[len(paths)-1]
 	}
-	if runtime.GOOS == "linux" && last != SystemSocketPath {
-		t.Errorf("DefaultSocketPaths = %v, want the system socket last on Linux", paths)
+	if last != SystemSocketPath {
+		t.Errorf("DefaultSocketPaths = %v, want the system endpoint last", paths)
 	}
-	if runtime.GOOS != "linux" && last == SystemSocketPath {
-		t.Errorf("DefaultSocketPaths = %v contains the system socket on %s", paths, runtime.GOOS)
+	want := map[string]string{
+		"linux":   "/run/porthole/porthole.sock",
+		"darwin":  "/var/run/porthole/porthole.sock",
+		"windows": `\\.\pipe\ProtectedPrefix\Administrators\porthole`,
 	}
-	if SystemSocketPath != "/run/porthole/porthole.sock" {
-		t.Errorf("SystemSocketPath = %q", SystemSocketPath)
+	if w, ok := want[runtime.GOOS]; ok && SystemSocketPath != w {
+		t.Errorf("SystemSocketPath = %q, want %q", SystemSocketPath, w)
+	}
+}
+
+func TestIsPipePath(t *testing.T) {
+	for path, want := range map[string]bool{
+		`\\.\pipe\porthole`:                   true,
+		`\\.\PIPE\ProtectedPrefix\x\porthole`: true,
+		`\\.\pipe\`:                           false,
+		`\\.\pipe`:                            false,
+		`/run/porthole/porthole.sock`:         false,
+		`C:\Users\x\porthole.sock`:            false,
+		``:                                    false,
+	} {
+		if got := IsPipePath(path); got != want {
+			t.Errorf("IsPipePath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+func TestPeerAttrs(t *testing.T) {
+	if got := peerAttrs(t.Context()); got != nil {
+		t.Errorf("peerAttrs without credentials = %v, want nil", got)
+	}
+	ctx := WithPeerCred(t.Context(), Cred{UID: 1000, GID: 100, PID: 42, User: "alice"})
+	if got := fmt.Sprint(peerAttrs(ctx)); got != "[peer_uid 1000 peer_gid 100 peer_pid 42 peer_user alice]" {
+		t.Errorf("peerAttrs = %s", got)
+	}
+	ctx = WithPeerCred(t.Context(), Cred{UID: -1, GID: -1, PID: 7, SID: "S-1-5-21-1", User: `PC\bob`})
+	if got := fmt.Sprint(peerAttrs(ctx)); got != `[peer_pid 7 peer_user PC\bob peer_sid S-1-5-21-1]` {
+		t.Errorf("peerAttrs = %s", got)
 	}
 }

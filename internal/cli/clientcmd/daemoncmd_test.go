@@ -54,7 +54,7 @@ func TestDaemonCommandOptions(t *testing.T) {
 
 	// The invocation of the systemd unit: all three paths given, the system socket is shared with the group.
 	if _, _, err := execute(t, d, "daemon", "--config", cfg, "--tunnels", "/etc/porthole/tunnels.yaml",
-		"--socket", "/run/porthole/porthole.sock"); err != nil {
+		"--socket", localapi.SystemSocketPath); err != nil {
 		t.Fatal(err)
 	}
 	if got.TunnelsPath != "/etc/porthole/tunnels.yaml" || got.SocketPath != localapi.SystemSocketPath || got.SocketMode != 0o660 {

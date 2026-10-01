@@ -6,19 +6,64 @@ package localapi
 import (
 	"context"
 	"net"
+	"os/user"
+	"strconv"
+	"sync"
 )
 
-// Cred is the identity of the process on the other end of a unix socket connection.
-// A field that the platform cannot provide is -1 (on macOS the PID or the GID may be unavailable).
+// Cred is the identity of the process on the other end of a local API connection.
+//
+// UID, GID and PID are -1 when the platform cannot provide them (on macOS the PID or the GID may be unavailable; on
+// Windows there is no UID or GID). SID is the Windows user SID ("S-1-5-21-..."), empty elsewhere. User is the account
+// name of the caller (the Windows account "DOMAIN\name", or the Unix user resolved from UID), empty when it cannot be
+// resolved.
 type Cred struct {
-	UID int
-	GID int
-	PID int
+	UID  int
+	GID  int
+	PID  int
+	SID  string
+	User string
 }
 
-// PeerCred returns the credentials of the peer of c (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS). The second
-// result is false when c is not a unix socket connection or the platform has no peer credentials (Windows).
-func PeerCred(c net.Conn) (Cred, bool) { return peerCred(c) }
+// PeerCred returns the credentials of the peer of c: SO_PEERCRED on Linux, LOCAL_PEERCRED and LOCAL_PEERPID on
+// macOS, GetNamedPipeClientProcessId and the client process token on Windows. The second result is false when c
+// is not a connection of the local API listener or the platform has no peer credentials.
+func PeerCred(c net.Conn) (Cred, bool) {
+	cred, ok := peerCred(c)
+	if ok && cred.User == "" && cred.UID >= 0 {
+		cred.User = unixUserName(cred.UID)
+	}
+	return cred, ok
+}
+
+const maxUserCache = 1024
+
+// userNames caches uid -> user name lookups (a lookup reads /etc/passwd or asks the directory service).
+var userNames struct {
+	mu sync.Mutex
+	m  map[int]string
+}
+
+func unixUserName(uid int) string {
+	userNames.mu.Lock()
+	name, ok := userNames.m[uid]
+	userNames.mu.Unlock()
+	if ok {
+		return name
+	}
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		name = u.Username
+	}
+	userNames.mu.Lock()
+	if userNames.m == nil {
+		userNames.m = make(map[int]string)
+	}
+	if len(userNames.m) < maxUserCache {
+		userNames.m[uid] = name
+	}
+	userNames.mu.Unlock()
+	return name
+}
 
 type credKey struct{}
 
@@ -43,11 +88,26 @@ func PeerCredFromContext(ctx context.Context) (Cred, bool) {
 	return cred, ok
 }
 
-// peerAttrs returns slog key/values describing the caller of a request, for audit-style logging.
+// peerAttrs returns slog key/values describing the caller of a request, for audit-style logging. Fields the
+// platform does not provide (UID and GID are -1 on Windows, SID and User are empty on Unix without a name) are left out.
 func peerAttrs(ctx context.Context) []any {
 	cred, ok := PeerCredFromContext(ctx)
 	if !ok {
 		return nil
 	}
-	return []any{"peer_uid", cred.UID, "peer_gid", cred.GID, "peer_pid", cred.PID}
+	attrs := make([]any, 0, 10)
+	if cred.UID >= 0 {
+		attrs = append(attrs, "peer_uid", cred.UID)
+	}
+	if cred.GID >= 0 {
+		attrs = append(attrs, "peer_gid", cred.GID)
+	}
+	attrs = append(attrs, "peer_pid", cred.PID)
+	if cred.User != "" {
+		attrs = append(attrs, "peer_user", cred.User)
+	}
+	if cred.SID != "" {
+		attrs = append(attrs, "peer_sid", cred.SID)
+	}
+	return attrs
 }

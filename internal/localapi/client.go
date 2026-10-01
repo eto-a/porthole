@@ -30,19 +30,18 @@ const (
 // cleanly; the method then returns nil.
 var ErrStopStream = errors.New("localapi: stop stream")
 
-// Client talks to the local API of a daemon over its unix socket.
+// Client talks to the local API of a daemon over its unix socket or (Windows) named pipe.
 type Client struct {
 	hc   *http.Client
 	base string
 }
 
-// NewClient returns a client for the daemon socket at socketPath. Nothing is dialled until the first call. Call
-// [Client.Close] to release idle connections.
+// NewClient returns a client for the daemon endpoint at socketPath: a unix socket path or, on Windows, a named pipe
+// path (see [Dial]). Nothing is dialled until the first call. Call [Client.Close] to release idle connections.
 func NewClient(socketPath string) *Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			d := net.Dialer{Timeout: dialTimeout}
-			return d.DialContext(ctx, "unix", socketPath)
+			return Dial(ctx, socketPath)
 		},
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		IdleConnTimeout:       clientIdleTimeout,
