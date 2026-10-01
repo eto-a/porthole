@@ -459,3 +459,66 @@ func TestRemoteControlFlag(t *testing.T) {
 		t.Errorf("create --json: %v %v", created, err)
 	}
 }
+
+// A9: token create and revoke work on the database directly, so they write the audit log themselves.
+func TestCreateAndRevokeAreAudited(t *testing.T) {
+	h := newHarness(t)
+	tok := h.create("--name", "home", "--scopes", "tunnel:http")
+	h.mustRun("revoke", "home")
+
+	st, err := store.Open(context.Background(), h.cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	es, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 2 || es[0].Action != "token.revoke" || es[1].Action != "token.create" {
+		t.Fatalf("audit = %+v, want token.create then token.revoke", es)
+	}
+	for _, e := range es {
+		if e.Actor != ActorCLI || e.Target != tok.ID || e.Result != "ok" {
+			t.Errorf("entry %+v", e)
+		}
+		if strings.Contains(e.Args, tok.Secret) {
+			t.Errorf("the secret is in the audit args: %s", e.Args)
+		}
+	}
+}
+
+// A3: --cascade revokes the tokens minted from the target's join links.
+func TestRevokeCascadeFlag(t *testing.T) {
+	h := newHarness(t)
+	parent := h.create("--name", "agent")
+	st, err := store.Open(context.Background(), h.cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := auth.Generate()
+	jc := &store.JoinCode{ID: code.ID, CodeHash: code.Hash(), ClientName: "minted", Scopes: []string{"tunnel:http"}, CreatedAt: h.now, ExpiresAt: h.now.Add(time.Hour), CreatedBy: parent.ID}
+	if err := st.CreateJoinCode(context.Background(), jc); err != nil {
+		t.Fatal(err)
+	}
+	minted, _, err := st.RedeemJoinCode(context.Background(), code.ID, code.Secret, h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	out := h.mustRun("list")
+	if !strings.Contains(out, "CREATED BY") || !strings.Contains(out, parent.ID) {
+		t.Errorf("list does not show who created the minted token:\n%s", out)
+	}
+	h.mustRun("revoke", "agent")
+	if got := h.mustRun("list", "--all"); !strings.Contains(got, "minted") || strings.Count(got, "revoked") != 1 {
+		t.Errorf("plain revoke must keep the minted token:\n%s", got)
+	}
+	if out := h.mustRun("revoke", "--cascade", parent.ID); !strings.Contains(out, minted.ID) {
+		t.Errorf("cascade output: %s", out)
+	}
+	if got := h.mustRun("list", "--all"); strings.Count(got, "revoked") != 2 {
+		t.Errorf("after the cascade both tokens are revoked:\n%s", got)
+	}
+}

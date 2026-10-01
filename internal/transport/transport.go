@@ -57,6 +57,7 @@ type yamuxSession struct {
 	s      *yamux.Session
 	cancel context.CancelFunc // ends the WebSocket's lifetime context
 	remote net.Addr
+	gate   *budgetConn // non-nil until released, see AcceptWebSocketGated
 }
 
 func (y *yamuxSession) Open() (net.Conn, error)   { return y.s.OpenStream() }
@@ -79,6 +80,21 @@ func (y *yamuxSession) watch() {
 // AcceptWebSocket upgrades an HTTP request to a server-side Session.
 // remote is the visitor address to report (the caller decides whether to trust proxy headers).
 func AcceptWebSocket(w http.ResponseWriter, r *http.Request, remote net.Addr) (Session, error) {
+	return acceptWebSocket(w, r, remote, 0)
+}
+
+// AcceptWebSocketGated is AcceptWebSocket for peers that have not authenticated yet: the connection is closed with
+// ErrPreAuthBudget once the peer has sent more than budget bytes, until the returned session's Release is called
+// (it implements Gated). This bounds the memory an anonymous peer can make the server buffer.
+func AcceptWebSocketGated(w http.ResponseWriter, r *http.Request, remote net.Addr, budget int64) (Gated, error) {
+	s, err := acceptWebSocket(w, r, remote, budget)
+	if err != nil {
+		return nil, err
+	}
+	return s.(*yamuxSession), nil
+}
+
+func acceptWebSocket(w http.ResponseWriter, r *http.Request, remote net.Addr, budget int64) (Session, error) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols:    []string{proto.WSSubprotocol},
 		CompressionMode: websocket.CompressionDisabled, // tunnelled data is often already compressed or encrypted
@@ -92,13 +108,20 @@ func AcceptWebSocket(w http.ResponseWriter, r *http.Request, remote net.Addr) (S
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	nc := websocket.NetConn(ctx, c, websocket.MessageBinary)
-	s, err := yamux.Server(nc, yamuxConfig())
+	var gate *budgetConn
+	conn := nc
+	if budget > 0 {
+		gate = &budgetConn{Conn: nc}
+		gate.left.Store(budget)
+		conn = gate
+	}
+	s, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
 		cancel()
 		_ = nc.Close()
 		return nil, fmt.Errorf("transport: yamux server: %w", err)
 	}
-	ys := &yamuxSession{s: s, cancel: cancel, remote: remote}
+	ys := &yamuxSession{s: s, cancel: cancel, remote: remote, gate: gate}
 	go ys.watch()
 	return ys, nil
 }
@@ -122,7 +145,12 @@ func DialWebSocket(ctx context.Context, url string, opts DialOptions) (Session, 
 		tr.TLSClientConfig = opts.TLSConfig
 	}
 	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		HTTPClient:      &http.Client{Transport: tr},
+		// The token travels in the hello message on the resulting connection, so a redirect (to another host, or from
+		// https to http) must not be followed.
+		HTTPClient: &http.Client{
+			Transport:     tr,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		HTTPHeader:      opts.Header,
 		Subprotocols:    []string{proto.WSSubprotocol},
 		CompressionMode: websocket.CompressionDisabled,

@@ -42,7 +42,7 @@ func (s *Server) initHTTPTunnel(t *tunnel) {
 	}
 	t.handler = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			remote := visitorAddr(pr.In, s.cfg.TrustProxyHeaders)
+			remote := s.visitorAddr(pr.In)
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host // the backend sees the hostname the visitor used
 			// ReverseProxy has already dropped every Forwarded/X-Forwarded-* header the visitor sent;
@@ -58,6 +58,11 @@ func (s *Server) initHTTPTunnel(t *tunnel) {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if !errors.Is(err, context.Canceled) {
 				c.log.Debug("tunnel request failed", "tunnel", t.id, "host", r.Host, "err", err)
+			}
+			if bodyStalled(r) {
+				w.Header().Set("Connection", "close")
+				http.Error(w, "request body timed out", http.StatusRequestTimeout)
+				return
 			}
 			http.Error(w, "bad gateway: the tunnel client did not answer", http.StatusBadGateway)
 		},

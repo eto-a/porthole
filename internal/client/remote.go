@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,20 +24,54 @@ const DefaultSSHAddr = "127.0.0.1:22"
 // remotePollInterval is how often handleOpen looks at the tunnel it is waiting for.
 const remotePollInterval = 25 * time.Millisecond
 
-// RemotePolicy decides which local targets the server may ask this client to expose (Options.RemoteOpen). The zero
-// value permits nothing; a nil *RemotePolicy permits everything. The policy is enforced by the client alone: the
-// server cannot widen it.
+// RemotePolicy decides which local targets the server may ask this client to expose (Options.RemoteOpen). The
+// policy is enforced by the client alone: the server cannot widen it.
+//
+// A nil *RemotePolicy is the default: only targets on this machine (a loopback address or "localhost", which includes
+// the default ssh target 127.0.0.1:22). The zero value permits nothing. A policy with Targets permits exactly those
+// "host:port" entries, and one with Any permits every target.
+//
+// Link-local targets (169.254.0.0/16, fe80::/10: cloud metadata services and the like) are refused unless they are
+// listed in Targets verbatim, even under Any.
 type RemotePolicy struct {
 	// Targets are the permitted local targets, normalized with ParseTarget ("host:port"). Matching is exact.
 	Targets []string
+	// Any permits every target except the link-local ones (see above).
+	Any bool
 }
 
 // Permits reports whether a request for the (normalized) local target addr is allowed.
 func (p *RemotePolicy) Permits(addr string) bool {
-	if p == nil {
+	if p != nil && slices.Contains(p.Targets, addr) {
 		return true
 	}
-	return slices.Contains(p.Targets, addr)
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if isLinkLocalHost(host) {
+		return false
+	}
+	if p == nil {
+		return isLoopbackHost(host)
+	}
+	return p.Any
+}
+
+// isLoopbackHost reports whether host names this machine: "localhost" (any case, optional trailing dot) or a loopback
+// IP literal. Other names are not trusted to resolve to a loopback address.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
+}
+
+// isLinkLocalHost reports whether host is a link-local IP literal (IPv4-mapped forms and zones included).
+func isLinkLocalHost(host string) bool {
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLinkLocalUnicast()
 }
 
 // ParseTarget turns a local target into "host:port". A bare port means 127.0.0.1:<port>, and so does ":port".
@@ -167,7 +202,7 @@ func (m *Manager) openTunnel(ctx context.Context, req *proto.OpenRequest) *proto
 	}
 }
 
-// RemoteOpen returns the current policy for server-initiated tunnel requests (nil permits everything).
+// RemoteOpen returns the current policy for server-initiated tunnel requests (nil: this machine only).
 func (m *Manager) RemoteOpen() *RemotePolicy {
 	m.mu.Lock()
 	defer m.mu.Unlock()

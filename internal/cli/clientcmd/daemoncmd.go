@@ -189,6 +189,7 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 	ctx, stop := signalContext(cmd)
 	defer stop()
 	errOut := cmd.ErrOrStderr()
+	warnPlaintext(cmd, server)
 	// A daemon that uses the same token would be replaced by this session and then evict it again.
 	if _, socket, err := a.findDaemon(ctx); err == nil {
 		fmt.Fprintf(errOut, "note: a porthole daemon is running (%s); if it uses the same token, this session replaces "+

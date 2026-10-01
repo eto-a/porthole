@@ -101,7 +101,8 @@ func defaultConfigPath(userConfigDir func() (string, error)) (string, error) {
 	return filepath.Join(dir, "porthole", "config.yaml"), nil
 }
 
-// loadConfig reads the config file. A missing file is not an error and yields an empty config.
+// loadConfig reads the config file. A missing file is not an error and yields an empty config. On Unix a file with an
+// inline token must not be accessible by group or others.
 func loadConfig(path string) (fileConfig, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -111,6 +112,10 @@ func loadConfig(path string) (fileConfig, error) {
 		return fileConfig{}, fmt.Errorf("read config: %w", err)
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return fileConfig{}, fmt.Errorf("read config %s: %w", path, err)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
 	if err != nil {
 		return fileConfig{}, fmt.Errorf("read config %s: %w", path, err)
@@ -123,6 +128,11 @@ func loadConfig(path string) (fileConfig, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return fileConfig{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	// An inline token is a credential like the content of a token_file: refuse a file that group or others can read.
+	if c.Token != "" && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		return fileConfig{}, fmt.Errorf("config %s holds a token but is accessible by group or others (mode %04o); run `chmod 600 %s`",
+			path, fi.Mode().Perm(), path)
 	}
 	return c, nil
 }

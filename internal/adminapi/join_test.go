@@ -167,12 +167,12 @@ func TestJoinScopes(t *testing.T) {
 	if st, resp := e.post(h, "/join", bearer("tok"), `{"client_name":"a"}`); st != http.StatusOK {
 		t.Errorf("create with admin:tokens: %d %s", st, resp)
 	}
-	// No privilege escalation: a token may hand out tunnel scopes, but only the other scopes it holds itself.
+	// No privilege escalation: a token may hand out tunnel scopes, never admin scopes (see security_test.go).
 	if st, resp := e.post(h, "/join", bearer("tok"), `{"client_name":"b","scopes":["admin:traffic"]}`); st != http.StatusForbidden {
 		t.Errorf("grant a scope it lacks: %d %s, want 403", st, resp)
 	}
-	if st, resp := e.post(h, "/join", bearer("rdt"), `{"client_name":"c","scopes":["admin:read"]}`); st != http.StatusOK {
-		t.Errorf("grant a scope it holds: %d %s", st, resp)
+	if st, resp := e.post(h, "/join", bearer("rdt"), `{"client_name":"c","scopes":["tunnel:tcp"]}`); st != http.StatusOK {
+		t.Errorf("grant a tunnel scope: %d %s", st, resp)
 	}
 	if got := e.st.joins[len(e.st.joins)-1].CreatedBy; got != "rdt" {
 		t.Errorf("created_by = %q, want the token id", got)

@@ -172,6 +172,7 @@ func TestProxyProtocolRequestJournal(t *testing.T) {
 func TestProxyProtocolSSHGateway(t *testing.T) {
 	g := newGW(t, func(cfg *config.Config, _ *Options) {
 		cfg.ProxyProtocol = true
+		cfg.ProxyProtocolSSH = true
 		cfg.TrustedProxies = []string{"127.0.0.1"}
 	})
 	g.serveHome(t, "", true)
@@ -221,4 +222,36 @@ func TestProxyProtocolSSHGateway(t *testing.T) {
 	if err := login("", g.homeTok.str); err == nil {
 		t.Fatal("a trusted proxy without a PROXY header was served")
 	}
+}
+
+// TestProxyProtocolSSHOff: proxy_protocol alone leaves the SSH gateway unwrapped, so a trusted-proxy address that
+// sends no header is served normally.
+func TestProxyProtocolSSHOff(t *testing.T) {
+	g := newGW(t, func(cfg *config.Config, _ *Options) {
+		cfg.ProxyProtocol = true
+		cfg.TrustedProxies = []string{"127.0.0.1"}
+	})
+	g.serveHome(t, "", true)
+
+	raw, err := net.DialTimeout("tcp", g.addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
+	cc, chans, reqs, err := ssh.NewClientConn(raw, g.addr, &ssh.ClientConfig{
+		User:            "token",
+		Auth:            []ssh.AuthMethod{ssh.Password(g.homeTok.str)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // test: the host key is not under test
+	})
+	if err != nil {
+		_ = raw.Close()
+		t.Fatalf("gateway refused a plain connection although proxy_protocol_ssh is off: %v", err)
+	}
+	go ssh.DiscardRequests(reqs)
+	go func() {
+		for nc := range chans {
+			_ = nc.Reject(ssh.Prohibited, "")
+		}
+	}()
+	t.Cleanup(func() { _ = cc.Close() })
 }

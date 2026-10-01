@@ -5,47 +5,10 @@ package server
 
 import (
 	"net"
-	"strings"
-
-	"github.com/eto-a/porthole/internal/proto"
 )
 
 // defaultSSHTunnelName is the name of an ssh tunnel registered without one.
 const defaultSSHTunnelName = "ssh"
-
-// lookupSSH resolves the target host of a gateway direct-tcpip request to an ssh tunnel (ADR 0003): "<client>"
-// is the tunnel named "ssh" of that client, "<tunnel>-<client>" the named ssh tunnel of that client. A trailing
-// ".<domain>" and letter case are ignored. Because names may contain hyphens, the whole target is tried as a
-// client first, then every hyphen as the tunnel/client split, from the left. Callers must answer "not found" and
-// "not allowed" identically so that names cannot be enumerated.
-func (s *Server) lookupSSH(target string) (*tunnel, bool) {
-	target = strings.TrimSuffix(strings.ToLower(target), ".")
-	target = strings.TrimSuffix(target, "."+s.domain)
-	if target == "" {
-		return nil, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	find := func(client, name string) *tunnel {
-		c := s.sessions[client]
-		if c == nil || c.dead {
-			return nil
-		}
-		return c.names[proto.KindSSH+":"+name]
-	}
-	if t := find(target, defaultSSHTunnelName); t != nil {
-		return t, true
-	}
-	for i := 0; i < len(target); i++ {
-		if target[i] != '-' {
-			continue
-		}
-		if t := find(target[i+1:], target[:i]); t != nil {
-			return t, true
-		}
-	}
-	return nil, false
-}
 
 // acquire reserves one concurrent-connection slot of t and reports false when the tunnel is at its limit.
 // Every successful acquire must be paired with release.

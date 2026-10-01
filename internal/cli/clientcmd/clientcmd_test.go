@@ -403,3 +403,22 @@ func TestSSHCommandLine(t *testing.T) {
 		t.Error("a URL without a port has no ssh command")
 	}
 }
+
+func TestLoginWarnsAboutPlainHTTP(t *testing.T) {
+	tok := testToken(t)
+	for server, want := range map[string]bool{
+		"http://tun.example.com":  true,
+		"https://tun.example.com": false,
+		"http://127.0.0.1:8080":   false,
+		"http://localhost:8080":   false,
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		_, stderr, err := execute(t, testDeps(nil), "--config", path, "login", server, tok)
+		if err != nil {
+			t.Fatalf("%s: %v", server, err)
+		}
+		if got := strings.Contains(stderr, "plain http://"); got != want {
+			t.Errorf("%s: warned=%v, want %v (stderr %q)", server, got, want, stderr)
+		}
+	}
+}

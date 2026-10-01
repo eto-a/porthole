@@ -61,8 +61,8 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeJoinError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	ip := ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders))
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	ip := ipOf(s.visitorAddr(r))
+	if wait, blocked := s.limiter.blocked(surfaceJoin, ip, s.now()); blocked {
 		s.log.Warn("join refused: too many failed attempts", "ip", ip)
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())))
 		writeJoinError(w, http.StatusTooManyRequests, proto.CodeRateLimited, "too many failed attempts; try again later")
@@ -75,7 +75,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	code, perr := auth.ParseJoin(strings.TrimSpace(req.Code))
 	if err != nil || perr != nil {
-		s.limiter.fail(ip, s.now())
+		s.limiter.fail(surfaceJoin, ip, s.now())
 		writeJoinError(w, http.StatusBadRequest, proto.CodeInvalidJoinCode, "not a porthole join code")
 		return
 	}
@@ -118,7 +118,7 @@ func (s *Server) joinFailed(w http.ResponseWriter, _ *http.Request, ip, id strin
 		writeJoinError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	s.limiter.fail(ip, s.now())
+	s.limiter.fail(surfaceJoin, ip, s.now())
 	s.log.Warn("join refused", "join_id", id, "ip", ip, "code", code)
 	// A wrong secret is not recorded: anyone can send any id, and the audit log must not be fillable that way.
 	if !errors.Is(err, store.ErrNotFound) {

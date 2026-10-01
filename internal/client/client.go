@@ -77,7 +77,7 @@ type Options struct {
 	// tunnels (proto.OpenRequest), subject to RemoteOpen. Only a Manager (the daemon, `porthole start`) can serve such
 	// requests; Run and Check ignore it.
 	AcceptRemoteOpen bool
-	// RemoteOpen limits the local targets a server request may expose. Nil permits every target; see RemotePolicy.
+	// RemoteOpen limits the local targets a server request may expose. Nil permits only targets on this machine; see RemotePolicy.
 	// Change it at run time with Manager.SetRemoteOpen.
 	RemoteOpen *RemotePolicy
 }

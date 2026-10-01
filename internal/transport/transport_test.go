@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,4 +110,32 @@ func TestRejectsPlainHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
+}
+
+// A server that answers the upgrade with a redirect must not receive the client's hello (and with it the token):
+// the dial fails and the redirect target is never contacted.
+func TestDialWebSocketDoesNotFollowRedirects(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if s, err := AcceptWebSocket(w, r, &net.TCPAddr{}); err == nil {
+			_ = s.Close()
+		}
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := DialWebSocket(ctx, "ws"+strings.TrimPrefix(redirector.URL, "http"), DialOptions{})
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("dial followed the redirect")
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the redirect target was contacted %d times", n)
+	}
 }

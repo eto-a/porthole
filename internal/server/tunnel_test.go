@@ -411,7 +411,7 @@ func TestRegisterValidation(t *testing.T) {
 	if e := c.registerErr(proto.KindHTTP, strings.Repeat("b", 32), 0); e.Code != proto.CodeInvalidRequest {
 		t.Errorf("65-char label: got %+v, want invalid_request", e)
 	}
-	if e := c.registerErr(proto.KindUDP, "dns", 0); e.Code != proto.CodeInvalidRequest || !strings.Contains(e.Message, "v0.2") {
+	if e := c.registerErr(proto.KindUDP, "dns", 0); e.Code != proto.CodeInvalidRequest || !strings.Contains(e.Message, "not supported yet") {
 		t.Errorf("udp: got %+v", e)
 	}
 	if e := c.registerErr("carrier-pigeon", "x", 0); e.Code != proto.CodeInvalidRequest {
@@ -514,7 +514,7 @@ func TestClientUnreachable502(t *testing.T) {
 }
 
 func TestTCPConnectionLimit(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, func(cfg *config.Config, _ *Options) { cfg.Limits.MaxConnsPerIP = -1 }) // all connections come from 127.0.0.1
 	c := h.login(h.st.newToken(t, "home"))
 	reg := c.mustRegister(proto.KindTCP, "busy", 0)
 	hold := make(chan struct{})
@@ -560,7 +560,10 @@ func isReset(err error) bool {
 }
 
 func TestTrustProxyHeaders(t *testing.T) {
-	h := newHarness(t, func(cfg *config.Config, _ *Options) { cfg.TrustProxyHeaders = true })
+	h := newHarness(t, func(cfg *config.Config, _ *Options) {
+		cfg.TrustProxyHeaders = true
+		cfg.TrustedProxies = []string{"127.0.0.0/8", "10.0.0.0/8"} // the test client and the proxy chain
+	})
 	backend, seen := recordingBackend(t)
 	c := h.login(h.st.newToken(t, "home"))
 	c.mustRegister(proto.KindHTTP, "web", 0)
@@ -569,7 +572,7 @@ func TestTrustProxyHeaders(t *testing.T) {
 	h.get("web-home.example.test", "/", http.Header{"X-Forwarded-For": {"203.0.113.7, 10.0.0.1"}})
 	got := <-seen
 	if v := got.header.Get("X-Forwarded-For"); v != "203.0.113.7" {
-		t.Errorf("X-Forwarded-For = %q, want the first trusted address", v)
+		t.Errorf("X-Forwarded-For = %q, want the right-most address that is not a trusted proxy", v)
 	}
 	if hdr := <-c.headers; hdr.RemoteAddr != "203.0.113.7:0" {
 		t.Errorf("stream remote_addr = %q", hdr.RemoteAddr)
@@ -577,6 +580,7 @@ func TestTrustProxyHeaders(t *testing.T) {
 }
 
 func TestVisitorAddr(t *testing.T) {
+	var srv *Server
 	cases := []struct {
 		trust bool
 		xff   string
@@ -585,18 +589,19 @@ func TestVisitorAddr(t *testing.T) {
 		{false, "1.2.3.4", "9.9.9.9:5555"},
 		{true, "", "9.9.9.9:5555"},
 		{true, "1.2.3.4", "1.2.3.4:0"},
-		{true, "1.2.3.4, 5.6.7.8", "1.2.3.4:0"},
+		{true, "1.2.3.4, 5.6.7.8", "5.6.7.8:0"}, // the proxy appends: the left side is client-controlled
 		{true, "2001:db8::1", "[2001:db8::1]:0"},
 		{true, "::ffff:1.2.3.4", "1.2.3.4:0"},
 		{true, "garbage", "9.9.9.9:5555"},
 	}
 	for _, tc := range cases {
+		srv = newHarness(t, func(cfg *config.Config, _ *Options) { cfg.TrustProxyHeaders = tc.trust }).srv
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = "9.9.9.9:5555"
 		if tc.xff != "" {
 			r.Header.Set("X-Forwarded-For", tc.xff)
 		}
-		if got := visitorAddr(r, tc.trust); got != tc.want {
+		if got := srv.visitorAddr(r); got != tc.want {
 			t.Errorf("trust=%v xff=%q: got %q, want %q", tc.trust, tc.xff, got, tc.want)
 		}
 	}

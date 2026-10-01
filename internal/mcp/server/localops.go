@@ -25,7 +25,9 @@ type LocalOps struct {
 	Traffic *traffic.Log
 	// ServerURL is the public URL join links are built on.
 	ServerURL string
-	Now       func() time.Time
+	// MaxTunnelsPerClient is the server's per-client tunnel limit, the cap for links made by bearer tokens (0: none).
+	MaxTunnelsPerClient int
+	Now                 func() time.Time
 }
 
 var _ Ops = (*LocalOps)(nil)
@@ -80,7 +82,7 @@ func (o *LocalOps) Tokens(ctx context.Context) ([]adminapi.Token, error) {
 		out = append(out, adminapi.Token{
 			ID: t.ID, Name: t.Name, Last4: t.Last4, Scopes: nonNil(t.Scopes), MaxTunnels: t.MaxTunnels,
 			CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt, LastUsedAt: t.LastUsedAt,
-			RemoteControl: t.RemoteControl,
+			RemoteControl: t.RemoteControl, CreatedBy: t.CreatedBy,
 		})
 	}
 	return out, nil
@@ -89,11 +91,9 @@ func (o *LocalOps) Tokens(ctx context.Context) ([]adminapi.Token, error) {
 func (o *LocalOps) RevokeToken(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	// By id only: Store.RevokeToken also accepts names, which the tools do not.
-	if _, err := o.Store.GetToken(ctx, id); err != nil {
-		return err
-	}
-	return o.Store.RevokeToken(ctx, id, o.now())
+	// By id only: Store.RevokeToken also accepts names, which the tools do not. The live sessions of the token end
+	// at once, as with the admin API.
+	return adminapi.RevokeToken(ctx, o.Store, o.Backend, id, o.now())
 }
 
 // CreateJoinLink stores a one-time join code through adminapi.CreateJoin, the code behind POST join, so that the
@@ -111,7 +111,9 @@ func (o *LocalOps) CreateJoinLink(ctx context.Context, p JoinLinkParams) (JoinLi
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 	jc, err := adminapi.CreateJoin(ctx, o.Store, o.ServerURL, o.now(),
-		adminapi.Grantor{Actor: c.actor, Trusted: c.trusted, Scopes: c.scopes}, req)
+		adminapi.Grantor{
+			Actor: c.actor, Trusted: c.trusted, Scopes: c.scopes, Name: c.name, ExpiresAt: c.expires, MaxTunnels: o.MaxTunnelsPerClient,
+		}, req)
 	if err != nil {
 		return JoinLink{}, err
 	}

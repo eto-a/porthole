@@ -46,6 +46,9 @@ type JoinCreated struct {
 	Command    string    `json:"command"` // "porthole join <link>"
 	ClientName string    `json:"client_name"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	// TokenExpiresAt is when the token the link creates expires; nil = never. A bearer token's request is capped at
+	// the creator's own expiry, so it may be earlier than asked.
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
 }
 
 // JoinCode describes one join code in the list. It never holds the code or its hash.
@@ -116,11 +119,15 @@ func (a *API) createJoin(w http.ResponseWriter, r *http.Request) {
 
 // newJoin validates req, stores the code and returns the response.
 func (a *API) newJoin(ctx context.Context, p principal, req *JoinRequest) (*JoinCreated, *store.JoinCode, error) {
-	return newJoinCode(ctx, a.st, a.serverURL, a.now(), p, req)
+	return newJoinCode(ctx, a.st, a.serverURL, a.maxTunnels, a.now(), p, req)
 }
 
 // newJoinCode is newJoin without the API: the admin API and the MCP server share it.
-func newJoinCode(ctx context.Context, st Store, serverURL string, now time.Time, p principal, req *JoinRequest) (*JoinCreated, *store.JoinCode, error) {
+//
+// A caller that is not trusted (a bearer token) cannot make a token more powerful or longer-lived than itself: no admin
+// scopes, connect:<client> only for clients it may connect to, at most maxTunnels tunnels, and neither the link nor
+// the minted token outlives the caller's own token. Only the admin socket is exempt.
+func newJoinCode(ctx context.Context, st Store, serverURL string, maxTunnels int, now time.Time, p principal, req *JoinRequest) (*JoinCreated, *store.JoinCode, error) {
 	if !auth.ValidName(req.ClientName) {
 		return nil, nil, errBadRequest("client_name must be 1-32 characters of a-z, 0-9 and '-', not starting or ending with '-'")
 	}
@@ -134,6 +141,9 @@ func newJoinCode(ctx context.Context, st Store, serverURL string, now time.Time,
 	}
 	if req.MaxTunnels < 0 {
 		return nil, nil, errBadRequest("max_tunnels must not be negative")
+	}
+	if !p.trusted && maxTunnels > 0 && req.MaxTunnels > maxTunnels {
+		return nil, nil, errBadRequest(fmt.Sprintf("max_tunnels must not exceed the server limit of %d", maxTunnels))
 	}
 	ttl := store.DefaultJoinTTL
 	if req.TTL != "" {
@@ -156,6 +166,16 @@ func newJoinCode(ctx context.Context, st Store, serverURL string, now time.Time,
 		t := now.Add(d)
 		tokExp = &t
 	}
+	if !p.trusted && p.tok != nil && p.tok.ExpiresAt != nil {
+		limit := *p.tok.ExpiresAt
+		if !limit.After(now.Add(minJoinTTL)) {
+			return nil, nil, errForbidden("the calling token expires too soon to create a join link")
+		}
+		if tokExp == nil || tokExp.After(limit) {
+			tokExp = &limit
+		}
+		ttl = min(ttl, limit.Sub(now))
+	}
 	remote := req.RemoteControl == nil || *req.RemoteControl
 
 	code, err := auth.Generate()
@@ -173,11 +193,16 @@ func newJoinCode(ctx context.Context, st Store, serverURL string, now time.Time,
 		return nil, nil, err
 	}
 	link := JoinLink(serverURL, code.JoinString())
-	return &JoinCreated{ID: jc.ID, Link: link, Command: "porthole join " + link, ClientName: jc.ClientName, ExpiresAt: jc.ExpiresAt.UTC()}, jc, nil
+	return &JoinCreated{
+		ID: jc.ID, Link: link, Command: "porthole join " + link, ClientName: jc.ClientName, ExpiresAt: jc.ExpiresAt.UTC(),
+		TokenExpiresAt: tokExp,
+	}, jc, nil
 }
 
-// checkScopes validates the scopes of a join code and stops a caller from handing out more than it has: besides the
-// tunnel and connect scopes, a token may only grant scopes it holds itself. The socket may grant anything.
+// checkScopes validates the scopes of a join code and stops a caller from handing out more than it has. A bearer
+// token may grant tunnel scopes, and connect:<client> only if it holds that scope or is that client; admin scopes it
+// may never grant (else a token with admin:tokens could mint itself a permanent copy that survives its revocation).
+// The socket may grant anything.
 func checkScopes(p principal, in []string) ([]string, error) {
 	var out []string
 	for _, s := range in {
@@ -185,18 +210,19 @@ func checkScopes(p principal, in []string) ([]string, error) {
 		if !auth.ValidScope(s) {
 			return nil, errBadRequest("unknown scope " + strconv.Quote(s))
 		}
-		if !p.trusted && !isEnrolmentScope(s) && !p.allows(s) {
-			return nil, errForbidden("cannot grant scope " + s + ": the calling token does not hold it")
+		if !p.trusted {
+			if strings.HasPrefix(s, "admin:") {
+				return nil, errForbidden("cannot grant scope " + s + ": admin scopes can only be granted through the local admin socket")
+			}
+			if client, ok := strings.CutPrefix(s, "connect:"); ok && !p.allows(s) && p.name() != client {
+				return nil, errForbidden("cannot grant scope " + s + ": the calling token neither holds it nor is that client")
+			}
 		}
 		if !slices.Contains(out, s) {
 			out = append(out, s)
 		}
 	}
 	return out, nil
-}
-
-func isEnrolmentScope(s string) bool {
-	return strings.HasPrefix(s, "tunnel:") || strings.HasPrefix(s, "connect:")
 }
 
 // joinAuditArgs describes the create call for the audit log: no secret exists yet at this point, and none is logged.
@@ -263,14 +289,20 @@ type Grantor struct {
 	Trusted bool
 	// Scopes are the scopes the caller holds; ignored when Trusted.
 	Scopes []string
+	// Name is the client name of the caller's token (it may be granted connect:<Name>); ignored when Trusted.
+	Name string
+	// ExpiresAt is the expiry of the caller's token, nil for none; links and minted tokens are capped by it.
+	ExpiresAt *time.Time
+	// MaxTunnels is the server's per-client limit (0 = none), the cap for MaxTunnels of the link.
+	MaxTunnels int
 }
 
 // CreateJoin validates req and stores a one-time join code under the same rules as POST join, and returns the link.
 // serverURL is the public URL the link is built on. Failures are *Error with the codes the API uses
 // (invalid_request, forbidden, conflict).
 func CreateJoin(ctx context.Context, st Store, serverURL string, now time.Time, g Grantor, req JoinRequest) (JoinCreated, error) {
-	p := principal{actor: g.Actor, trusted: g.Trusted, tok: &store.Token{Scopes: g.Scopes}}
-	created, _, err := newJoinCode(ctx, st, serverURL, now, p, &req)
+	p := principal{actor: g.Actor, trusted: g.Trusted, tok: &store.Token{Name: g.Name, Scopes: g.Scopes, ExpiresAt: g.ExpiresAt}}
+	created, _, err := newJoinCode(ctx, st, serverURL, g.MaxTunnels, now, p, &req)
 	if err != nil {
 		status, code, msg := classify(err)
 		if status == http.StatusInternalServerError {

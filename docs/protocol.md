@@ -109,7 +109,8 @@ never sends `open_request` to a client without the feature (the operator gets `c
 
 `open_result` (client → server): `{req_id, ok, tunnel: {name, kind, public_url, ssh_jump}, error: {code, message}}`.
 On `ok` the `tunnel` is set, otherwise the `error`. The client applies its own `allow_remote` policy (error code
-`not_allowed`) before it opens anything. The server waits 15 s for the result and then reports `timeout`; a late
+`not_allowed`) before it opens anything: by default only loopback targets and `ssh`, with `allow_remote: any` every
+target except link-local addresses. The server waits 15 s for the result and then reports `timeout`; a late
 result is ignored.
 
 ### 3.3 Liveness

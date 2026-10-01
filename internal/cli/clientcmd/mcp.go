@@ -16,13 +16,15 @@ import (
 // newMCPCmd is `porthole mcp`: the agent-facing MCP server on stdio (ADR 0005, surface B). Every tool call looks
 // for the daemon anew (--socket, $PORTHOLE_SOCKET, then the default sockets), so the agent may start first.
 func (a *app) newMCPCmd() *cobra.Command {
-	var readOnly bool
+	var readOnly, allowRemote bool
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Serve MCP tools on stdio to open and close tunnels through the local daemon",
 		Long: "Serve MCP tools (open_tunnel, close_tunnel, list_tunnels, status) on stdin/stdout, e.g. for\n" +
 			"`claude mcp add porthole-local -- porthole mcp`. The tools talk to the local porthole daemon over its unix\n" +
-			"socket; access to the socket is the permission, no token is involved.",
+			"socket; access to the socket is the permission, no token is involved.\n" +
+			"open_tunnel only exposes services on this machine (127.0.0.1, ::1, localhost) unless --allow-remote-targets is\n" +
+			"given; use --read-only when the agent reads untrusted content.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			dial := func(ctx context.Context) (mcpclient.Daemon, func(), error) {
@@ -33,7 +35,7 @@ func (a *app) newMCPCmd() *cobra.Command {
 				return cl, cl.Close, nil
 			}
 			// stdout carries the protocol: logs go to stderr.
-			srv, err := mcpclient.New(mcpclient.Options{Dial: dial, ReadOnly: readOnly, Logger: a.logger(cmd), Version: a.version})
+			srv, err := mcpclient.New(mcpclient.Options{Dial: dial, ReadOnly: readOnly, AllowRemoteTargets: allowRemote, Logger: a.logger(cmd), Version: a.version})
 			if err != nil {
 				return err
 			}
@@ -44,5 +46,7 @@ func (a *app) newMCPCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "serve no tool that changes anything (only status and list_tunnels)")
+	cmd.Flags().BoolVar(&allowRemote, "allow-remote-targets", false,
+		"let open_tunnel publish hosts other than this machine (LAN addresses, names); by default only 127.0.0.1, ::1 and localhost")
 	return cmd
 }

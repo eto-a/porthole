@@ -12,6 +12,9 @@ jobs:
     name: release
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Repository environment with required reviewers and a deployment tag policy (v*): the job waits for approval
+    # before it gets any secret or token. Create it under Settings > Environments.
+    environment: release
     permissions:
       contents: write # create the GitHub release and upload assets
       id-token: write # keyless signing (cosign) and build provenance attestation
@@ -23,6 +26,18 @@ jobs:
         with:
           fetch-depth: 0 # goreleaser needs the tag history for the changelog
           persist-credentials: false
+      - name: Require the tagged commit to be on main
+        # A tag can point at any commit, including one that was never reviewed. Only commits reachable from main (which
+        # is protected: pull requests with checks) may be released. This is a second line of defence: the workflow
+        # file comes from the tagged commit, so the real barriers are the tag ruleset and the environment's approval.
+        env:
+          TAGGED_SHA: ${{ github.sha }}
+        run: |
+          # fetch-depth: 0 above already fetched every branch, so origin/main is there.
+          if ! git merge-base --is-ancestor "$TAGGED_SHA" origin/main; then
+            echo "::error::tagged commit $TAGGED_SHA is not in the history of main; refusing to release"
+            exit 1
+          fi
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

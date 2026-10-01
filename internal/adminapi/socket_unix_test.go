@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -80,7 +81,8 @@ func TestSocketClientMethods(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 	es, err := c.Audit(ctx, 2)
-	if err != nil || len(es) != 2 || es[1].Action != "token.revoke" || es[1].Actor != ActorSocket {
+	// The fake store lists newest first, like the real one.
+	if err != nil || len(es) != 2 || es[0].Action != "token.revoke" || es[0].Actor != ActorSocket || es[1].Action != "tunnel.close" {
 		t.Fatalf("audit %+v, %v", es, err)
 	}
 }
@@ -125,5 +127,33 @@ func TestListenUnixStale(t *testing.T) {
 	}
 	if _, err := os.Stat(reg); err != nil {
 		t.Errorf("regular file is gone: %v", err)
+	}
+}
+
+// A11: the socket gets its final mode before it appears at its path, and the process umask is left alone (a umask
+// change would race with files created by other goroutines).
+func TestListenUnixModeAndUmask(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "admin.sock")
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+
+	ln, err := ListenUnix(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := syscall.Umask(0o022); got != 0o022 {
+		t.Errorf("umask is %o after ListenUnix, want it untouched (022)", got)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("socket = %v, %v; want a socket with mode 0600", fi, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("leftover files next to the socket: %v", entries)
+	}
+	_ = ln.Close()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Errorf("socket file not removed on Close: %v", err)
 	}
 }

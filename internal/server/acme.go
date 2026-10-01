@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -34,7 +33,7 @@ type acmeManager struct {
 // TLS-ALPN-01 and HTTP-01 are enabled, and only names accepted by allowCertName are ever requested.
 func (s *Server) newACME() (*acmeManager, error) {
 	dir := filepath.Join(s.cfg.DataDir, "certs")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := ensurePrivateDir(dir, s.log); err != nil {
 		return nil, fmt.Errorf("server: acme: %w", err)
 	}
 	zl := zap.New(&zapSlogCore{log: s.log.With("component", "acme")})
@@ -66,6 +65,7 @@ func (s *Server) newACME() (*acmeManager, error) {
 	}
 	m.issuer = certmagic.NewACMEIssuer(m.magic, tmpl)
 	m.magic.Issuers = []certmagic.Issuer{m.issuer}
+	s.certBudget.exists = m.hasCert
 	return m, nil
 }
 
@@ -84,19 +84,24 @@ func (m *acmeManager) close() { m.cache.Stop() }
 // is requested only for the control host <domain> and for <label>.<domain> where label belongs to a live tunnel
 // or to one whose client disconnected within the offline grace period. Everything else (unknown labels, nested
 // names, other domains, IP addresses) fails the handshake without contacting the CA.
-func (s *Server) allowCertName(_ context.Context, name string) error {
+func (s *Server) allowCertName(ctx context.Context, name string) error {
 	host := normalizeHost(name)
 	if host == s.domain {
 		return nil
 	}
 	label, ok := s.labelOf(host)
 	if !ok {
-		s.log.Warn("certificate refused: name is not the control host or a tunnel host", "host", name)
+		// Scanners and stray SNI names: Debug, not Warn, so they cannot flood the log.
+		s.log.Debug("certificate refused: name is not the control host or a tunnel host", "host", name)
 		return errors.New("name is not served by this server")
 	}
 	if !s.labelKnown(label) {
-		s.log.Warn("certificate refused: no live tunnel with this label", "host", name)
+		s.log.Debug("certificate refused: no live tunnel with this label", "host", name)
 		return errors.New("no tunnel with this label")
+	}
+	if err := s.certBudget.allow(ctx, host, s.labelClient(label), s.now()); err != nil {
+		s.log.Warn("certificate refused: issuance budget", "host", name, "err", err)
+		return fmt.Errorf("certificate budget: %w", err)
 	}
 	return nil
 }
@@ -165,7 +170,7 @@ func (s *Server) startHTTPListener(ctx context.Context, addr string, h http.Hand
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
+		ErrorLog:          httpErrorLog(s.log),
 	}
 	if !s.start(func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

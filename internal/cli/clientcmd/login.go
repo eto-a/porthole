@@ -56,6 +56,7 @@ func (a *app) newLoginCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnPlaintext(cmd, server)
 			if err := saveConfig(path, fileConfig{Server: server, Token: token}); err != nil {
 				return err
 			}

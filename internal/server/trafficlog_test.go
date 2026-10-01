@@ -140,7 +140,10 @@ func TestTrafficHTTPErrorsAndOffline(t *testing.T) {
 }
 
 func TestTrafficTrustProxyIP(t *testing.T) {
-	h := newHarness(t, func(cfg *config.Config, _ *Options) { cfg.TrustProxyHeaders = true })
+	h := newHarness(t, func(cfg *config.Config, _ *Options) {
+		cfg.TrustProxyHeaders = true
+		cfg.TrustedProxies = []string{"127.0.0.0/8", "10.0.0.0/8"}
+	})
 	backend, _ := recordingBackend(t)
 	c := h.login(h.st.newToken(t, "home"))
 	c.mustRegister(proto.KindHTTP, "web", 0)
@@ -148,7 +151,7 @@ func TestTrafficTrustProxyIP(t *testing.T) {
 
 	h.get("web-home.example.test", "/", http.Header{"X-Forwarded-For": {"203.0.113.7, 10.0.0.1"}})
 	if e := waitRequests(t, h.srv, traffic.RequestFilter{}, 1)[0]; e.VisitorIP != "203.0.113.7" {
-		t.Errorf("visitor ip %q, want the first X-Forwarded-For address", e.VisitorIP)
+		t.Errorf("visitor ip %q, want the right-most X-Forwarded-For address that is not a trusted proxy", e.VisitorIP)
 	}
 }
 

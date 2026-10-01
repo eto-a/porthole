@@ -47,7 +47,12 @@ func newRoot() *cobra.Command {
 
 	load := func() (*config.Config, error) { return config.Load(configPath) }
 	openStore := func(ctx context.Context, cfg *config.Config) (store.Store, error) {
-		return store.Open(ctx, cfg.DBPath())
+		st, err := store.Open(ctx, cfg.DBPath())
+		if err != nil {
+			return nil, err
+		}
+		st.SetAuditMaxRows(cfg.Audit.MaxRows)
+		return st, nil
 	}
 
 	root.AddCommand(

@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	portclient "github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/localapi"
 )
 
@@ -42,6 +43,10 @@ type Options struct {
 	Dial Dial
 	// ReadOnly registers no tool that changes anything.
 	ReadOnly bool
+	// AllowRemoteTargets lets open_tunnel publish targets other than this machine (loopback, localhost). Without it
+	// a prompt-injected agent could expose LAN hosts or other users' local services. Link-local addresses (cloud
+	// metadata) are refused either way.
+	AllowRemoteTargets bool
 	// ReadyTimeout bounds how long open_tunnel waits for the tunnel to come up. Default 15 s.
 	ReadyTimeout time.Duration
 	Logger       *slog.Logger
@@ -104,11 +109,16 @@ func New(opts Options) (*mcp.Server, error) {
 		Name: "open_tunnel",
 		Description: "Expose a local service to the internet through the porthole server and return its public address. " +
 			"The tunnel lasts until close_tunnel or a daemon restart. This makes the service reachable by anyone with the " +
-			"address (ssh: only with a porthole token when private=true), so open only what the user asked for.",
-		Annotations: &mcp.ToolAnnotations{DestructiveHint: &f, IdempotentHint: false, OpenWorldHint: &t},
+			"address (ssh: only with a porthole token when private=true), so open only what the user asked for. " +
+			"Only services on this machine (127.0.0.1, ::1, localhost) can be exposed unless the user started the MCP " +
+			"server with --allow-remote-targets.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: &t, IdempotentHint: false, OpenWorldHint: &t},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in openIn) (*mcp.CallToolResult, localapi.Tunnel, error) {
 		if !slices.Contains([]string{localapi.TypeHTTP, localapi.TypeTCP, localapi.TypeSSH}, in.Type) {
 			return nil, localapi.Tunnel{}, errors.New("type must be http, tcp or ssh")
+		}
+		if err := s.checkTarget(in); err != nil {
+			return nil, localapi.Tunnel{}, err
 		}
 		var tun localapi.Tunnel
 		err := s.with(ctx, func(ctx context.Context, d Daemon) error {
@@ -152,6 +162,27 @@ type closeIn struct {
 
 type closeOut struct {
 	OK bool `json:"ok"`
+}
+
+// checkTarget refuses a local_addr that is not on this machine, unless the operator allowed other targets.
+func (s *server) checkTarget(in openIn) error {
+	if in.Type == localapi.TypeSSH && in.LocalAddr == "" {
+		return nil // the daemon's default: 127.0.0.1:22
+	}
+	addr, err := portclient.ParseTarget(in.LocalAddr)
+	if err != nil {
+		return err
+	}
+	policy := (*portclient.RemotePolicy)(nil) // this machine only
+	if s.opts.AllowRemoteTargets {
+		policy = &portclient.RemotePolicy{Any: true}
+	}
+	if !policy.Permits(addr) {
+		s.opts.Logger.Warn("open_tunnel refused", "local", addr)
+		return fmt.Errorf("refused: %s is not a service on this machine; only 127.0.0.1, ::1 and localhost can be exposed "+
+			"(the user can start `porthole mcp --allow-remote-targets` to allow other hosts; link-local addresses stay refused)", addr)
+	}
+	return nil
 }
 
 // with dials the daemon for one call and turns its errors into text for the model.

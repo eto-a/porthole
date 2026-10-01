@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, body string) string {
@@ -299,5 +300,42 @@ func TestTrafficInspectSettings(t *testing.T) {
 	t.Setenv("PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES", "-1")
 	if _, err := Load(write(t, base)); err == nil || !strings.Contains(err.Error(), "traffic.max_detail_bytes") {
 		t.Fatalf("negative budget: %v", err)
+	}
+}
+
+func TestLimitsAndACMEBudget(t *testing.T) {
+	c, err := Load(write(t, `version: 1
+domain: tun.example.com
+data_dir: /tmp/x
+limits:
+  max_conns_per_ip: 8
+  tcp_idle_timeout: 30m
+  max_http_requests_per_tunnel: -1
+  http_body_idle_timeout: 15s
+  max_pending_handshakes: 100
+  max_pending_handshakes_per_ip: 4
+tls:
+  acme:
+    max_new_names_per_day: 20
+    max_new_names_per_client_per_hour: 5
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := c.Limits
+	if l.MaxConnsPerIP != 8 || l.TCPIdleTimeout != 30*time.Minute || l.MaxHTTPRequestsPerTunnel != -1 ||
+		l.HTTPBodyIdleTimeout != 15*time.Second || l.MaxPendingHandshakes != 100 || l.MaxPendingHandshakesPerIP != 4 {
+		t.Errorf("limits: %+v", l)
+	}
+	if c.TLS.ACME.MaxNewNamesPerDay != 20 || c.TLS.ACME.MaxNewNamesPerClientPerHour != 5 {
+		t.Errorf("acme budget: %+v", c.TLS.ACME)
+	}
+	// Unset means "use the built-in default" (0).
+	d, err := Load(write(t, "version: 1\ndomain: tun.example.com\ndata_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Limits != (Limits{}) || d.TLS.ACME.MaxNewNamesPerDay != 0 {
+		t.Errorf("unset limits must stay zero: %+v", d.Limits)
 	}
 }

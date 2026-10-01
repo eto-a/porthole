@@ -5,6 +5,7 @@ package traffic
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -21,15 +22,31 @@ const (
 	maxName      = 255
 )
 
-// sensitiveParts are matched case-insensitively as substrings of a query parameter name, so api_key,
-// access_token and X-Auth are covered together with token, key, password, secret and auth.
-var sensitiveParts = []string{"token", "key", "password", "passwd", "secret", "auth"}
+// sensitiveParts are matched case-insensitively as substrings of a query parameter name, so api_key, apikey,
+// access_token, refresh_token, client_secret and X-Auth are covered together with token, key, password, secret, auth,
+// signature, session and credential.
+var sensitiveParts = []string{"token", "key", "password", "passwd", "secret", "auth", "signature", "session", "credential"}
+
+// sensitiveNames are short names that would match too much as substrings ("code" is in "encode" and "zipcode"), so
+// they are masked only as the whole name: OAuth codes, presigned-URL signatures, session ids, JWTs, one-time codes.
+var sensitiveNames = []string{"code", "sig", "sid", "jwt", "otp", "ticket"}
+
+// sensitivePrefixes: AWS presigned URLs carry X-Amz-Signature, X-Amz-Credential, X-Amz-Security-Token and more.
+var sensitivePrefixes = []string{"x-amz-"}
 
 func sensitiveParam(name string) bool {
 	if dec, err := url.QueryUnescape(name); err == nil {
 		name = dec
 	}
 	name = strings.ToLower(name)
+	if slices.Contains(sensitiveNames, name) {
+		return true
+	}
+	for _, p := range sensitivePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
 	for _, p := range sensitiveParts {
 		if strings.Contains(name, p) {
 			return true

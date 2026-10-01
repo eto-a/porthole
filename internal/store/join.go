@@ -155,12 +155,13 @@ func (s *SQLite) RedeemJoinCode(ctx context.Context, id, secret string, now time
 		CreatedAt:     now,
 		ExpiresAt:     jc.TokenExpiresAt,
 		RemoteControl: jc.RemoteControl,
+		CreatedBy:     jc.CreatedBy,
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, remote_control)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, remote_control, created_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		tok.ID, tok.Name, tok.SecretHash, tok.Last4, strings.Join(tok.Scopes, ","), tok.MaxTunnels,
-		now.UnixMilli(), msOrNull(tok.ExpiresAt), tok.RemoteControl); err != nil {
+		now.UnixMilli(), msOrNull(tok.ExpiresAt), tok.RemoteControl, tok.CreatedBy); err != nil {
 		if isUniqueViolation(err) {
 			return nil, "", fmt.Errorf("token name %q: %w", tok.Name, ErrNameTaken)
 		}

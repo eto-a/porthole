@@ -28,17 +28,19 @@ func (s *Server) newAdminAPI() (*adminapi.API, error) {
 		Backend:      adminBackend{s},
 		Store:        s.store,
 		Authenticate: s.adminAuthenticate,
-		ClientIP:     func(r *http.Request) string { return ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders)) },
+		ClientIP:     func(r *http.Request) string { return ipOf(s.visitorAddr(r)) },
 		Now:          s.now,
 		Logger:       s.log,
 		ServerURL:    s.cfg.PublicURL(),
+
+		MaxTunnelsPerClient: s.cfg.MaxTunnelsPerClient,
 	})
 }
 
 // adminAuthenticate checks a bearer token for the admin API with the same rules and the same per-IP failure
 // limiter as the control handshake.
 func (s *Server) adminAuthenticate(ctx context.Context, ip, raw string) (*store.Token, error) {
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	if wait, blocked := s.limiter.blocked(surfaceAdmin, ip, s.now()); blocked {
 		s.log.Warn("admin request refused: too many failed attempts", "ip", ip)
 		return nil, &adminapi.RateLimitedError{RetryAfter: wait}
 	}
@@ -47,7 +49,7 @@ func (s *Server) adminAuthenticate(ctx context.Context, ip, raw string) (*store.
 		return tok, nil
 	}
 	if fromClient {
-		s.limiter.fail(ip, s.now())
+		s.limiter.fail(surfaceAdmin, ip, s.now())
 		s.log.Warn("admin authentication failed", "ip", ip, "code", perr.Code)
 	}
 	if perr.Code == proto.CodeInternal {
@@ -117,7 +119,10 @@ func (s *Server) StartAdminSocket(ln net.Listener) error {
 // adminBackend implements adminapi.Backend over the registry. It takes Server.mu like the rest of the registry.
 type adminBackend struct{ s *Server }
 
-var _ adminapi.Backend = adminBackend{}
+var (
+	_ adminapi.Backend       = adminBackend{}
+	_ adminapi.SessionCloser = adminBackend{}
+)
 
 func (b adminBackend) Status(context.Context) (adminapi.Status, error) {
 	s := b.s
@@ -164,6 +169,24 @@ func (b adminBackend) Disconnect(_ context.Context, name string) error {
 	c.log.Info("session disconnected by an administrator")
 	c.kill("disconnected by an administrator", nil)
 	return nil
+}
+
+// TokenRevoked implements adminapi.SessionCloser: every session of the token ends with a fatal token_revoked, now
+// instead of at the next revalidation.
+func (b adminBackend) TokenRevoked(_ context.Context, tokenID string) {
+	s := b.s
+	var hit []*session
+	s.mu.Lock()
+	for _, c := range s.sessions {
+		if c.tokenID == tokenID {
+			hit = append(hit, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range hit {
+		c.log.Info("session closed: its token was revoked")
+		c.kill("token revoked", &proto.Error{Code: proto.CodeTokenRevoked, Message: "token revoked", Fatal: true})
+	}
 }
 
 func (b adminBackend) Tunnels(context.Context) ([]adminapi.Tunnel, error) {

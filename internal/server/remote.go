@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,7 +119,7 @@ func (b adminBackend) RequestTunnel(ctx context.Context, client string, req admi
 	defer timer.Stop()
 	select {
 	case res := <-ch:
-		return remoteResult(res)
+		return c.remoteResult(res)
 	case <-timer.C:
 		return adminapi.RemoteTunnel{}, &adminapi.RemoteError{Code: proto.CodeTimeout, Message: "the client did not answer in time"}
 	case <-c.ctx.Done():
@@ -126,15 +129,27 @@ func (b adminBackend) RequestTunnel(ctx context.Context, client string, req admi
 	}
 }
 
-// remoteResult converts the client's answer. The client is not trusted: unknown codes become "internal" and the
-// text is truncated.
-func remoteResult(res *proto.OpenResult) (adminapi.RemoteTunnel, error) {
+// remoteResult converts the client's answer. The client is not trusted: unknown codes become "internal", the
+// text is truncated, and a success is only believed for a tunnel this session really has registered; its
+// description (address included) then comes from the registry, never from the client's claim.
+func (c *session) remoteResult(res *proto.OpenResult) (adminapi.RemoteTunnel, error) {
 	if res.OK {
 		if res.Tunnel == nil {
 			return adminapi.RemoteTunnel{}, &adminapi.RemoteError{Code: proto.CodeInternal, Message: "the client reported success without a tunnel"}
 		}
-		t := res.Tunnel
-		return adminapi.RemoteTunnel{Name: t.Name, Kind: t.Kind, URL: t.PublicURL, SSHJump: t.SSHJump}, nil
+		claimed := res.Tunnel
+		c.srv.mu.Lock()
+		t := c.names[claimed.Kind+":"+claimed.Name]
+		c.srv.mu.Unlock()
+		if t == nil {
+			c.log.Warn("client reported a remote tunnel it has not registered", "kind", claimed.Kind, "name", claimed.Name)
+			return adminapi.RemoteTunnel{}, &adminapi.RemoteError{Code: proto.CodeInternal, Message: "the client reported a tunnel that is not registered"}
+		}
+		out := adminapi.RemoteTunnel{Name: t.name, Kind: t.kind, URL: c.srv.publicURL(t)}
+		if t.kind == proto.KindSSH {
+			out.SSHJump = net.JoinHostPort(c.srv.cfg.Domain, strconv.Itoa(c.srv.cfg.SSHGateway.Port()))
+		}
+		return out, nil
 	}
 	e := res.Error
 	if e == nil {
@@ -149,7 +164,7 @@ func remoteResult(res *proto.OpenResult) (adminapi.RemoteTunnel, error) {
 	}
 	msg := e.Message
 	if len(msg) > maxRemoteMessage {
-		msg = msg[:maxRemoteMessage]
+		msg = strings.ToValidUTF8(msg[:maxRemoteMessage], "")
 	}
 	return adminapi.RemoteTunnel{}, &adminapi.RemoteError{Code: code, Message: msg}
 }

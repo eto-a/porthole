@@ -73,6 +73,7 @@ func (s *Server) runSession(ts transport.Session, ip string) {
 	defer cancel()
 
 	sess, err := s.handshake(ctx, cancel, ts, ip)
+	s.pending.release(ip) // authenticated or refused: no longer a pending session
 	if err != nil {
 		_ = ts.Close()
 		return
@@ -84,13 +85,21 @@ func (s *Server) runSession(ts transport.Session, ip string) {
 func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts transport.Session, ip string) (*session, error) {
 	// One deadline for the whole handshake, plus abort on server shutdown. Closing the transport unblocks
 	// every pending read and write below.
-	timer := time.AfterFunc(s.hsTimeout, func() { _ = ts.Close() })
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(s.hsTimeout, func() {
+		timedOut.Store(true)
+		_ = ts.Close()
+	})
 	defer timer.Stop()
 	stop := context.AfterFunc(ctx, func() { _ = ts.Close() })
 	defer stop()
 
 	ctrl, err := ts.Accept()
 	if err != nil {
+		if timedOut.Load() { // opened a connection and never said anything
+			s.limiter.fail(surfaceHandshake, ip, s.now())
+			s.log.Warn("handshake timed out before the control stream", "ip", ip)
+		}
 		return nil, fmt.Errorf("accept control stream: %w", err)
 	}
 
@@ -104,7 +113,7 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 		return e
 	}
 
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	if wait, blocked := s.limiter.blocked(surfaceHandshake, ip, s.now()); blocked {
 		s.log.Warn("handshake refused: too many failed attempts", "ip", ip)
 		return nil, reject(&proto.Error{
 			Code:         proto.CodeLimitExceeded,
@@ -115,6 +124,10 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 
 	hello, err := proto.ReadAs[*proto.Hello](ctrl)
 	if err != nil {
+		if timedOut.Load() || !isTransportError(err) { // too slow or not a hello: counts like a wrong token
+			s.limiter.fail(surfaceHandshake, ip, s.now())
+			s.log.Warn("handshake failed: no valid hello", "ip", ip, "err", err)
+		}
 		return nil, reject(&proto.Error{Code: proto.CodeInvalidRequest, Message: "expected hello"})
 	}
 	if hello.ProtocolVersion < proto.MinVersion || hello.ProtocolVersion > proto.Version {
@@ -127,10 +140,19 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 	tok, perr, fromClient := s.authenticate(ctx, hello.Token)
 	if perr != nil {
 		if fromClient {
-			s.limiter.fail(ip, s.now())
+			s.limiter.fail(surfaceHandshake, ip, s.now())
 			s.log.Warn("handshake failed", "ip", ip, "code", perr.Code)
 		}
 		return nil, reject(perr)
+	}
+	if g, ok := ts.(transport.Gated); ok {
+		g.Release() // authenticated: the pre-authentication byte budget no longer applies
+	}
+
+	// A token for the admin API or the SSH gateway only is no client: it would show up in the client list and be a
+	// target for remote tunnel requests without ever being able to open a tunnel.
+	if !hasTunnelScope(tok) {
+		return nil, reject(&proto.Error{Code: proto.CodeForbidden, Message: "token has no tunnel scope: it cannot open a client session"})
 	}
 
 	touchCtx, touchCancel := context.WithTimeout(ctx, storeTimeout)
@@ -176,6 +198,10 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 	}
 	sess.log.Info("session started", "remote", ts.RemoteAddr().String(), "client_version", hello.ClientVersion, "os", hello.OS)
 	return sess, nil
+}
+
+func hasTunnelScope(tok *store.Token) bool {
+	return tok.HasScope(auth.ScopeTunnelHTTP) || tok.HasScope(auth.ScopeTunnelTCP) || tok.HasScope(auth.ScopeTunnelUDP)
 }
 
 // authenticate checks a hello token. fromClient reports whether a failure is the client's fault (counts against

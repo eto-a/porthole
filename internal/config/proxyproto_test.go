@@ -14,7 +14,7 @@ func TestProxyProtocolConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.ProxyProtocol || c.ProxyProtocolHTTP || len(c.TrustedProxies) != 3 {
+	if !c.ProxyProtocol || c.ProxyProtocolHTTP || c.ProxyProtocolSSH || len(c.TrustedProxies) != 3 {
 		t.Fatalf("not parsed: %+v", c)
 	}
 	for name, body := range map[string]string{
@@ -23,6 +23,7 @@ func TestProxyProtocolConfig(t *testing.T) {
 		"not an address":          "trusted_proxies: [traefik]\n",
 		"zone":                    "trusted_proxies: [\"fe80::1%eth0\"]\n",
 		"http without the master": "proxy_protocol_http: true\ntrusted_proxies: [10.0.0.0/8]\n",
+		"ssh without the master":  "proxy_protocol_ssh: true\ntrusted_proxies: [10.0.0.0/8]\n",
 	} {
 		if _, err := Load(write(t, base+body)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -34,12 +35,13 @@ func TestProxyProtocolConfig(t *testing.T) {
 
 	t.Setenv("PORTHOLED_PROXY_PROTOCOL", "true")
 	t.Setenv("PORTHOLED_PROXY_PROTOCOL_HTTP", "1")
+	t.Setenv("PORTHOLED_PROXY_PROTOCOL_SSH", "true")
 	t.Setenv("PORTHOLED_TRUSTED_PROXIES", " 10.0.0.0/8 , 172.16.0.0/12,,")
 	c, err = Load(write(t, base))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.ProxyProtocol || !c.ProxyProtocolHTTP || strings.Join(c.TrustedProxies, "|") != "10.0.0.0/8|172.16.0.0/12" {
+	if !c.ProxyProtocol || !c.ProxyProtocolHTTP || !c.ProxyProtocolSSH || strings.Join(c.TrustedProxies, "|") != "10.0.0.0/8|172.16.0.0/12" {
 		t.Fatalf("env not applied: %+v", c)
 	}
 	t.Setenv("PORTHOLED_PROXY_PROTOCOL", "maybe")

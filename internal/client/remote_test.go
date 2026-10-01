@@ -104,7 +104,13 @@ func TestRemoteOpenPolicy(t *testing.T) {
 		kind   string
 		allow  bool
 	}{
-		{"nil allows all", nil, "5000", proto.KindHTTP, true},
+		{"nil allows loopback", nil, "5000", proto.KindHTTP, true},
+		{"nil allows localhost", nil, "localhost:5000", proto.KindHTTP, true},
+		{"nil allows ipv6 loopback", nil, "[::1]:5000", proto.KindTCP, true},
+		{"nil allows ssh", nil, "", proto.KindSSH, true},
+		{"nil refuses lan", nil, "192.168.1.1:80", proto.KindHTTP, false},
+		{"nil refuses metadata", nil, "169.254.169.254:80", proto.KindTCP, false},
+		{"nil refuses name", nil, "nas.local:80", proto.KindTCP, false},
 		{"none refuses", &RemotePolicy{}, "3000", proto.KindHTTP, false},
 		{"listed port", &RemotePolicy{Targets: []string{"127.0.0.1:3000"}}, "3000", proto.KindHTTP, true},
 		{"other port", &RemotePolicy{Targets: []string{"127.0.0.1:3000"}}, "3001", proto.KindHTTP, false},
@@ -164,6 +170,45 @@ func TestRemoteOpenInvalid(t *testing.T) {
 		req.ReqID = i + 1
 		if res := remoteAsk(t, fs, req); res.OK || res.Error == nil || res.Error.Code != proto.CodeInvalidRequest {
 			t.Errorf("%+v: %+v %+v", req, res, res.Error)
+		}
+	}
+}
+
+func TestRemotePolicyPermits(t *testing.T) {
+	list := &RemotePolicy{Targets: []string{"192.168.1.5:80", "169.254.169.254:80"}}
+	cases := []struct {
+		name   string
+		policy *RemotePolicy
+		addr   string
+		want   bool
+	}{
+		{"default loopback", nil, "127.0.0.1:80", true},
+		{"default other 127", nil, "127.5.5.5:80", true},
+		{"default localhost", nil, "LOCALHOST:80", true},
+		{"default ipv6", nil, "[::1]:80", true},
+		{"default mapped loopback", nil, "[::ffff:127.0.0.1]:80", true},
+		{"default lan", nil, "10.0.0.1:80", false},
+		{"default unspecified", nil, "0.0.0.0:80", false},
+		{"default name", nil, "example.com:80", false},
+		{"default metadata", nil, "169.254.169.254:80", false},
+		{"default ipv6 link-local", nil, "[fe80::1]:80", false},
+		{"list exact lan", list, "192.168.1.5:80", true},
+		{"list exact metadata", list, "169.254.169.254:80", true},
+		{"list other port", list, "192.168.1.5:81", false},
+		{"list does not add loopback", list, "127.0.0.1:80", false},
+		{"any lan", &RemotePolicy{Any: true}, "192.168.1.5:80", true},
+		{"any name", &RemotePolicy{Any: true}, "nas.local:80", true},
+		{"any loopback", &RemotePolicy{Any: true}, "127.0.0.1:80", true},
+		{"any metadata", &RemotePolicy{Any: true}, "169.254.169.254:80", false},
+		{"any mapped metadata", &RemotePolicy{Any: true}, "[::ffff:169.254.169.254]:80", false},
+		{"any ipv6 link-local", &RemotePolicy{Any: true}, "[fe80::1]:80", false},
+		{"any ipv6 link-local zone", &RemotePolicy{Any: true}, "[fe80::1%eth0]:80", false},
+		{"any listed metadata", &RemotePolicy{Any: true, Targets: []string{"169.254.169.254:80"}}, "169.254.169.254:80", true},
+		{"none", &RemotePolicy{}, "127.0.0.1:80", false},
+	}
+	for _, tc := range cases {
+		if got := tc.policy.Permits(tc.addr); got != tc.want {
+			t.Errorf("%s: Permits(%q)=%v, want %v", tc.name, tc.addr, got, tc.want)
 		}
 	}
 }

@@ -93,6 +93,13 @@ type Backend interface {
 	RequestTunnel(ctx context.Context, client string, req RemoteOpen) (RemoteTunnel, error)
 }
 
+// SessionCloser is implemented by a Backend that can end the live sessions of a token. The API calls it after a
+// token is revoked, so that revoking takes effect at once and not at the next revalidation of the session.
+type SessionCloser interface {
+	// TokenRevoked closes every session that authenticated with the token id and tells its client why.
+	TokenRevoked(ctx context.Context, tokenID string)
+}
+
 // Store is the persistent state the API needs; store.Store satisfies it.
 type Store interface {
 	GetToken(ctx context.Context, id string) (*store.Token, error)
@@ -150,7 +157,9 @@ type Token struct {
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	// RemoteControl: operators may open tunnels on this token's client remotely.
-	RemoteControl bool `json:"remote_control"`
+	// CreatedBy is the id of the token whose join link made this one, "socket", or empty.
+	CreatedBy     string `json:"created_by,omitempty"`
+	RemoteControl bool   `json:"remote_control"`
 }
 
 // AuditEntry is one audit log record.
@@ -177,6 +186,9 @@ type Options struct {
 	Logger   *slog.Logger
 	// ServerURL is the address clients connect to, the base of join links ("https://tun.example.com").
 	ServerURL string
+	// MaxTunnelsPerClient is the server's per-client tunnel limit. A join link made with a bearer token cannot grant
+	// more; 0 means no limit.
+	MaxTunnelsPerClient int
 }
 
 // API serves the admin endpoints.
@@ -189,7 +201,8 @@ type API struct {
 	log    *slog.Logger
 	routes *http.ServeMux
 
-	serverURL string
+	serverURL  string
+	maxTunnels int
 }
 
 // New builds the API. Backend, Store and Authenticate are required.
@@ -197,7 +210,7 @@ func New(opts Options) (*API, error) {
 	if opts.Backend == nil || opts.Store == nil || opts.Authenticate == nil {
 		return nil, errors.New("adminapi: Backend, Store and Authenticate are required")
 	}
-	a := &API{be: opts.Backend, st: opts.Store, authn: opts.Authenticate, ip: opts.ClientIP, now: opts.Now, log: opts.Logger, serverURL: opts.ServerURL}
+	a := &API{be: opts.Backend, st: opts.Store, authn: opts.Authenticate, ip: opts.ClientIP, now: opts.Now, log: opts.Logger, serverURL: opts.ServerURL, maxTunnels: opts.MaxTunnelsPerClient}
 	if a.ip == nil {
 		a.ip = func(r *http.Request) string {
 			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
@@ -222,6 +235,14 @@ type principal struct {
 	actor   string
 	tok     *store.Token
 	trusted bool
+}
+
+// name is the client name of the caller's token ("" for the socket).
+func (p principal) name() string {
+	if p.tok == nil {
+		return ""
+	}
+	return p.tok.Name
 }
 
 func (p principal) allows(scope string) bool {
@@ -399,13 +420,24 @@ func (a *API) record(ctx context.Context, p principal, action, target, args, res
 }
 
 func (a *API) revokeToken(ctx context.Context, id string) error {
+	return RevokeToken(ctx, a.st, a.be, id, a.now())
+}
+
+// RevokeToken revokes the token with this id (not a name) and closes its live sessions at once through be, if be can.
+// The admin API and the MCP server share it.
+func RevokeToken(ctx context.Context, st Store, be Backend, id string, now time.Time) error {
 	sctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	// By id only: RevokeToken also accepts names, which the API does not.
-	if _, err := a.st.GetToken(sctx, id); err != nil {
+	if _, err := st.GetToken(sctx, id); err != nil {
 		return err
 	}
-	return a.st.RevokeToken(sctx, id, a.now())
+	if err := st.RevokeToken(sctx, id, now); err != nil {
+		return err
+	}
+	if sc, ok := be.(SessionCloser); ok {
+		sc.TokenRevoked(ctx, id)
+	}
+	return nil
 }
 
 func (a *API) listTokens(ctx context.Context, _ *http.Request) (any, error) {
@@ -419,7 +451,7 @@ func (a *API) listTokens(ctx context.Context, _ *http.Request) (any, error) {
 	for _, t := range toks {
 		out = append(out, Token{
 			ID: t.ID, Name: t.Name, Last4: t.Last4, Scopes: nonNil(t.Scopes), MaxTunnels: t.MaxTunnels,
-			CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt, LastUsedAt: t.LastUsedAt, RemoteControl: t.RemoteControl,
+			CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt, LastUsedAt: t.LastUsedAt, RemoteControl: t.RemoteControl, CreatedBy: t.CreatedBy,
 		})
 	}
 	return map[string]any{"tokens": out}, nil
@@ -436,7 +468,25 @@ func (a *API) listAudit(ctx context.Context, r *http.Request) (any, error) {
 	}
 	sctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	es, err := a.st.ListAudit(sctx, limit)
+	var before int64
+	if v := r.URL.Query().Get("before"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return nil, errBadRequest("before must be a positive entry id")
+		}
+		before = n
+	}
+	var (
+		es  []store.AuditEntry
+		err error
+	)
+	if pager, ok := a.st.(store.AuditPager); ok {
+		es, err = pager.ListAuditBefore(sctx, before, limit)
+	} else if before > 0 {
+		return nil, errBadRequest("this store cannot page the audit log")
+	} else {
+		es, err = a.st.ListAudit(sctx, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

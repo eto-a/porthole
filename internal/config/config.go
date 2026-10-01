@@ -79,8 +79,8 @@ type Config struct {
 	// Enable only when portholed runs behind a reverse proxy you control.
 	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
 
-	// ProxyProtocol makes the HTTP(S) listener and the SSH gateway accept PROXY protocol v1/v2 headers from the
-	// peers in TrustedProxies, so that per-IP limits, the failure limiter and the logs see the real visitor address
+	// ProxyProtocol makes the HTTP(S) listener accept PROXY protocol v1/v2 headers from the
+	// peers in TrustedProxies (the SSH gateway only with ProxyProtocolSSH), so that per-IP limits, the failure limiter and the logs see the real visitor address
 	// when a proxy forwards raw TCP (for example Traefik with TLS passthrough). A peer in TrustedProxies must send a
 	// header; any other peer must not (its connection is refused if it does). Requires TrustedProxies.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
@@ -88,6 +88,11 @@ type Config struct {
 	// ProxyProtocolHTTP extends ProxyProtocol to the plain-HTTP listener (http_listen). Off by default because
 	// proxies usually cannot add PROXY headers to HTTP routers (Traefik can only do it for TCP services).
 	ProxyProtocolHTTP bool `yaml:"proxy_protocol_http"`
+
+	// ProxyProtocolSSH extends ProxyProtocol to the SSH gateway (ssh_listen). Off by default: the gateway is usually
+	// published directly, and a wrapped listener refuses connections from peers that are not trusted proxies and
+	// send no header.
+	ProxyProtocolSSH bool `yaml:"proxy_protocol_ssh"`
 
 	// TrustedProxies lists the IP addresses and CIDR ranges of the proxies allowed to send PROXY protocol headers.
 	TrustedProxies []string `yaml:"trusted_proxies"`
@@ -100,6 +105,44 @@ type Config struct {
 
 	// Traffic sizes the in-memory request and connection journals (ADR 0005).
 	Traffic Traffic `yaml:"traffic"`
+
+	// Limits bounds what a single peer can hold open (connections, requests, unauthenticated sessions).
+	Limits Limits `yaml:"limits"`
+
+	// Audit configures the admin audit log kept in the database.
+	Audit Audit `yaml:"audit"`
+}
+
+// Limits are abuse limits. For every field 0 selects the built-in default and a negative value turns the limit off.
+type Limits struct {
+	// MaxConnsPerIP is the number of simultaneous connections one source IP (IPv6: /64) may hold on the TCP
+	// tunnels and on the SSH gateway. Default 32.
+	MaxConnsPerIP int `yaml:"max_conns_per_ip"`
+
+	// TCPIdleTimeout closes a TCP or SSH connection through a tunnel that carried no bytes in either direction for
+	// this long (half-closed connections: at most five minutes). Default 2h.
+	TCPIdleTimeout time.Duration `yaml:"tcp_idle_timeout"`
+
+	// MaxHTTPRequestsPerTunnel is the number of simultaneous visitor requests (WebSocket connections included) one
+	// HTTP tunnel serves; more get 503. Default 512.
+	MaxHTTPRequestsPerTunnel int `yaml:"max_http_requests_per_tunnel"`
+
+	// HTTPBodyIdleTimeout aborts a visitor request whose body stalls for this long between two reads. Default 60s.
+	HTTPBodyIdleTimeout time.Duration `yaml:"http_body_idle_timeout"`
+
+	// MaxPendingHandshakes and MaxPendingHandshakesPerIP bound the control connections that have not authenticated
+	// yet, overall (default 256) and per source IP (default 8).
+	MaxPendingHandshakes      int `yaml:"max_pending_handshakes"`
+	MaxPendingHandshakesPerIP int `yaml:"max_pending_handshakes_per_ip"`
+}
+
+// DefaultAuditMaxRows is how many audit rows are kept by default.
+const DefaultAuditMaxRows = 100_000
+
+// Audit configures the retention of the admin audit log.
+type Audit struct {
+	// MaxRows is the number of newest audit rows kept; older rows are deleted. 0 means DefaultAuditMaxRows.
+	MaxRows int `yaml:"max_rows"`
 }
 
 // DefaultTrafficMax is the default size of each traffic journal.
@@ -156,6 +199,15 @@ type ACME struct {
 
 	// CA is the ACME directory URL; empty means Let's Encrypt production (DefaultACMECA).
 	CA string `yaml:"ca"`
+
+	// MaxNewNamesPerDay caps how many host names without a stored certificate the server requests per 24 hours, all
+	// clients together (Let's Encrypt allows 50 new certificates per registered domain per week). 0 means 30;
+	// negative turns the cap off.
+	MaxNewNamesPerDay int `yaml:"max_new_names_per_day"`
+
+	// MaxNewNamesPerClientPerHour is the same cap for the tunnels of one client per hour. 0 means 10; negative
+	// turns the cap off.
+	MaxNewNamesPerClientPerHour int `yaml:"max_new_names_per_client_per_hour"`
 }
 
 // DefaultSSHMaxConnsPerTunnel is the default for SSHGateway.MaxConnsPerTunnel.
@@ -231,6 +283,7 @@ func Default() *Config {
 		DataDir:             "/var/lib/porthole",
 		MaxTunnelsPerClient: 10,
 		ShutdownGrace:       10 * time.Second,
+		Audit:               Audit{MaxRows: DefaultAuditMaxRows},
 		Traffic:             Traffic{MaxRequests: DefaultTrafficMax, MaxConns: DefaultTrafficMax, AllowInspect: true, MaxDetailBytes: DefaultMaxDetailBytes},
 	}
 }
@@ -287,6 +340,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_MAX_TUNNELS_PER_CLIENT": &c.MaxTunnelsPerClient,
 		"PORTHOLED_TRAFFIC_MAX_REQUESTS":   &c.Traffic.MaxRequests,
 		"PORTHOLED_TRAFFIC_MAX_CONNS":      &c.Traffic.MaxConns,
+		"PORTHOLED_AUDIT_MAX_ROWS":         &c.Audit.MaxRows,
 	}
 	for k, p := range ints {
 		if v, ok := lookup(k); ok {
@@ -310,6 +364,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 	for k, p := range map[string]*bool{
 		"PORTHOLED_PROXY_PROTOCOL":      &c.ProxyProtocol,
 		"PORTHOLED_PROXY_PROTOCOL_HTTP": &c.ProxyProtocolHTTP,
+		"PORTHOLED_PROXY_PROTOCOL_SSH":  &c.ProxyProtocolSSH,
 	} {
 		if v, ok := lookup(k); ok {
 			b, err := strconv.ParseBool(v)
@@ -396,6 +451,9 @@ func (c *Config) Validate() error {
 	if c.ShutdownGrace < 0 {
 		errs = append(errs, errors.New("shutdown_grace: must not be negative"))
 	}
+	if c.Audit.MaxRows < 0 {
+		errs = append(errs, errors.New("audit.max_rows: must not be negative"))
+	}
 	if c.Traffic.MaxRequests < 0 {
 		errs = append(errs, errors.New("traffic.max_requests: must not be negative"))
 	}
@@ -426,6 +484,9 @@ func (c *Config) validateProxyProtocol() []error {
 	}
 	if c.ProxyProtocolHTTP && !c.ProxyProtocol {
 		errs = append(errs, errors.New("proxy_protocol_http: needs proxy_protocol"))
+	}
+	if c.ProxyProtocolSSH && !c.ProxyProtocol {
+		errs = append(errs, errors.New("proxy_protocol_ssh: needs proxy_protocol"))
 	}
 	return errs
 }
