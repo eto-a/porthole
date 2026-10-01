@@ -95,6 +95,71 @@ jobs:
           PORTHOLE_E2E_SERVER_BIN: ${{ runner.temp }}/baseline/portholed
         run: go test -count=1 -v ./tests/e2e/
 
+  # The client as a real operating system service (ADR 0006): `porthole service install` registers a systemd unit, a
+  # launchd job or a Windows service on the runner, which has the rights for it (passwordless sudo on Linux and macOS,
+  # an administrator on Windows), and the e2e scenario drives it against a local portholed. The tests change the
+  # machine, so they run only behind PORTHOLE_TEST_SERVICE=1. Not a required check until it has been stable.
+  service:
+    name: service (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      PORTHOLE_TEST_SERVICE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the binaries and the test
+        # Built once as the runner user: the system test runs under sudo, which has no Go toolchain environment.
+        shell: bash
+        run: |
+          ext=""
+          if [ "$RUNNER_OS" = Windows ]; then ext=".exe"; fi
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/portholed$ext" ./cmd/portholed
+          go build -o "$RUNNER_TEMP/bin/porthole$ext" ./cmd/porthole
+          go test -c -o "$RUNNER_TEMP/bin/e2e.test$ext" ./tests/e2e
+          {
+            echo "PORTHOLE_E2E_SERVER_BIN=$RUNNER_TEMP/bin/portholed$ext"
+            echo "PORTHOLE_E2E_CLIENT_BIN=$RUNNER_TEMP/bin/porthole$ext"
+            echo "E2E_TEST_BIN=$RUNNER_TEMP/bin/e2e.test$ext"
+          } >> "$GITHUB_ENV"
+      - name: System service (install, status, tunnel, reload, stop, start, uninstall)
+        shell: bash
+        run: |
+          sudo_cmd=()
+          if [ "$RUNNER_OS" != Windows ]; then sudo_cmd=(sudo -E); fi
+          "${sudo_cmd[@]}" "$E2E_TEST_BIN" -test.run '^TestServiceSystem$' -test.v -test.count=1 -test.timeout=10m
+      - name: User service (systemd user unit, LaunchAgent; skipped where the runner has no user session)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            # The runner has no login session; lingering starts the user's systemd manager.
+            sudo loginctl enable-linger "$(id -un)"
+            XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_RUNTIME_DIR
+            for _ in $(seq 1 30); do
+              if systemctl --user show-environment >/dev/null 2>&1; then break; fi
+              sleep 1
+            done
+          fi
+          "$E2E_TEST_BIN" -test.run '^TestServiceUser$' -test.v -test.count=1 -test.timeout=10m
+      - name: Windows service and system pipe against the real SCM
+        if: runner.os == 'Windows'
+        env:
+          PORTHOLE_TEST_SYSTEM_PIPE: "1"
+        run: go test -count=1 -v -run 'TestWindowsServiceLifecycle|TestSystemPipeElevated' ./internal/service/ ./internal/localapi/
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
