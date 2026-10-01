@@ -359,13 +359,20 @@ func (s *SQLite) RevokeToken(ctx context.Context, idOrName string, at time.Time)
 	defer func() { _ = tx.Rollback() }()
 
 	ms := at.UnixMilli()
-	var revoked sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT revoked_at FROM tokens WHERE id = ?`, idOrName).Scan(&revoked)
+	var (
+		name    string
+		revoked sql.NullInt64
+	)
+	err = tx.QueryRowContext(ctx, `SELECT name, revoked_at FROM tokens WHERE id = ?`, idOrName).Scan(&name, &revoked)
 	switch {
 	case err == nil:
+		// An already revoked id changes nothing: its name may belong to a newer token by now.
 		if !revoked.Valid {
 			if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ?`, ms, idOrName); err != nil {
 				return fmt.Errorf("store: revoke token: %w", err)
+			}
+			if err := deleteReservations(ctx, tx, name); err != nil {
+				return err
 			}
 		}
 	case errors.Is(err, sql.ErrNoRows):
@@ -381,6 +388,9 @@ func (s *SQLite) RevokeToken(ctx context.Context, idOrName string, at time.Time)
 		if n == 0 {
 			return fmt.Errorf("token %q: %w", idOrName, ErrNotFound)
 		}
+		if err := deleteReservations(ctx, tx, idOrName); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("store: revoke token: %w", err)
 	}
@@ -388,6 +398,103 @@ func (s *SQLite) RevokeToken(ctx context.Context, idOrName string, at time.Time)
 		return fmt.Errorf("store: revoke token: %w", err)
 	}
 	return nil
+}
+
+func deleteReservations(ctx context.Context, tx *sql.Tx, client string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM port_reservations WHERE client = ?`, client); err != nil {
+		return fmt.Errorf("store: delete port reservations: %w", err)
+	}
+	return nil
+}
+
+// HoldPort implements Store.
+func (s *SQLite) HoldPort(ctx context.Context, client, tunnel string, port int, now time.Time, ttl time.Duration) error {
+	if client == "" || tunnel == "" || port <= 0 || port > 65535 {
+		return errors.New("store: port reservation needs client, tunnel and a valid port")
+	}
+	if len(client) > maxFieldLen || len(tunnel) > maxFieldLen {
+		return errors.New("store: port reservation field too long")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: hold port: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Free the port if another tunnel's reservation of it has run out.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM port_reservations
+		 WHERE port = ? AND NOT (client = ? AND tunnel = ?) AND released_at IS NOT NULL AND released_at + ? <= ?`,
+		port, client, tunnel, ttl.Milliseconds(), now.UnixMilli()); err != nil {
+		return fmt.Errorf("store: hold port: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO port_reservations (client, tunnel, port, released_at) VALUES (?, ?, ?, NULL)
+		 ON CONFLICT (client, tunnel) DO UPDATE SET port = excluded.port, released_at = NULL`,
+		client, tunnel, port); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("port %d: %w", port, ErrPortHeld)
+		}
+		return fmt.Errorf("store: hold port: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: hold port: %w", err)
+	}
+	return nil
+}
+
+// ReleasePort implements Store.
+func (s *SQLite) ReleasePort(ctx context.Context, client, tunnel string, at time.Time) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE port_reservations SET released_at = ? WHERE client = ? AND tunnel = ?`,
+		at.UnixMilli(), client, tunnel); err != nil {
+		return fmt.Errorf("store: release port: %w", err)
+	}
+	return nil
+}
+
+// LoadPortReservations implements Store.
+func (s *SQLite) LoadPortReservations(ctx context.Context, now time.Time, ttl time.Duration) ([]PortReservation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ms := now.UnixMilli()
+	if _, err := tx.ExecContext(ctx, `UPDATE port_reservations SET released_at = ? WHERE released_at IS NULL`, ms); err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM port_reservations WHERE released_at + ? <= ?`, ttl.Milliseconds(), ms); err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT client, tunnel, port, released_at FROM port_reservations ORDER BY client, tunnel`)
+	if err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	defer rows.Close()
+	var out []PortReservation
+	for rows.Next() {
+		var (
+			r        PortReservation
+			released int64
+		)
+		if err := rows.Scan(&r.Client, &r.Tunnel, &r.Port, &released); err != nil {
+			return nil, fmt.Errorf("store: load port reservations: %w", err)
+		}
+		r.ReleasedAt = timeFromMS(released)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: load port reservations: %w", err)
+	}
+	return out, nil
 }
 
 // TouchToken implements Store.

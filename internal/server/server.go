@@ -141,6 +141,7 @@ func New(opts Options) (*Server, error) {
 		s.hsTimeout = defaultHandshakeTimeout
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.loadReservations()
 	return s, nil
 }
 

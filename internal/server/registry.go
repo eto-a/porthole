@@ -24,6 +24,45 @@ type reservation struct {
 	at   time.Time // when the tunnel went away
 }
 
+// loadReservations fills the in-memory reservations from the store, so that after a restart clients get their old
+// ports back. Reservations are a convenience: a store failure is logged and the server starts with none. Ports
+// outside the configured range are ignored. It runs from New, before the server is shared.
+func (s *Server) loadReservations() {
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	rs, err := s.store.LoadPortReservations(ctx, s.now(), reservationTTL)
+	if err != nil {
+		s.log.Warn("cannot load port reservations; tunnels may get new ports", "err", err)
+		return
+	}
+	for _, r := range rs {
+		if r.Port < s.portLo || r.Port > s.portHi {
+			continue
+		}
+		s.reserved[reservationKey(r.Client, r.Tunnel)] = reservation{port: r.Port, at: r.ReleasedAt}
+	}
+	s.log.Info("port reservations loaded", "loaded", len(s.reserved), "stored", len(rs))
+}
+
+// holdPort persists the port of a live tunnel. Called with Server.mu held: the store is local SQLite and the call is
+// bounded by storeTimeout. A failure is only logged, because the reservation is not a condition for the tunnel.
+func (s *Server) holdPort(client, tunnel string, port int) {
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	if err := s.store.HoldPort(ctx, client, tunnel, port, s.now(), reservationTTL); err != nil {
+		s.log.Warn("cannot persist port reservation", "client", client, "tunnel", tunnel, "port", port, "err", err)
+	}
+}
+
+// releasePort starts the persisted reservation period of a closed tunnel. Same rules as holdPort.
+func (s *Server) releasePort(client, tunnel string, at time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	if err := s.store.ReleasePort(ctx, client, tunnel, at); err != nil {
+		s.log.Warn("cannot persist port release", "client", client, "tunnel", tunnel, "err", err)
+	}
+}
+
 // tunnel is a registered HTTP or TCP tunnel.
 type tunnel struct {
 	id      string
@@ -129,6 +168,7 @@ func (s *Server) removeLocked(t *tunnel, offline bool) {
 			delete(s.ports, t.port)
 		}
 		s.reserved[reservationKey(t.sess.name, t.name)] = reservation{port: t.port, at: now}
+		s.releasePort(t.sess.name, t.name, now)
 	}
 	t.closeTunnel()
 }
@@ -270,6 +310,7 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		t.sem = make(chan struct{}, maxTCPConnsPerTunnel)
 		s.ports[t.port] = t
 		delete(s.reserved, reservationKey(c.name, name))
+		s.holdPort(c.name, name, t.port)
 		c.wg.Go(t.acceptLoop)
 	}
 	c.tunnels[t.id] = t
