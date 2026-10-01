@@ -95,7 +95,7 @@ func TestTrafficHTTPRequest(t *testing.T) {
 	if post.Referer != "https://ref.example/a?token=REDACTED&p=1" {
 		t.Errorf("referer: %q", post.Referer)
 	}
-	if post.Latency <= 0 || post.Time.IsZero() || post.ID == 0 {
+	if post.Latency < 0 || post.Time.IsZero() || post.ID == 0 { // a fast request can take 0 at Windows timer resolution
 		t.Errorf("latency/time/id: %+v", post)
 	}
 	if teapot.Status != http.StatusTeapot || teapot.BytesIn != 0 || teapot.BytesOut != int64(len("hello /teapot")) {

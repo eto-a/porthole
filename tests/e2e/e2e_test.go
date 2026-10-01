@@ -224,8 +224,9 @@ tcp_bind_host: 127.0.0.1
 data_dir: %q
 shutdown_grace: 2s
 `, e.port, e.port, lo, lo+50, filepath.ToSlash(e.dataDir))
-	// Plain HTTP. Releases before tls.mode (ADR 0004) reject the key but serve plain HTTP without certificates.
-	if os.Getenv(envServerBin) == "" {
+	// Plain HTTP. Releases before tls.mode (ADR 0004, v0.3) reject the key but serve plain HTTP without certificates;
+	// later ones default to ACME and need the key.
+	if serverKnowsTLSMode(t) {
 		cfg += "tls:\n  mode: off\n"
 	}
 	cfg += strings.Join(extraConfig, "")
@@ -514,4 +515,24 @@ func TestSSHGateway(t *testing.T) {
 	if _, err := conn.Dial("tcp", "nobody:22"); err == nil {
 		t.Error("unknown target must be refused")
 	}
+}
+
+// serverKnowsTLSMode reports whether the portholed under test understands tls.mode (v0.3 and later). The binary of
+// the working tree always does; a baseline release from the compat job is asked for its version.
+func serverKnowsTLSMode(t *testing.T) bool {
+	t.Helper()
+	bin := os.Getenv(envServerBin)
+	if bin == "" {
+		return true
+	}
+	out, err := exec.Command(bin, "version").Output() //nolint:gosec // the test runs the binary the compat job points it at
+	if err != nil {
+		t.Fatalf("%s version: %v", bin, err)
+	}
+	f := strings.Fields(string(out))
+	if len(f) < 2 {
+		t.Fatalf("%s version: unexpected output %q", bin, out)
+	}
+	v := strings.TrimPrefix(f[1], "v")
+	return !strings.HasPrefix(v, "0.1.") && !strings.HasPrefix(v, "0.2.")
 }
