@@ -95,13 +95,25 @@ const (
 	ScopeTunnelUDP  = "tunnel:udp"
 )
 
+// Admin scopes grant access to the admin API (ADR 0005). Each mutating group has its own scope so that an agent
+// can be given exactly what it needs; admin:read covers every read-only endpoint.
+const (
+	ScopeAdminRead    = "admin:read"
+	ScopeAdminClients = "admin:clients" // disconnect clients
+	ScopeAdminTunnels = "admin:tunnels" // close tunnels
+	ScopeAdminTokens  = "admin:tokens"  // revoke tokens
+	ScopeAdminRemote  = "admin:remote"  // open tunnels on machines (declared, not served yet)
+	ScopeAdminTraffic = "admin:traffic" // request details and bodies (declared, not served yet)
+)
+
 // DefaultScopes are granted when a token is created without explicit scopes.
 var DefaultScopes = []string{ScopeTunnelHTTP, ScopeTunnelTCP, ScopeTunnelUDP}
 
 // ValidScope reports whether s is a known scope.
 func ValidScope(s string) bool {
 	switch s {
-	case ScopeTunnelHTTP, ScopeTunnelTCP, ScopeTunnelUDP:
+	case ScopeTunnelHTTP, ScopeTunnelTCP, ScopeTunnelUDP,
+		ScopeAdminRead, ScopeAdminClients, ScopeAdminTunnels, ScopeAdminTokens, ScopeAdminRemote, ScopeAdminTraffic:
 		return true
 	}
 	// connect:<client> lets a token open private SSH tunnels of that client through the SSH gateway (ADR 0003).

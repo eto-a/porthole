@@ -72,6 +72,10 @@ type Server struct {
 	log     *slog.Logger
 	version string
 	now     func() time.Time
+	started time.Time
+
+	adminBearer http.Handler // admin API for the control host, bearer token required
+	adminSocket http.Handler // admin API for the unix socket, no token
 
 	domain         string
 	portLo, portHi int
@@ -148,6 +152,12 @@ func New(opts Options) (*Server, error) {
 	if s.hsTimeout <= 0 {
 		s.hsTimeout = defaultHandshakeTimeout
 	}
+	s.started = s.now()
+	api, err := s.newAdminAPI()
+	if err != nil {
+		return nil, fmt.Errorf("server: %w", err)
+	}
+	s.adminBearer, s.adminSocket = api.BearerHandler(), api.SocketHandler()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.loadReservations()
 	return s, nil
@@ -174,6 +184,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer func() { _ = s.Close() }()
 
 	if err := s.startSSHGateway(ctx); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	if err := s.startAdminSocket(ctx); err != nil {
 		_ = ln.Close()
 		return err
 	}
@@ -331,11 +345,13 @@ func (s *Server) labelOf(host string) (string, bool) {
 }
 
 func (s *Server) serveControl(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case proto.ConnectPath:
+	switch {
+	case r.URL.Path == proto.ConnectPath:
 		s.handleConnect(w, r)
-	case healthPath:
+	case r.URL.Path == healthPath:
 		serveHealth(w)
+	case isAdminPath(r.URL.Path):
+		s.serveAdmin(w, r)
 	default:
 		http.NotFound(w, r)
 	}

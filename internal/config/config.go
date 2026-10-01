@@ -65,6 +65,10 @@ type Config struct {
 	// DataDir holds the SQLite database.
 	DataDir string `yaml:"data_dir"`
 
+	// AdminSocket is the unix socket of the admin API (mode 0600, access is the permission). Empty means
+	// <data_dir>/admin.sock; "-" turns the socket off. Not served on Windows.
+	AdminSocket string `yaml:"admin_socket"`
+
 	// TrustProxyHeaders makes the server take visitor addresses from X-Forwarded-For.
 	// Enable only when portholed runs behind a reverse proxy you control.
 	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
@@ -223,6 +227,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_TCP_PORT_RANGE": &c.TCPPortRange,
 		"PORTHOLED_TCP_BIND_HOST":  &c.TCPBindHost,
 		"PORTHOLED_DATA_DIR":       &c.DataDir,
+		"PORTHOLED_ADMIN_SOCKET":   &c.AdminSocket,
 		"PORTHOLED_SSH_LISTEN":     &c.SSHGateway.Listen,
 	}
 	for k, p := range str {
@@ -380,6 +385,17 @@ func (c *Config) PortRange() (lo, hi int, err error) {
 		return 0, 0, fmt.Errorf("tcp_port_range: %q, want \"LOW-HIGH\" within 1-65535", c.TCPPortRange)
 	}
 	return lo, hi, nil
+}
+
+// AdminSocketPath returns where the admin socket lives, or "" when it is turned off (admin_socket: "-").
+func (c *Config) AdminSocketPath() string {
+	switch c.AdminSocket {
+	case "-":
+		return ""
+	case "":
+		return filepath.Join(c.DataDir, "admin.sock")
+	}
+	return c.AdminSocket
 }
 
 // DBPath is the SQLite database location.

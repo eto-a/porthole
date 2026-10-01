@@ -81,6 +81,10 @@ type Store interface {
 	// LoadPortReservations is called once at server start: it marks rows of tunnels that were still live (the
 	// previous process died or stopped) as released at now, deletes reservations that expired, and returns the rest.
 	LoadPortReservations(ctx context.Context, now time.Time, ttl time.Duration) ([]PortReservation, error)
+	// AppendAudit adds e to the append-only admin audit log and sets e.ID.
+	AppendAudit(ctx context.Context, e *AuditEntry) error
+	// ListAudit returns the newest audit entries first; limit <= 0 means 100 and the maximum is 1000.
+	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
 	// Close releases resources.
 	Close() error
 }

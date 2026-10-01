@@ -42,6 +42,8 @@ type fakeStore struct {
 
 	ports map[string]*store.PortReservation // by "client/tunnel"
 	live  map[string]bool                   // reservations whose tunnel has not been released
+
+	audit []store.AuditEntry
 }
 
 func newFakeStore() *fakeStore {
@@ -132,6 +134,24 @@ func (f *fakeStore) LoadPortReservations(_ context.Context, now time.Time, ttl t
 			continue
 		}
 		out = append(out, *r)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) AppendAudit(_ context.Context, e *store.AuditEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e.ID = int64(len(f.audit) + 1)
+	f.audit = append(f.audit, *e)
+	return nil
+}
+
+func (f *fakeStore) ListAudit(_ context.Context, limit int) ([]store.AuditEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.AuditEntry
+	for i := len(f.audit) - 1; i >= 0 && (limit <= 0 || len(out) < limit); i-- {
+		out = append(out, f.audit[i])
 	}
 	return out, nil
 }
