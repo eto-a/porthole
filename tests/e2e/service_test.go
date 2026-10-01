@@ -146,7 +146,8 @@ func waitServiceStopped(t *testing.T, exe string) {
 	})
 }
 
-// waitNotServed waits until the server no longer routes the label (404).
+// waitNotServed waits until the server no longer routes the label to a client: 404 once it is gone, or 502 while the
+// server keeps the name for its offline owner during the reconnect grace period (DESIGN §3.4).
 func (e *env) waitNotServed(t *testing.T, label string) {
 	t.Helper()
 	eventually(t, "the server to drop "+label, 30*time.Second, func() (bool, string) {
@@ -158,7 +159,7 @@ func (e *env) waitNotServed(t *testing.T, label string) {
 		}
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode == http.StatusNotFound, "status " + strconv.Itoa(resp.StatusCode)
+		return resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadGateway, "status " + strconv.Itoa(resp.StatusCode)
 	})
 }
 
