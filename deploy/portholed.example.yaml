@@ -18,14 +18,30 @@ domain: tun.example.com
 # Default ":443". Env: PORTHOLED_LISTEN
 listen: ":443"
 
-# TLS certificate and key (PEM). Set both or neither. With both set, portholed terminates TLS itself; a wildcard
-# certificate for <domain> and *.<domain> is needed. With neither set, portholed speaks plain HTTP, which is what you want
-# behind a TLS-terminating reverse proxy (see Caddyfile.example). A renewed certificate is picked up
-# within a minute; to apply it at once, send SIGHUP (`systemctl reload portholed`).
-# Env: PORTHOLED_TLS_CERT_FILE, PORTHOLED_TLS_KEY_FILE
+# TLS (ADR 0004). `mode` is one of:
+#   acme   portholed obtains and renews one certificate per host name itself (Let's Encrypt by default), on the first
+#          handshake for the name, and only for <domain> and for the names of live tunnels. Needs ports 443 and 80
+#          reachable from the internet. Certificates and the ACME account live in <data_dir>/certs.
+#   files  serve the certificate in cert_file/key_file (PEM; for example a wildcard from certbot). A renewed one is
+#          picked up within a minute; to apply it at once, send SIGHUP (`systemctl reload portholed`).
+#   off    plain HTTP, for use behind a reverse proxy that terminates TLS (see Caddyfile.example).
+# Empty mode means `files` when cert_file/key_file are set and `acme` otherwise (the default).
+# Env: PORTHOLED_TLS_MODE, PORTHOLED_TLS_CERT_FILE, PORTHOLED_TLS_KEY_FILE, PORTHOLED_ACME_EMAIL, PORTHOLED_ACME_CA
 tls:
-  cert_file: /etc/porthole/tls/fullchain.pem
-  key_file: /etc/porthole/tls/privkey.pem
+  mode: acme
+  # cert_file: /etc/porthole/tls/fullchain.pem   # mode files: set both or neither
+  # key_file: /etc/porthole/tls/privkey.pem
+  acme:
+    # Optional contact address for the ACME account (expiry notices from the CA).
+    # email: you@example.com
+    # ACME directory URL; default is Let's Encrypt production, which allows 50 new certificates per registered domain
+    # per week. To test, use the staging CA (its certificates are not trusted by browsers):
+    # ca: https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Plain-HTTP listener: answers ACME HTTP-01 challenges, serves /healthz and redirects everything else to https://.
+# Default ":80" in mode acme, off in the other modes; "" turns it off (then only TLS-ALPN-01 can validate); not allowed
+# in mode off. Env: PORTHOLED_HTTP_LISTEN
+# http_listen: ":80"
 
 # Scheme and port used in the public HTTP tunnel URLs that clients are shown. Default "https" and no port.
 # Change them only for local development (for example public_scheme: http, public_port: 8080) or when the

@@ -203,6 +203,7 @@ func standalone(t *testing.T, mod func(*config.Config)) (*Server, *fakeStore, *c
 	cfg.TCPBindHost = "127.0.0.1"
 	cfg.TCPPortRange = fmt.Sprintf("%d-%d", lo, hi)
 	cfg.DataDir = "unused"
+	cfg.TLS.Mode = config.TLSModeOff
 	cfg.ShutdownGrace = 2 * time.Second
 	if mod != nil {
 		mod(cfg)

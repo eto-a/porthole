@@ -2,8 +2,10 @@
 #   docker compose -f deploy/compose.yaml up -d --build
 #   docker compose -f deploy/compose.yaml exec portholed portholed token create --name home
 #
-# Copy deploy/portholed.example.yaml to deploy/portholed.yaml first and adjust it (domain, TLS files).
-# Expected layout of the TLS directory: ./tls/fullchain.pem and ./tls/privkey.pem, readable by uid 65532.
+# Copy deploy/portholed.example.yaml to deploy/portholed.yaml first and adjust it (domain, TLS mode). The default
+# mode "acme" gets certificates from Let's Encrypt itself and needs ports 80 and 443 published (below); certificates
+# are kept in the data volume. For `tls.mode: files` put the certificate in ./tls/fullchain.pem and ./tls/privkey.pem,
+# readable by uid 65532.
 
 services:
   portholed:
@@ -16,6 +18,8 @@ services:
     restart: unless-stopped
     ports:
       - "443:443"
+      # ACME HTTP-01 challenge and redirect to https:// (TLS mode acme, the default).
+      - "80:80"
       # TCP/SSH tunnel ports. Publishing 10000 ports is slow with the default Docker networking, so this example
       # uses a small range; keep it in sync with tcp_port_range (here via PORTHOLED_TCP_PORT_RANGE below).
       - "20000-20099:20000-20099"

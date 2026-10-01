@@ -75,6 +75,15 @@ func TestValidate(t *testing.T) {
 		"ssh no port":          "version: 1\ndomain: a.example\nssh_gateway:\n  listen: '2222'\n",
 		"ssh named port":       "version: 1\ndomain: a.example\nssh_gateway:\n  listen: ':ssh'\n",
 		"ssh negative":         "version: 1\ndomain: a.example\nssh_gateway:\n  max_conns_per_tunnel: -1\n",
+		"bad tls mode":         "version: 1\ndomain: a.example\ntls:\n  mode: auto\n",
+		"files no certs":       "version: 1\ndomain: a.example\ntls:\n  mode: files\n",
+		"acme with certs":      "version: 1\ndomain: a.example\ntls:\n  mode: acme\n  cert_file: c.pem\n  key_file: k.pem\n",
+		"off with certs":       "version: 1\ndomain: a.example\ntls:\n  mode: off\n  cert_file: c.pem\n  key_file: k.pem\n",
+		"acme in files":        "version: 1\ndomain: a.example\ntls:\n  cert_file: c.pem\n  key_file: k.pem\n  acme:\n    email: a@b.example\n",
+		"acme in off":          "version: 1\ndomain: a.example\ntls:\n  mode: off\n  acme:\n    ca: https://ca.example/dir\n",
+		"bad acme ca":          "version: 1\ndomain: a.example\ntls:\n  acme:\n    ca: not-a-url\n",
+		"http listen off":      "version: 1\ndomain: a.example\nhttp_listen: ':80'\ntls:\n  mode: off\n",
+		"bad http listen":      "version: 1\ndomain: a.example\nhttp_listen: '80'\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -131,5 +140,78 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("PORTHOLED_PUBLIC_PORT", "x")
 	if _, err := Load(""); err == nil {
 		t.Fatal("bad int env accepted")
+	}
+}
+
+func TestTLSModeDefaults(t *testing.T) {
+	tests := []struct {
+		name, body, mode, httpListen string
+		tlsEnabled                   bool
+	}{
+		{"no tls section is acme", "", "acme", ":80", true},
+		{"cert files imply files", "tls:\n  cert_file: c.pem\n  key_file: k.pem\n", "files", "", true},
+		{"explicit files", "tls:\n  mode: files\n  cert_file: c.pem\n  key_file: k.pem\n", "files", "", true},
+		{"explicit off", "tls:\n  mode: off\n", "off", "", false},
+		{"acme with options", "tls:\n  mode: acme\n  acme:\n    email: a@b.example\n    ca: https://ca.example/dir\n", "acme", ":80", true},
+		{"http_listen override", "http_listen: ':8080'\n", "acme", ":8080", true},
+		{"http_listen disabled", "http_listen: ''\n", "acme", "", true},
+		{"http_listen with files", "http_listen: ':80'\ntls:\n  cert_file: c.pem\n  key_file: k.pem\n", "files", ":80", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(write(t, "version: 1\ndomain: a.example\ndata_dir: /tmp/x\n"+tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.TLS.EffectiveMode(); got != tc.mode {
+				t.Errorf("mode %q, want %q", got, tc.mode)
+			}
+			if got := c.HTTPListenAddr(); got != tc.httpListen {
+				t.Errorf("http listen %q, want %q", got, tc.httpListen)
+			}
+			if got := c.TLS.Enabled(); got != tc.tlsEnabled {
+				t.Errorf("Enabled %v, want %v", got, tc.tlsEnabled)
+			}
+		})
+	}
+}
+
+func TestACMEDefaults(t *testing.T) {
+	c, err := Load(write(t, "version: 1\ndomain: a.example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.TLS.ACME.CAURL(); got != DefaultACMECA {
+		t.Errorf("default CA %q", got)
+	}
+	c, err = Load(write(t, "version: 1\ndomain: a.example\ntls:\n  acme:\n    ca: https://ca.example/dir\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.TLS.ACME.CAURL(); got != "https://ca.example/dir" {
+		t.Errorf("custom CA %q", got)
+	}
+}
+
+func TestTLSEnv(t *testing.T) {
+	t.Setenv("PORTHOLED_TLS_MODE", "acme")
+	t.Setenv("PORTHOLED_ACME_EMAIL", "ops@a.example")
+	t.Setenv("PORTHOLED_ACME_CA", "https://acme-staging-v02.api.letsencrypt.org/directory")
+	t.Setenv("PORTHOLED_HTTP_LISTEN", ":8080")
+	c, err := Load(write(t, "version: 1\ndomain: a.example\ntls:\n  mode: off\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TLS.Mode != "acme" || c.TLS.ACME.Email != "ops@a.example" || !strings.Contains(c.TLS.ACME.CA, "staging") || c.HTTPListenAddr() != ":8080" {
+		t.Fatalf("env not applied: %+v http=%q", c.TLS, c.HTTPListenAddr())
+	}
+	// An explicitly empty PORTHOLED_HTTP_LISTEN disables the listener.
+	t.Setenv("PORTHOLED_HTTP_LISTEN", "")
+	c, err = Load(write(t, "version: 1\ndomain: a.example\ntls:\n  mode: acme\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.HTTPListenAddr() != "" {
+		t.Fatalf("empty env should disable the http listener, got %q", c.HTTPListenAddr())
 	}
 }

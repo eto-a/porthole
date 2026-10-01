@@ -39,6 +39,7 @@ func testConfig() (*config.Config, error) {
 	c.Domain = "example.test"
 	c.Listen = "127.0.0.1:0"
 	c.DataDir = "unused"
+	c.TLS.Mode = config.TLSModeOff
 	c.ShutdownGrace = time.Second
 	return c, nil
 }

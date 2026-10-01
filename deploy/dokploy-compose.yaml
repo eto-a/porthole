@@ -1,0 +1,86 @@
+# portholed behind the Traefik of Dokploy, with TLS passthrough (ADR 0004, docs/server.md).
+#
+# Traefik owns ports 80 and 443 but cannot issue a wildcard certificate without a DNS-01 provider. So it does not
+# terminate TLS for the tunnel hosts: it passes the TLS connection through by SNI to portholed, which gets one
+# certificate per host name from Let's Encrypt itself (TLS mode "acme"), and it forwards plain HTTP for the same hosts
+# to portholed's port 80 (ACME HTTP-01 challenge and the redirect to https://).
+#
+# How to use it in Dokploy:
+#   1. DNS: A records for tun.example.com and *.tun.example.com pointing at the server running Dokploy.
+#   2. Create a Compose service, choose "Raw" as the source and paste this file.
+#   3. Replace tun.example.com in the labels below (the three Traefik rules) and in PORTHOLED_DOMAIN with your domain.
+#   4. Deploy, then create a token:
+#        docker exec -it <container> /usr/local/bin/portholed token create --name home
+#      (Dokploy shows the container name under Logs; the image has no shell, so run the binary directly.)
+#
+# Requirements and notes:
+#   - The TCP routers need Traefik v3 (Dokploy's default) and its `websecure` and `web` entrypoints on 443 and 80. On
+#     Traefik v2 the HostSNIRegexp syntax differs.
+#   - TCP tunnel ports and the SSH gateway are published directly, not through Traefik. Open them in the firewall.
+#   - Because Traefik passes the connection through, portholed sees Traefik's address as the peer of every visitor
+#     and client, so per-address limits see one address. Leave trust_proxy_headers off: HTTPS arrives by
+#     passthrough and carries no X-Forwarded-For.
+#   - To test without touching Let's Encrypt production limits (50 certificates per registered domain per week),
+#     uncomment PORTHOLED_ACME_CA below. Staging certificates are not trusted by browsers.
+#   - Dollar signs in Traefik rules are doubled ($$) because Compose would otherwise interpolate them.
+
+services:
+  portholed:
+    image: ghcr.io/eto-a/porthole/portholed:latest
+    restart: unless-stopped
+    # Environment-only setup: no configuration file.
+    command: ["serve", "--config", ""]
+    environment:
+      PORTHOLED_DOMAIN: tun.example.com
+      # TLS mode acme is the default; the HTTPS listener is :443 and the plain HTTP one (challenge, redirect) is :80,
+      # both inside the container.
+      # PORTHOLED_ACME_EMAIL: you@example.com
+      # PORTHOLED_ACME_CA: https://acme-staging-v02.api.letsencrypt.org/directory
+      PORTHOLED_TCP_PORT_RANGE: "20000-20099"
+      PORTHOLED_SSH_LISTEN: ":2222"
+    ports:
+      # TCP/SSH tunnels. Keep the range in sync with PORTHOLED_TCP_PORT_RANGE; a small range keeps Docker's port
+      # publishing fast.
+      - "20000-20099:20000-20099"
+      # SSH gateway (`ssh -J`).
+      - "2222:2222"
+    volumes:
+      # Database and, in <data_dir>/certs, the certificates and the ACME account. Keep it across redeploys, or every
+      # restart orders new certificates and runs into the Let's Encrypt limits.
+      - porthole-data:/var/lib/porthole
+    sysctls:
+      # Allow the non-root process to bind ports 443 and 80 (capabilities are dropped below).
+      net.ipv4.ip_unprivileged_port_start: 0
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+
+      # HTTPS: TLS passthrough by SNI, to port 443 of the container. Traefik does not decrypt anything.
+      - traefik.tcp.routers.porthole-tls-apex.rule=HostSNI(`tun.example.com`)
+      - traefik.tcp.routers.porthole-tls-apex.entrypoints=websecure
+      - traefik.tcp.routers.porthole-tls-apex.tls.passthrough=true
+      - traefik.tcp.routers.porthole-tls-apex.service=porthole-tls
+      - traefik.tcp.routers.porthole-tls-wild.rule=HostSNIRegexp(`^[a-z0-9-]+\.tun\.example\.com$$`)
+      - traefik.tcp.routers.porthole-tls-wild.entrypoints=websecure
+      - traefik.tcp.routers.porthole-tls-wild.tls.passthrough=true
+      - traefik.tcp.routers.porthole-tls-wild.service=porthole-tls
+      - traefik.tcp.services.porthole-tls.loadbalancer.server.port=443
+
+      # HTTP: ACME HTTP-01 challenge and the redirect to https://, to port 80 of the container.
+      - traefik.http.routers.porthole-http.rule=Host(`tun.example.com`) || HostRegexp(`^[a-z0-9-]+\.tun\.example\.com$$`)
+      - traefik.http.routers.porthole-http.entrypoints=web
+      - traefik.http.routers.porthole-http.service=porthole-http
+      - traefik.http.services.porthole-http.loadbalancer.server.port=80
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  porthole-data:

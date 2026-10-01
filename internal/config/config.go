@@ -33,6 +33,11 @@ type Config struct {
 	// Listen is the address of the HTTP(S) listener, e.g. ":443".
 	Listen string `yaml:"listen"`
 
+	// HTTPListen is the address of the plain-HTTP listener that answers ACME HTTP-01 challenges and redirects
+	// everything else to https:// (ADR 0004). Unset means ":80" in TLS mode "acme" and no listener in the other
+	// modes; an explicit empty string disables it. It is an error in mode "off", where Listen is already plain HTTP.
+	HTTPListen *string `yaml:"http_listen"`
+
 	TLS TLS `yaml:"tls"`
 
 	// PublicScheme is the scheme used in public HTTP tunnel URLs ("https" or "http").
@@ -71,10 +76,37 @@ type Config struct {
 	ShutdownGrace time.Duration `yaml:"shutdown_grace"`
 }
 
-// TLS configures certificates. Empty CertFile/KeyFile means plain HTTP (for use behind a TLS-terminating proxy).
+// TLS modes (ADR 0004).
+const (
+	// TLSModeACME obtains and renews one certificate per host name on demand via ACME.
+	TLSModeACME = "acme"
+	// TLSModeFiles serves the certificate from CertFile/KeyFile (for example a wildcard from certbot).
+	TLSModeFiles = "files"
+	// TLSModeOff serves plain HTTP, for use behind a proxy that terminates TLS.
+	TLSModeOff = "off"
+)
+
+// DefaultACMECA is the ACME directory used when TLS.ACME.CA is empty (Let's Encrypt production).
+const DefaultACMECA = "https://acme-v02.api.letsencrypt.org/directory"
+
+// TLS configures how the HTTP listener gets certificates.
 type TLS struct {
+	// Mode is "acme", "files" or "off". Empty means "files" when CertFile is set and "acme" otherwise.
+	Mode string `yaml:"mode"`
+
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+
+	ACME ACME `yaml:"acme"`
+}
+
+// ACME configures the "acme" TLS mode.
+type ACME struct {
+	// Email is the optional ACME account contact address (expiry notices from the CA).
+	Email string `yaml:"email"`
+
+	// CA is the ACME directory URL; empty means Let's Encrypt production (DefaultACMECA).
+	CA string `yaml:"ca"`
 }
 
 // DefaultSSHMaxConnsPerTunnel is the default for SSHGateway.MaxConnsPerTunnel.
@@ -105,8 +137,39 @@ func (g SSHGateway) Port() int {
 	return n
 }
 
+// EffectiveMode resolves an empty Mode: "files" when a certificate file is set, "acme" otherwise.
+func (t TLS) EffectiveMode() string {
+	switch {
+	case t.Mode != "":
+		return t.Mode
+	case t.CertFile != "":
+		return TLSModeFiles
+	default:
+		return TLSModeACME
+	}
+}
+
 // Enabled reports whether the server terminates TLS itself.
-func (t TLS) Enabled() bool { return t.CertFile != "" }
+func (t TLS) Enabled() bool { return t.EffectiveMode() != TLSModeOff }
+
+// CAURL returns the ACME directory URL with the default applied.
+func (a ACME) CAURL() string {
+	if a.CA == "" {
+		return DefaultACMECA
+	}
+	return a.CA
+}
+
+// HTTPListenAddr returns the address of the plain-HTTP (challenge and redirect) listener, or "" when none runs.
+func (c *Config) HTTPListenAddr() string {
+	if c.HTTPListen != nil {
+		return *c.HTTPListen
+	}
+	if c.TLS.EffectiveMode() == TLSModeACME {
+		return ":80"
+	}
+	return ""
+}
 
 // Default returns a configuration with all defaults applied and no domain.
 func Default() *Config {
@@ -152,6 +215,9 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_LISTEN":         &c.Listen,
 		"PORTHOLED_TLS_CERT_FILE":  &c.TLS.CertFile,
 		"PORTHOLED_TLS_KEY_FILE":   &c.TLS.KeyFile,
+		"PORTHOLED_TLS_MODE":       &c.TLS.Mode,
+		"PORTHOLED_ACME_EMAIL":     &c.TLS.ACME.Email,
+		"PORTHOLED_ACME_CA":        &c.TLS.ACME.CA,
 		"PORTHOLED_PUBLIC_SCHEME":  &c.PublicScheme,
 		"PORTHOLED_SERVER_URL":     &c.ServerURL,
 		"PORTHOLED_TCP_PORT_RANGE": &c.TCPPortRange,
@@ -177,6 +243,9 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 			*p = n
 		}
 	}
+	if v, ok := lookup("PORTHOLED_HTTP_LISTEN"); ok {
+		c.HTTPListen = &v
+	}
 	if v, ok := lookup("PORTHOLED_TRUST_PROXY_HEADERS"); ok {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
@@ -201,9 +270,7 @@ func (c *Config) Validate() error {
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		errs = append(errs, fmt.Errorf("listen: %w", err))
 	}
-	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
-		errs = append(errs, errors.New("tls: cert_file and key_file must be set together"))
-	}
+	errs = append(errs, c.validateTLS()...)
 	if c.PublicScheme != "https" && c.PublicScheme != "http" {
 		errs = append(errs, fmt.Errorf("public_scheme: %q, want https or http", c.PublicScheme))
 	}
@@ -263,6 +330,42 @@ func validateServerURL(s string) error {
 // ClientURL returns the address clients should connect to: ServerURL without a trailing slash, or "" when
 // ServerURL is not set.
 func (c *Config) ClientURL() string { return strings.TrimSuffix(c.ServerURL, "/") }
+
+func (c *Config) validateTLS() []error {
+	var errs []error
+	t := c.TLS
+	if (t.CertFile == "") != (t.KeyFile == "") {
+		errs = append(errs, errors.New("tls: cert_file and key_file must be set together"))
+	}
+	switch t.EffectiveMode() {
+	case TLSModeFiles:
+		if t.CertFile == "" {
+			errs = append(errs, errors.New("tls.mode: files needs cert_file and key_file"))
+		}
+	case TLSModeACME, TLSModeOff:
+		if t.CertFile != "" {
+			errs = append(errs, fmt.Errorf("tls.mode: %s does not use cert_file/key_file; remove them or use mode files", t.EffectiveMode()))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("tls.mode: %q, want acme, files or off", t.Mode))
+	}
+	if t.EffectiveMode() != TLSModeACME && (t.ACME.Email != "" || t.ACME.CA != "") {
+		errs = append(errs, errors.New("tls.acme: only valid with tls.mode acme"))
+	}
+	if t.ACME.CA != "" {
+		if u, err := url.Parse(t.ACME.CA); err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+			errs = append(errs, fmt.Errorf("tls.acme.ca: %q is not an http(s) URL", t.ACME.CA))
+		}
+	}
+	if a := c.HTTPListenAddr(); a != "" {
+		if t.EffectiveMode() == TLSModeOff {
+			errs = append(errs, errors.New("http_listen: not allowed with tls.mode off (listen is already plain HTTP)"))
+		} else if _, _, err := net.SplitHostPort(a); err != nil {
+			errs = append(errs, fmt.Errorf("http_listen: %w", err))
+		}
+	}
+	return errs
+}
 
 // PortRange parses TCPPortRange.
 func (c *Config) PortRange() (lo, hi int, err error) {

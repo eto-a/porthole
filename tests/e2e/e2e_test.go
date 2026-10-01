@@ -218,6 +218,8 @@ func setup(t *testing.T, extraConfig ...string) (*env, string) {
 domain: localhost
 listen: "127.0.0.1:%d"
 public_scheme: http
+tls:
+  mode: off
 public_port: %d
 tcp_port_range: "%d-%d"
 tcp_bind_host: 127.0.0.1
