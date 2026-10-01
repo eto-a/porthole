@@ -168,6 +168,38 @@ exit status is 6. If the message is instead that no daemon is running, check `sy
 restarting it in a loop. `--no-daemon` runs the tunnel in the current process with your own credentials, but
 see [`session_replaced`](#session_replaced-another-porthole-process-logged-in) if the daemon uses the same token.
 
+## Windows SmartScreen and macOS Gatekeeper
+
+The release binaries are not signed with an Authenticode certificate or notarized by Apple yet. The checksums file is
+signed with Sigstore and the archives have build provenance (see
+[Verifying a download](install.md#verifying-a-download)), but neither Windows nor macOS looks at those.
+
+- **Windows**: SmartScreen ("Windows protected your PC") may block `porthole.exe` downloaded in a browser. Check the
+  download first, then click "More info" and "Run anyway", or tick "Unblock" in the file's Properties, or run
+  `Unblock-File .\porthole.exe` in PowerShell. Files installed by winget or Scoop (once published) are not affected in
+  practice.
+- **macOS**: "porthole cannot be opened because the developer cannot be verified", or the binary is killed on start,
+  for a file downloaded in a browser. Remove the quarantine attribute after you have verified the download:
+  `xattr -d com.apple.quarantine /usr/local/bin/porthole`. `curl` and `install.sh` do not set it. Do not disable
+  Gatekeeper system-wide.
+
+## Windows service: permission denied on the pipe
+
+Available from v0.4. The service listens on `\\.\pipe\ProtectedPrefix\Administrators\porthole`, which only
+administrators may open unless the service was installed with `--allow`. Either run the command in an Administrator
+terminal, or let your account use the service: in an Administrator terminal run
+`porthole service install --allow "<DOMAIN\user or group>"` again (it updates the existing service), then retry
+`porthole status`. `--no-daemon` runs the tunnel in the current process with your own credentials, but see
+[`session_replaced`](#session_replaced-another-porthole-process-logged-in) if the service uses the same token.
+`porthole service install` itself needs an Administrator terminal and never elevates by itself.
+
+## macOS: permission denied on the socket
+
+Available from v0.4. The socket of the system LaunchDaemon, `/var/run/porthole/porthole.sock`, is owned by
+`root:admin` (mode `0660`), so only administrator accounts can use it. Use an admin account, or install the per-user
+agent instead (`porthole service uninstall`, then `porthole service install --user`), which listens on a socket only
+you can reach.
+
 ## Every visitor has the IP address of Traefik
 
 Behind Traefik or Dokploy with TLS passthrough every connection reaches `portholed` from the proxy, and there is no
