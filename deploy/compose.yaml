@@ -19,8 +19,11 @@ services:
       # TCP/SSH tunnel ports. Publishing 10000 ports is slow with the default Docker networking, so this example
       # uses a small range; keep it in sync with tcp_port_range (here via PORTHOLED_TCP_PORT_RANGE below).
       - "20000-20099:20000-20099"
+      # SSH gateway (`ssh -J`), enabled by PORTHOLED_SSH_LISTEN below.
+      - "2222:2222"
     environment:
       PORTHOLED_TCP_PORT_RANGE: "20000-20099"
+      PORTHOLED_SSH_LISTEN: ":2222"
       # Any other setting can be given the same way, for example:
       # PORTHOLED_DOMAIN: tun.example.com
     volumes:

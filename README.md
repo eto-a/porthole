@@ -261,8 +261,30 @@ $ porthole http 8080                  # https://http-8080-home.tun.example.com
 $ porthole http 8080 --name blog      # https://blog-home.tun.example.com
 $ porthole tcp 7575                   # tcp://tun.example.com:<port from the range>
 $ porthole tcp 192.168.1.5:7575 --remote-port 20017
-$ porthole ssh                        # TCP tunnel to localhost:22
+$ porthole ssh                        # TCP tunnel to localhost:22 (or an SSH-gateway tunnel, see below)
 ```
+
+**SSH through the gateway.** When the server enables `ssh_gateway.listen` (for example `:2222`), `porthole ssh` is
+reachable by the client name through the gateway, with no public TCP port:
+
+```console
+$ ssh -J tun.example.com:2222 user@home          # "home" is the client name; "nas-home" is tunnel nas of client home
+```
+
+or once in `~/.ssh/config`:
+
+```
+Host home
+    HostName home
+    User user
+    ProxyJump tun.example.com:2222
+```
+
+The gateway only forwards `direct-tcpip` channels, so it never gives a shell on the server; compare its host key
+fingerprint (in the server log, or `portholed ssh-hostkey`) on the first connection. With `porthole ssh --private`
+the gateway first asks for a porthole token of the same client (or one with the scope `connect:<client>`) as the
+password of the jump host, which you select with the user name `token`: `ssh -J token@tun.example.com:2222 user@home`
+(`ProxyJump token@tun.example.com:2222`). Afterwards you enter the target's own password or use your key as usual.
 
 Commands run in the foreground, print the public address, and reconnect automatically if the connection drops.
 If the server cannot be reached at all when the command starts (wrong URL, server down), it gives up after 5

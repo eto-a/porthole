@@ -31,6 +31,8 @@ VOLUME /var/lib/porthole
 EXPOSE 443
 # TCP tunnels use ports from `tcp_port_range` (default 20000-29999). Publish the range you configure, for example
 # `-p 20000-20099:20000-20099` with PORTHOLED_TCP_PORT_RANGE=20000-20099, or use host networking.
+# The SSH gateway (`ssh_gateway.listen`, PORTHOLED_SSH_LISTEN) is off by default; to use it publish its port, for
+# example `-p 2222:2222` with PORTHOLED_SSH_LISTEN=:2222.
 
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/portholed"]

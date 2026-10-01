@@ -44,6 +44,7 @@ func newRoot() *cobra.Command {
 
 	root.AddCommand(
 		servercmd.NewServe(load, openStore, version),
+		servercmd.NewHostKey(load),
 		tokencmd.New(load),
 		&cobra.Command{
 			Use:   "version",

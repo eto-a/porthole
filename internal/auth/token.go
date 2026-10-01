@@ -104,6 +104,10 @@ func ValidScope(s string) bool {
 	case ScopeTunnelHTTP, ScopeTunnelTCP, ScopeTunnelUDP:
 		return true
 	}
+	// connect:<client> lets a token open private SSH tunnels of that client through the SSH gateway (ADR 0003).
+	if client, ok := strings.CutPrefix(s, "connect:"); ok {
+		return ValidName(client)
+	}
 	return false
 }
 

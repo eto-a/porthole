@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -34,6 +35,7 @@ var (
 	httpURLRe  = regexp.MustCompile(`http://([a-z0-9-]+)\.localhost:\d+`)
 	tcpURLRe   = regexp.MustCompile(`tcp://localhost:(\d+)`)
 	sshCmdRe   = regexp.MustCompile(`ssh -p (\d+) tester@localhost`)
+	sshJumpRe  = regexp.MustCompile(`ssh -J (\S+) tester@(\S+)`)
 	repoRootRe = "../.."
 )
 
@@ -48,7 +50,7 @@ const (
 
 // skipInCompat skips a test that needs a feature the other side may lack. Call it first in any test that covers
 // behaviour added after the baseline release; the compat job sets PORTHOLE_E2E_COMPAT=1.
-func skipInCompat(t *testing.T, why string) { //nolint:unused // no scenario needs it yet; it is the hook for the first one that does
+func skipInCompat(t *testing.T, why string) {
 	t.Helper()
 	if os.Getenv(envCompat) == "1" {
 		t.Skipf("skipped in cross-version mode: %s", why)
@@ -203,13 +205,14 @@ type env struct {
 	port       int
 	server     string // client-facing URL
 	clientConf string
+	dataDir    string
 }
 
 // setup writes a server config, creates a token with the CLI and starts portholed.
-func setup(t *testing.T) (*env, string) {
+func setup(t *testing.T, extraConfig ...string) (*env, string) {
 	t.Helper()
 	dir := t.TempDir()
-	e := &env{port: freePort(t), clientConf: filepath.Join(dir, "client.yaml")}
+	e := &env{port: freePort(t), clientConf: filepath.Join(dir, "client.yaml"), dataDir: filepath.Join(dir, "data")}
 	lo := 41000 + int(time.Now().UnixNano()%2000)
 	cfg := fmt.Sprintf(`version: 1
 domain: localhost
@@ -220,7 +223,8 @@ tcp_port_range: "%d-%d"
 tcp_bind_host: 127.0.0.1
 data_dir: %q
 shutdown_grace: 2s
-`, e.port, e.port, lo, lo+50, filepath.ToSlash(filepath.Join(dir, "data")))
+`, e.port, e.port, lo, lo+50, filepath.ToSlash(e.dataDir))
+	cfg += strings.Join(extraConfig, "")
 	e.cfgPath = filepath.Join(dir, "portholed.yaml")
 	if err := os.WriteFile(e.cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -395,9 +399,15 @@ func echo(t *testing.T, port string) {
 		t.Fatalf("dial public port: %v", err)
 	}
 	defer conn.Close()
+	echoConn(t, conn)
+}
+
+// echoConn sends 512 KiB through conn, half-closes it and expects the same bytes back.
+func echoConn(t *testing.T, conn net.Conn) {
+	t.Helper()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	payload := bytes.Repeat([]byte("porthole"), 64<<10) // 512 KiB
-	go func() { _, _ = conn.Write(payload); _ = conn.(*net.TCPConn).CloseWrite() }()
+	go func() { _, _ = conn.Write(payload); halfClose(conn) }()
 	got, err := io.ReadAll(conn)
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("echo: %d bytes, err %v", len(got), err)
@@ -449,5 +459,55 @@ func TestRevokeStopsLiveClient(t *testing.T) {
 		}
 	case <-time.After(45 * time.Second):
 		t.Fatal("client still running 45 s after its token was revoked")
+	}
+}
+
+func halfClose(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
+// TestSSHGateway runs the whole chain with real binaries: porthole ssh registers an ssh tunnel (a TCP echo server
+// stands in for sshd) and an x/crypto SSH client reaches it through the gateway as `ssh -J` would.
+func TestSSHGateway(t *testing.T) {
+	skipInCompat(t, "the ssh gateway does not exist in older releases")
+	gwPort := freePort(t)
+	e, tok := setup(t, fmt.Sprintf("ssh_gateway:\n  listen: %q\n", fmt.Sprintf("127.0.0.1:%d", gwPort)))
+	_, tcpPort := backend(t)
+
+	c := e.client(t, tok, "ssh", "--local-port", fmt.Sprint(tcpPort), "--user", "tester")
+	m := c.waitFor(t, sshJumpRe, 20*time.Second)
+	if want := fmt.Sprintf("localhost:%d", gwPort); m[1] != want || m[2] != "home" {
+		t.Fatalf("ssh command %q: jump %q target %q, want %q and home", m[0], m[1], m[2], want)
+	}
+
+	// The fingerprint printed by the subcommand is the one the gateway presents.
+	fp := strings.TrimSpace(run(t, portholed, "ssh-hostkey", "-c", e.cfgPath))
+	var seen string
+	conn, err := ssh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", gwPort), &ssh.ClientConfig{
+		User: "tester",
+		HostKeyCallback: func(_ string, _ net.Addr, k ssh.PublicKey) error {
+			seen = ssh.FingerprintSHA256(k)
+			return nil
+		},
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("dial gateway: %v", err)
+	}
+	defer conn.Close()
+	if seen != fp || !strings.HasPrefix(fp, "SHA256:") {
+		t.Errorf("host key fingerprint %q, ssh-hostkey printed %q", seen, fp)
+	}
+	ch, err := conn.Dial("tcp", "home:22")
+	if err != nil {
+		t.Fatalf("direct-tcpip to home: %v", err)
+	}
+	defer ch.Close()
+	_ = ch.SetDeadline(time.Now().Add(10 * time.Second))
+	echoConn(t, ch)
+	if _, err := conn.Dial("tcp", "nobody:22"); err == nil {
+		t.Error("unknown target must be refused")
 	}
 }

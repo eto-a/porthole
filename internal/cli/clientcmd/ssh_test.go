@@ -56,7 +56,7 @@ func TestSSHCommandPrivateAndNamed(t *testing.T) {
 	if got.Tunnels[0] != (client.TunnelSpec{Kind: "ssh", Name: "nas", LocalAddr: "127.0.0.1:22", Private: true}) {
 		t.Fatalf("tunnels %+v", got.Tunnels)
 	}
-	if !strings.Contains(stdout, "ssh -J tun.example.com:2222 bob@nas-home") || !strings.Contains(stdout, "porthole token") {
+	if !strings.Contains(stdout, "ssh -J token@tun.example.com:2222 bob@nas-home") || !strings.Contains(stdout, "porthole token") {
 		t.Errorf("stdout %q", stdout)
 	}
 }

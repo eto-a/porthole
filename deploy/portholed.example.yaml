@@ -46,6 +46,14 @@ tcp_port_range: "20000-29999"
 # Default "/var/lib/porthole". Env: PORTHOLED_DATA_DIR
 data_dir: /var/lib/porthole
 
+# SSH gateway: a jump host for `porthole ssh` tunnels, used as `ssh -J tun.example.com:2222 user@home`. It accepts
+# only direct-tcpip channels (no shell on this machine). Off unless `listen` is set. On first start it creates the
+# host key <data_dir>/ssh_host_ed25519_key and logs its SHA256 fingerprint; `portholed ssh-hostkey` prints it again.
+# max_conns_per_tunnel limits concurrent SSH channels per tunnel (default 256). Env: PORTHOLED_SSH_LISTEN
+# ssh_gateway:
+#   listen: ":2222"
+#   max_conns_per_tunnel: 256
+
 # Take visitor IP addresses from X-Forwarded-For. Enable ONLY when portholed is reachable exclusively through a
 # reverse proxy you control; otherwise visitors can spoof their address. Default false.
 # Env: PORTHOLED_TRUST_PROXY_HEADERS

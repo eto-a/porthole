@@ -95,3 +95,11 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestValidScopeConnect(t *testing.T) {
+	for s, want := range map[string]bool{"connect:home": true, "connect:": false, "connect:Bad_Name": false, "connect": false} {
+		if got := ValidScope(s); got != want {
+			t.Errorf("ValidScope(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
