@@ -17,9 +17,12 @@
 #   - The TCP routers need Traefik v3 (Dokploy's default) and its `websecure` and `web` entrypoints on 443 and 80. On
 #     Traefik v2 the HostSNIRegexp syntax differs.
 #   - TCP tunnel ports and the SSH gateway are published directly, not through Traefik. Open them in the firewall.
-#   - Because Traefik passes the connection through, portholed sees Traefik's address as the peer of every visitor
-#     and client, so per-address limits see one address. Leave trust_proxy_headers off: HTTPS arrives by
-#     passthrough and carries no X-Forwarded-For.
+#   - Because Traefik passes the connection through, portholed would see Traefik's address as the peer of every
+#     visitor and client. So Traefik announces the real address with the PROXY protocol v2 (the proxyProtocol label on
+#     the TCP service below) and portholed accepts it only from PORTHOLED_TRUSTED_PROXIES. Leave
+#     trust_proxy_headers off: passthrough HTTPS carries no X-Forwarded-For.
+#   - Only HTTPS goes through the PROXY protocol. Traefik's HTTP routers cannot send it, so the plain HTTP listener
+#     (challenge and redirect) still sees Traefik's address; it serves no tunnel traffic.
 #   - To test without touching Let's Encrypt production limits (50 certificates per registered domain per week),
 #     uncomment PORTHOLED_ACME_CA below. Staging certificates are not trusted by browsers.
 #   - Dollar signs in Traefik rules are doubled ($$) because Compose would otherwise interpolate them.
@@ -38,6 +41,12 @@ services:
       # PORTHOLED_ACME_CA: https://acme-staging-v02.api.letsencrypt.org/directory
       PORTHOLED_TCP_PORT_RANGE: "20000-20099"
       PORTHOLED_SSH_LISTEN: ":2222"
+      # Accept PROXY protocol headers on the HTTPS listener from the proxies below, and require them from those
+      # proxies. The list is the address range of dokploy-network, where Traefik runs; the values here are the usual
+      # Docker private ranges, so narrow them to the subnet shown by `docker network inspect dokploy-network`.
+      # Connections from any other address (the published SSH and TCP tunnel ports) must NOT send a header.
+      PORTHOLED_PROXY_PROTOCOL: "true"
+      PORTHOLED_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12"
     ports:
       # TCP/SSH tunnels. Keep the range in sync with PORTHOLED_TCP_PORT_RANGE; a small range keeps Docker's port
       # publishing fast.
@@ -71,6 +80,8 @@ services:
       - traefik.tcp.routers.porthole-tls-wild.tls.passthrough=true
       - traefik.tcp.routers.porthole-tls-wild.service=porthole-tls
       - traefik.tcp.services.porthole-tls.loadbalancer.server.port=443
+      # Send the real visitor address to portholed (PROXY protocol v2); see PORTHOLED_PROXY_PROTOCOL above.
+      - traefik.tcp.services.porthole-tls.loadbalancer.proxyProtocol.version=2
 
       # HTTP: ACME HTTP-01 challenge and the redirect to https://, to port 80 of the container.
       - traefik.http.routers.porthole-http.rule=Host(`tun.example.com`) || HostRegexp(`^[a-z0-9-]+\.tun\.example\.com$$`)

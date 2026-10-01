@@ -209,6 +209,11 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer func() { _ = s.Close() }()
 
+	// PROXY protocol is parsed below TLS, so wrap the raw listener first.
+	ln, err := s.wrapProxyIf(ln, s.cfg.ProxyProtocol)
+	if err != nil {
+		return err
+	}
 	if err := s.startSSHGateway(ctx); err != nil {
 		_ = ln.Close()
 		return err

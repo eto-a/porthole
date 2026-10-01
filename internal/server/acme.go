@@ -157,6 +157,9 @@ func (s *Server) startHTTPListener(ctx context.Context, addr string, h http.Hand
 	if err != nil {
 		return nil, fmt.Errorf("server: listen %s: %w", addr, err)
 	}
+	if ln, err = s.wrapProxyIf(ln, s.cfg.ProxyProtocol && s.cfg.ProxyProtocolHTTP); err != nil {
+		return nil, err
+	}
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: httpReadHeaderTimeout,

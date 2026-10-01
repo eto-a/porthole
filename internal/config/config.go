@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -77,6 +78,19 @@ type Config struct {
 	// TrustProxyHeaders makes the server take visitor addresses from X-Forwarded-For.
 	// Enable only when portholed runs behind a reverse proxy you control.
 	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
+
+	// ProxyProtocol makes the HTTP(S) listener and the SSH gateway accept PROXY protocol v1/v2 headers from the
+	// peers in TrustedProxies, so that per-IP limits, the failure limiter and the logs see the real visitor address
+	// when a proxy forwards raw TCP (for example Traefik with TLS passthrough). A peer in TrustedProxies must send a
+	// header; any other peer must not (its connection is refused if it does). Requires TrustedProxies.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+
+	// ProxyProtocolHTTP extends ProxyProtocol to the plain-HTTP listener (http_listen). Off by default because
+	// proxies usually cannot add PROXY headers to HTTP routers (Traefik can only do it for TCP services).
+	ProxyProtocolHTTP bool `yaml:"proxy_protocol_http"`
+
+	// TrustedProxies lists the IP addresses and CIDR ranges of the proxies allowed to send PROXY protocol headers.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 
 	// MaxTunnelsPerClient applies to tokens without their own limit.
 	MaxTunnelsPerClient int `yaml:"max_tunnels_per_client"`
@@ -293,6 +307,26 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		}
 		c.TrustProxyHeaders = b
 	}
+	for k, p := range map[string]*bool{
+		"PORTHOLED_PROXY_PROTOCOL":      &c.ProxyProtocol,
+		"PORTHOLED_PROXY_PROTOCOL_HTTP": &c.ProxyProtocolHTTP,
+	} {
+		if v, ok := lookup(k); ok {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return fmt.Errorf("config: %s: %w", k, err)
+			}
+			*p = b
+		}
+	}
+	if v, ok := lookup("PORTHOLED_TRUSTED_PROXIES"); ok {
+		c.TrustedProxies = nil
+		for _, e := range strings.Split(v, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				c.TrustedProxies = append(c.TrustedProxies, e)
+			}
+		}
+	}
 	if v, ok := lookup("PORTHOLED_TRAFFIC_ALLOW_INSPECT"); ok {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
@@ -349,6 +383,7 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("metrics_listen: %w", err))
 		}
 	}
+	errs = append(errs, c.validateProxyProtocol()...)
 	if c.SSHGateway.MaxConnsPerTunnel < 0 {
 		errs = append(errs, errors.New("ssh_gateway.max_conns_per_tunnel: must not be negative"))
 	}
@@ -374,6 +409,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: %w", err)
 	}
 	return nil
+}
+
+func (c *Config) validateProxyProtocol() []error {
+	var errs []error
+	for _, e := range c.TrustedProxies {
+		if _, err := netip.ParsePrefix(e); err == nil {
+			continue
+		}
+		if a, err := netip.ParseAddr(e); err != nil || a.Zone() != "" {
+			errs = append(errs, fmt.Errorf("trusted_proxies: %q is not an IP address or CIDR range", e))
+		}
+	}
+	if c.ProxyProtocol && len(c.TrustedProxies) == 0 {
+		errs = append(errs, errors.New("proxy_protocol: needs trusted_proxies (the proxies allowed to send PROXY headers)"))
+	}
+	if c.ProxyProtocolHTTP && !c.ProxyProtocol {
+		errs = append(errs, errors.New("proxy_protocol_http: needs proxy_protocol"))
+	}
+	return errs
 }
 
 // validateServerURL accepts an empty value or an absolute http(s) URL with a host and nothing after it
