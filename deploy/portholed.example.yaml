@@ -20,7 +20,8 @@ listen: ":443"
 
 # TLS certificate and key (PEM). Set both or neither. With both set, portholed terminates TLS itself; a wildcard
 # certificate for <domain> and *.<domain> is needed. With neither set, portholed speaks plain HTTP, which is what you want
-# behind a TLS-terminating reverse proxy (see Caddyfile.example). Restart portholed after the certificate is renewed.
+# behind a TLS-terminating reverse proxy (see Caddyfile.example). A renewed certificate is picked up
+# within a minute; to apply it at once, send SIGHUP (`systemctl reload portholed`).
 # Env: PORTHOLED_TLS_CERT_FILE, PORTHOLED_TLS_KEY_FILE
 tls:
   cert_file: /etc/porthole/tls/fullchain.pem

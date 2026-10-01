@@ -13,8 +13,8 @@
 #   systemctl daemon-reload && systemctl enable --now portholed
 #
 # The user "porthole" must be able to read the TLS certificate and key referenced in the configuration
-# (for example by copying them to /etc/porthole/tls from your certbot deploy hook), and the service must be
-# restarted after the certificate is renewed.
+# (for example by copying them to /etc/porthole/tls from your certbot deploy hook). A renewed certificate is
+# picked up within a minute; run `systemctl reload portholed` (SIGHUP) from the hook to apply it at once.
 
 [Unit]
 Description=porthole tunnel server
@@ -27,6 +27,8 @@ Type=simple
 User=porthole
 Group=porthole
 ExecStart=/usr/bin/portholed serve --config /etc/porthole/portholed.yaml
+# SIGHUP re-reads the TLS certificate and key; nothing else is reloaded.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 # Longer than shutdown_grace in the configuration (default 10s).

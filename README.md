@@ -185,7 +185,8 @@ $ certbot certonly --dns-cloudflare \
     -d tun.example.com -d '*.tun.example.com'
 ```
 
-Certificates are read from files; make sure your renewal hook restarts `portholed`. Alternatively, run `portholed`
+Certificates are read from files and a renewed one is picked up without a restart: within a minute, or immediately
+after `systemctl reload portholed` (SIGHUP), which is what your renewal hook should run. Alternatively, run `portholed`
 in plain HTTP behind a reverse proxy that terminates TLS: see
 [deploy/Caddyfile.example](deploy/Caddyfile.example) and set `trust_proxy_headers: true`.
 

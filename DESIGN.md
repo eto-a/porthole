@@ -164,8 +164,14 @@ One HTTPS listener (default `:443`, configurable; plain HTTP behind a reverse pr
 |---|---|---|
 | `<domain>` | `/_porthole/v1/connect` | WebSocket upgrade → client session |
 | `<domain>` | `/healthz` | liveness |
-| `<label>.<domain>` | any | reverse proxy into the tunnel owning `label` |
+| `<label>.<domain>` | any | reverse proxy into the tunnel owning `label` (including `/healthz`: it is the application's) |
+| any Host outside `<domain>` (bare IP, `IP:port`, foreign name) | `/healthz` | liveness, so that load balancers probing by IP work |
 | anything else | | 404 |
+
+`/healthz` answers on the bare domain and on every Host that is not under `<domain>`; a name under the domain that
+is not a valid tunnel host (`a.b.<domain>`, an unknown label) is a 404. For comparison: frp serves `/healthz` on the
+separate dashboard listener (`server/api_router.go`), so it never competes with vhost routing, and a code search of
+sish found no health endpoint at all; porthole has a single public listener, so the Host decides.
 
 HTTP tunnels use `net/http/httputil.ReverseProxy` with a custom `DialContext` that opens a data stream to the client.
 This gives correct HTTP/1.1 keep-alive, WebSocket upgrades (ReverseProxy supports `Upgrade` since Go 1.12),
@@ -175,7 +181,11 @@ tunnel looked up by Host) — frp's CVE-2026-40910 was a mismatch between the tw
 TCP tunnels each get a `net.Listener` on their port; every accepted connection becomes a data stream.
 
 TLS: v0.1 loads a certificate from files (e.g. a wildcard certificate from certbot DNS-01) or runs plain HTTP behind
-an existing reverse proxy. v0.2 adds automatic certificates via `certmagic` with DNS-01 (`libdns` providers) for the
+an existing reverse proxy. A renewed certificate is picked up without a restart: `portholed` compares the file
+modification times at most once a minute on a handshake, and reloads immediately on `SIGHUP` (Unix; the systemd unit
+has `ExecReload=/bin/kill -HUP $MAINPID`, so `systemctl reload portholed` works as a certbot deploy hook). A failed
+reload is logged and the previous certificate stays in use. (Same convention as Prometheus and Traefik's file
+provider, which reload on SIGHUP; Caddy ignores SIGHUP and uses `caddy reload`.) v0.2 adds automatic certificates via `certmagic` with DNS-01 (`libdns` providers) for the
 wildcard, obtained once rather than per tunnel (boringproxy issues one per domain).
 
 ### 3.6 Client
@@ -229,7 +239,7 @@ data_dir: /var/lib/porthole
 ### 3.10 Observability
 
 `log/slog` (JSON on the server, text on the CLI); tokens are never logged (only `id`). `/healthz` on the main
-listener; `/metrics` (Prometheus) and `/debug/pprof` on a separate listener bound to localhost (v0.2). Graceful
+listener (any Host that is not a tunnel host, see 3.5); `/metrics` (Prometheus) and `/debug/pprof` on a separate listener bound to localhost (v0.2). Graceful
 shutdown on SIGINT/SIGTERM with a configurable grace period.
 
 ### 3.11 Management by LLM agents (v0.3)

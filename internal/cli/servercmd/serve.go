@@ -72,6 +72,8 @@ func NewServe(
 			if err != nil {
 				return err
 			}
+			stopReload := watchReload(ctx, logger, srv.ReloadTLS)
+			defer stopReload()
 			logger.Info("portholed starting",
 				"version", version,
 				"domain", cfg.Domain,
