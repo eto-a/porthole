@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -95,6 +96,9 @@ func TestPeerCredInHandlerContext(t *testing.T) {
 		if cred.UID != os.Getuid() {
 			t.Errorf("peer UID = %d, want %d", cred.UID, os.Getuid())
 		}
+		if u, err := user.Current(); err == nil && cred.User != u.Username {
+			t.Errorf("peer User = %q, want %q", cred.User, u.Username)
+		}
 		if runtime.GOOS == "linux" {
 			if cred.PID != os.Getpid() {
 				t.Errorf("peer PID = %d, want %d", cred.PID, os.Getpid())
@@ -176,5 +180,16 @@ func TestNotifyErrors(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", filepath.Join(shortDir(t), "missing.sock"))
 	if ok, err := Notify(NotifyReady); ok || err == nil {
 		t.Errorf("missing socket: %v, %v; want false and an error", ok, err)
+	}
+}
+
+func TestListenPipePathRejectedOnUnix(t *testing.T) {
+	if ln, err := Listen(`\\.\pipe\porthole`, 0o600); err == nil {
+		_ = ln.Close()
+		t.Fatal("Listen on a named pipe path succeeded on a Unix system")
+	}
+	if c, err := Dial(ctxT(t), `\\.\pipe\porthole`); err == nil {
+		_ = c.Close()
+		t.Fatal("Dial of a named pipe path succeeded on a Unix system")
 	}
 }

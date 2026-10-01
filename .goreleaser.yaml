@@ -275,6 +275,99 @@ dockers_v2:
       "index,manifest:org.opencontainers.image.revision": "{{ .FullCommit }}"
       "index,manifest:org.opencontainers.image.version": "{{ .Version }}"
 
+# Desktop distribution (ADR 0006 section 4). Every block below is inert until the owner creates the target repositories
+# and secrets: skip_upload stops goreleaser from pushing to them, notarization is enabled by an environment variable.
+# All of them take only the client (ids: [porthole]); portholed is a Linux server and is not packaged for desktops.
+# Snapshot runs still render the manifests under dist/.
+#
+# Homebrew cask (brew install eto-a/tap/porthole). Needs the repository eto-a/homebrew-tap and a fine-grained token
+# with contents:write on it, exported as HOMEBREW_TAP_TOKEN. Remove skip_upload to publish.
+homebrew_casks:
+  - name: porthole
+    ids: [porthole]
+    binaries: [porthole]
+    homepage: https://github.com/eto-a/porthole
+    description: Self-hosted tunnel client, an alternative to ngrok
+    license: Apache-2.0
+    skip_upload: true
+    repository:
+      owner: eto-a
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Until the macOS binary is notarized (notarize block below), Gatekeeper blocks it on first run because brew
+    # downloads it with the quarantine attribute. Enabling this hook removes that attribute, which switches Gatekeeper
+    # off for this binary: a security trade-off that the owner has to accept explicitly. Remove it after notarization.
+    # hooks:
+    #   post:
+    #     install: |
+    #       if OS.mac?
+    #         system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/porthole"]
+    #       end
+
+# Scoop bucket (scoop bucket add eto-a https://github.com/eto-a/scoop-bucket). Needs the repository
+# eto-a/scoop-bucket and a token with contents:write on it, exported as SCOOP_BUCKET_TOKEN.
+scoops:
+  - name: porthole
+    ids: [porthole]
+    homepage: https://github.com/eto-a/porthole
+    description: Self-hosted tunnel client, an alternative to ngrok
+    license: Apache-2.0
+    skip_upload: true
+    repository:
+      owner: eto-a
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+
+# winget manifest (winget install eto-a.porthole): goreleaser writes it and opens a pull request against
+# microsoft/winget-pkgs from a fork of that repository. Needs the fork (eto-a/winget-pkgs) and a token, exported as
+# WINGET_PKGS_TOKEN. Every pull request is an external publication that the owner approves; the first one goes through
+# Microsoft's review.
+winget:
+  - name: porthole
+    ids: [porthole]
+    package_identifier: eto-a.porthole
+    publisher: eto-a
+    publisher_url: https://github.com/eto-a
+    publisher_support_url: https://github.com/eto-a/porthole/issues
+    short_description: Self-hosted tunnel client, an alternative to ngrok
+    homepage: https://github.com/eto-a/porthole
+    license: Apache-2.0
+    license_url: https://github.com/eto-a/porthole/blob/main/LICENSE
+    skip_upload: true
+    repository:
+      owner: eto-a
+      name: winget-pkgs
+      branch: "porthole-{{ .Version }}"
+      token: "{{ .Env.WINGET_PKGS_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+
+# macOS signing and notarization with anchore/quill (OSS, runs on Linux, no Mac needed). Enabled only when the Apple
+# Developer ID secrets exist; without them the build is unchanged. Secrets: MACOS_SIGN_P12 (base64 .p12 with the
+# Developer ID Application certificate), MACOS_SIGN_PASSWORD, and an App Store Connect API key for notarization:
+# MACOS_NOTARY_ISSUER_ID, MACOS_NOTARY_KEY_ID, MACOS_NOTARY_KEY (base64 .p8). Add them to release.yml when they exist.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [porthole, portholed]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
+# Windows Authenticode is not configured: it needs a code-signing certificate or a hosted signer (ADR 0006 section 4).
+# When it exists, add a binary_signs entry for the windows builds here. Until then SmartScreen may warn about the
+# exe downloaded in a browser; winget and Scoop installs are not affected in practice.
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256

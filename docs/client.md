@@ -148,15 +148,51 @@ Tunnels added from the command line are not written to the file: what runs after
 
 No root and no extra user: copy [deploy/porthole.user.service](../deploy/porthole.user.service) to `~/.config/systemd/user/porthole.service`, run `porthole login` and create `~/.config/porthole/tunnels.yaml`, then `systemctl --user enable --now porthole` (the header of the unit has the details, including `loginctl enable-linger`). The socket is then `$XDG_RUNTIME_DIR/porthole/porthole.sock`, which only you can reach.
 
-### macOS and Windows
+### `porthole service` (Linux, macOS, Windows)
 
-There are no service definitions yet. Run `porthole daemon` yourself, for example in a terminal or from your login items or Task Scheduler. It uses the per-user configuration directory (`porthole login` writes the credentials there) and a per-user socket, so `porthole http 3000` finds it by itself.
+One command group installs and controls the service on every OS (design: [ADR 0006](adr/0006-windows-and-macos-clients.md)). It manages the system-wide service by default, which needs root or Administrator: porthole never elevates itself, so open a terminal that already has the rights (`sudo` on Linux and macOS, "Run as administrator" on Windows). Put the `porthole` binary where it will stay first: the service points at the file you run.
+
+```console
+$ sudo porthole login --system https://tun.example.com ph_...     # or: sudo porthole join --system <link>
+$ sudo porthole service install                                    # register, enable at boot, start
+$ porthole service status                                          # service state plus what the daemon says
+$ porthole status                                                  # the same daemon, through its local API
+$ porthole http 3000                                               # attaches to the service's daemon
+$ sudo porthole service restart                                    # also: start, stop, uninstall
+```
+
+On Windows run the same commands without `sudo` in an Administrator terminal. `login --system` writes the config file of the service, `install` checks it and the tunnels file before it changes anything, copies your own config file when the system one does not exist yet, never overwrites an existing `config.yaml` or `tunnels.yaml`, and creates an empty `tunnels.yaml` when there is none (add tunnels to it, then `porthole reload`). Running `install` again updates the definition and restarts the service. `uninstall` leaves the configuration files in place. Every command accepts `--json`; `status` exits with 0 even when the service is not installed, so read `service.installed` and `service.running`.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| service | systemd unit `porthole.service`, runs as `porthole-client` | LaunchDaemon `io.github.eto-a.porthole`, runs as root | Windows service `porthole`, runs as LocalSystem, starts automatically (delayed) |
+| configuration | `/etc/porthole/{config,tunnels}.yaml` | `/Library/Application Support/porthole/{config,tunnels}.yaml` | `%ProgramData%\porthole\{config,tunnels}.yaml` (Administrators and SYSTEM only) |
+| log | `journalctl -u porthole` | `/Library/Logs/porthole/` | `%ProgramData%\porthole\logs\porthole.log` (10 MiB, one `.1` copy), start, stop and failure in the Event Log (source `porthole`) |
+| local API | `/run/porthole/porthole.sock`, group `porthole-client` | `/var/run/porthole/porthole.sock`, group `admin` | named pipe `\\.\pipe\ProtectedPrefix\Administrators\porthole` |
+| reload | `systemctl reload porthole` or `porthole reload` | `porthole reload` | `porthole reload` or `sc control porthole paramchange` |
+| per-user variant | `porthole service install --user` (systemd user unit) | `porthole service install --user` (LaunchAgent) | none, see below |
+
+Who may use the local API of the system service: on Linux the members of the group `porthole-client` (`sudo usermod -aG porthole-client $USER`, then log in again), on macOS the `admin` group, on Windows Administrators and SYSTEM plus the users and groups named with `--allow` at install time, for example `porthole service install --allow BUILTIN\Users` (repeat the flag for more). Adding a tunnel publishes a local service to the Internet, so keep this list short. A user who may not use the endpoint gets a message saying so, not a second session with the same token.
+
+`--user` (Linux, macOS) installs a service of your own account: no root, your own config directory and your own socket. Linux needs `loginctl enable-linger $USER` to keep it running after you log out.
+
+#### Windows without a service: Task Scheduler
+
+Windows has no per-user service. To run a daemon of your own at logon, with your own credentials (`porthole login`) and your own pipe (`\\.\pipe\porthole-<your SID>`), register a task from a normal terminal:
+
+```console
+> schtasks /Create /TN porthole /SC ONLOGON /RL LIMITED /TR "\"C:\Program Files\porthole\porthole.exe\" daemon"
+> schtasks /Run /TN porthole
+> schtasks /Delete /TN porthole /F        # to remove it
+```
+
+Adjust the path of `porthole.exe` to where you put it. A system service and your own daemon use different pipes, so both can exist at once; `porthole http` looks at your own first.
 
 ## Talking to the daemon
 
 | Command | Purpose |
 |---|---|
-| `porthole daemon [--config] [--tunnels] [--socket]` | Run the client daemon: the tunnels file plus tunnels added from the CLI. A broken configuration makes it exit with status 78. `SIGHUP` re-reads the tunnels file |
+| `porthole daemon [--config] [--tunnels] [--socket] [--allow]` | Run the client daemon: the tunnels file plus tunnels added from the CLI. A broken configuration makes it exit with status 78. `SIGHUP` re-reads the tunnels file |
 | `porthole status [--json]` | Show the daemon's connection and tunnels |
 | `porthole tunnels` | List the tunnels of the daemon |
 | `porthole reload` | Make the daemon re-read the tunnels file and apply the difference: new tunnels are registered, removed ones are closed, changed ones are registered again, the rest is not touched. An invalid file is rejected as a whole |
@@ -178,13 +214,14 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 
 | Command | Purpose |
 |---|---|
-| `porthole join <link\|code> [--server] [--force] [--insecure-http]` | Enrol with a one-time join link and store credentials |
-| `porthole login <url> <token> [--check]` | Store credentials |
+| `porthole join <link\|code> [--server] [--force] [--insecure-http] [--system]` | Enrol with a one-time join link and store credentials (`--system` as for `login`) |\|code> [--server] [--force] [--insecure-http]` | Enrol with a one-time join link and store credentials |
+| `porthole login <url> <token> [--check] [--system]` | Store credentials (`--system`: in the config file of the system service, needs root or Administrator) |
 | `porthole http <port\|host:port> [--name] [--inspect]` | Expose a local web service; `--inspect` stores bodies for the inspector |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | Expose a local TCP service |
 | `porthole ssh [--local-port 22] [--user] [--name] [--private] [--public-port]` | Expose the local SSH server |
 | `porthole start [names...]` | Run the tunnels of the tunnels file in the foreground, without a daemon |
 | `porthole daemon`, `status`, `tunnels`, `reload`, `close <name>` | See [Talking to the daemon](#talking-to-the-daemon) |
+| `porthole service install\|uninstall\|start\|stop\|restart\|status [--user] [--tunnels] [--allow]` | Install and control the service, see [`porthole service`](#porthole-service-linux-macos-windows) |
 | `porthole version` | Print the version |
 
 Global flags: `--config` (default `<user config dir>/porthole/config.yaml`), `--socket`, `-v, --verbose`, `--json`. Run `porthole <command> --help` for everything.

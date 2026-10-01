@@ -1,0 +1,91 @@
+# systemd unit for the porthole client daemon (system-wide, Linux).
+#
+# The deb and rpm packages named "porthole" from the GitHub releases install this file, the "porthole-client" user and
+# group, and an example /etc/porthole/tunnels.yaml; then follow the steps below. The package does not start the service,
+# because it has no credentials yet.
+#
+#   1. Store the server address and token (as root; the daemon runs as porthole-client and must be able to read the file):
+#        porthole login --config /etc/porthole/config.yaml https://tun.example.com ph_...
+#        chown porthole-client: /etc/porthole/config.yaml && chmod 0600 /etc/porthole/config.yaml
+#      Or keep the token in its own file and point `token_file` in config.yaml at it:
+#        install -m 0600 -o porthole-client -g porthole-client /dev/null /etc/porthole/token   # then put the token in it
+#   2. List the tunnels that must always be up in /etc/porthole/tunnels.yaml (see /usr/share/doc/porthole/).
+#   3. systemctl enable --now porthole
+#   4. Let your users add tunnels on the fly (`porthole http 3000` attaches to the daemon); takes effect at next login:
+#        usermod -aG porthole-client <user>
+#   After editing tunnels.yaml run `systemctl reload porthole` (or `porthole reload`): a broken file is rejected and the
+#   running tunnels are kept. A broken file at start is fatal (exit code 78) and the service is not restarted.
+#
+# Manual install (the unit expects the binary in /usr/bin; for another location, override ExecStart with
+# `systemctl edit porthole`):
+#   groupadd --system porthole-client
+#   useradd --system --gid porthole-client --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin porthole-client
+#   install -m 0755 porthole /usr/bin/porthole
+#   install -d -m 0755 /etc/porthole
+#   install -m 0640 -g porthole-client tunnels.example.yaml /etc/porthole/tunnels.yaml
+#   install -m 0644 porthole.service /etc/systemd/system/porthole.service
+#   systemctl daemon-reload
+#
+# Who may use the socket (/run/porthole/porthole.sock): root and the members of the group porthole-client. Adding a
+# tunnel publishes a local service to the Internet, so treat the group like the docker group. If you also run the
+# server on this machine, nothing is shared with it: it uses another user ("porthole"), /var/lib/porthole and
+# /etc/porthole/portholed.yaml.
+
+[Unit]
+Description=porthole tunnel client daemon
+Documentation=https://github.com/eto-a/porthole
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The daemon sends READY=1 once the socket is listening and the tunnels file is loaded (not once the server is
+# reachable: it retries the connection forever), and STOPPING=1 on shutdown.
+Type=notify
+User=porthole-client
+Group=porthole-client
+ExecStart=/opt/porthole/bin/porthole daemon --config /etc/porthole/config.yaml --tunnels /etc/porthole/tunnels.yaml --socket /run/porthole/porthole.sock
+# Re-reads tunnels.yaml; the old set stays if the new file is invalid.
+ExecReload=/opt/porthole/bin/porthole reload --socket /run/porthole/porthole.sock
+Restart=on-failure
+RestartSec=2s
+# Exit code 78 (EX_CONFIG): the configuration is unusable; restarting would not help.
+RestartPreventExitStatus=78
+TimeoutStopSec=30s
+# One local connection per visitor connection.
+LimitNOFILE=65536
+UMask=0077
+
+# The directory of the control socket, group porthole-client. The daemon makes the socket itself 0660.
+# Do not enable PrivateUsers=: the daemon reads the peer credentials (SO_PEERCRED) of API clients.
+RuntimeDirectory=porthole
+RuntimeDirectoryMode=0750
+
+# The client binds no port, so it needs no capabilities.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Hardening. The client reads /etc/porthole and writes nothing but the socket in its runtime directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

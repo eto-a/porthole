@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -51,10 +52,21 @@ type deniedError struct {
 	err  error
 }
 
+// accessAdvice tells how to get access to the system daemon on goos.
+func accessAdvice(goos string) string {
+	switch goos {
+	case "windows":
+		return "ask an administrator to run `porthole service install --allow <your user or group>` again"
+	case "darwin":
+		return "the system daemon is open to administrators (group admin) only; use an administrator account"
+	default:
+		return "for the system daemon: `sudo usermod -aG porthole-client $USER`, then log in again"
+	}
+}
+
 func (e *deniedError) Error() string {
-	return fmt.Sprintf("permission denied on the porthole daemon socket %s: add your user to the group that owns it "+
-		"(for the system daemon: `sudo usermod -aG porthole-client $USER`, then log in again), or use --no-daemon "+
-		"to run in this process with your own token", e.path)
+	return fmt.Sprintf("permission denied on the porthole daemon socket %s: you are not allowed to use it (%s), "+
+		"or use --no-daemon to run in this process with your own token", e.path, accessAdvice(runtime.GOOS))
 }
 
 func (e *deniedError) Unwrap() error { return e.err }
@@ -119,8 +131,8 @@ func (a *app) requireDaemon(ctx context.Context) (apiClient, string, error) {
 		var de *deniedError
 		if errors.As(err, &de) {
 			return nil, "", &explainedError{
-				msg: fmt.Sprintf("permission denied on the porthole daemon socket %s: add your user to the group that owns it "+
-					"(for the system daemon: `sudo usermod -aG porthole-client $USER`, then log in again)", de.path),
+				msg: fmt.Sprintf("permission denied on the porthole daemon socket %s: you are not allowed to use it (%s)",
+					de.path, accessAdvice(runtime.GOOS)),
 				err: err,
 			}
 		}

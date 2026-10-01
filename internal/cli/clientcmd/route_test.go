@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -304,7 +305,7 @@ func TestPermissionDeniedNeverFallsBack(t *testing.T) {
 	if err == nil || ran {
 		t.Fatalf("err = %v, ran = %v: access denied must not fall back to an in-process client", err, ran)
 	}
-	for _, want := range []string{"porthole-client", "--no-daemon", "/run/porthole/porthole.sock"} {
+	for _, want := range []string{accessAdvice(runtime.GOOS), "--no-daemon", "/run/porthole/porthole.sock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}

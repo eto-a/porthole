@@ -14,12 +14,20 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
 
-// SystemSocketPath is the socket of the system daemon (Linux package, systemd RuntimeDirectory=porthole).
-const SystemSocketPath = "/run/porthole/porthole.sock"
+// SystemSocketPath is the endpoint of the system daemon: /run/porthole/porthole.sock on Linux (systemd
+// RuntimeDirectory=porthole), /var/run/porthole/porthole.sock on macOS and other Unix systems, and the named pipe
+// \\.\pipe\ProtectedPrefix\Administrators\porthole on Windows (only administrators can create pipes under that
+// prefix, so no other user can squat the name).
+var SystemSocketPath = systemSocketPath()
+
+// pipePrefix starts the path of every Windows named pipe; a path with this prefix is a pipe, anything else is a
+// unix socket path.
+const pipePrefix = `\\.\pipe\`
 
 const (
 	userSocketName = "porthole.sock"
@@ -42,9 +50,15 @@ var ErrAlreadyRunning = errors.New("localapi: another porthole daemon is already
 //     back to <UserCacheDir>/porthole/porthole.sock (~/.cache/porthole/porthole.sock) rather than a /tmp/porthole-<uid>
 //     directory: a directory in the shared /tmp can be pre-created by another user (squatting), a directory under the
 //     user's home cannot.
-//   - Windows: %LocalAppData%\porthole\porthole.sock (the ACL of the per-user directory is the access control).
+//   - Windows: the named pipe \\.\pipe\porthole-<SID> of the current user (owner-only DACL, checked by the client).
 //   - macOS: <UserCacheDir>/porthole/porthole.sock (~/Library/Caches/porthole/porthole.sock; short, unlike $TMPDIR).
 func UserSocketPath() string {
+	if p := platformUserSocketPath(); p != "" {
+		return p
+	}
+	if runtime.GOOS == "windows" {
+		return "" // never a .sock file: AF_UNIX is not an endpoint of ours there (ADR 0006), and a missing one dials badly
+	}
 	return userSocketPath(runtime.GOOS, os.Getenv, os.UserCacheDir)
 }
 
@@ -61,16 +75,31 @@ func userSocketPath(goos string, getenv func(string) string, cacheDir func() (st
 	return filepath.Join(dir, userSocketDir, userSocketName)
 }
 
-// DefaultSocketPaths lists where the CLI looks for a daemon: the user socket first, then (on Linux) the system one.
+// DefaultSocketPaths lists where the CLI looks for a daemon: the user endpoint first, then the system one.
 func DefaultSocketPaths() []string {
 	var paths []string
 	if p := UserSocketPath(); p != "" {
 		paths = append(paths, p)
 	}
-	if runtime.GOOS == "linux" {
-		paths = append(paths, SystemSocketPath)
+	return append(paths, SystemSocketPath)
+}
+
+// IsPipePath reports whether endpoint names a Windows named pipe (it starts with \\.\pipe\, case-insensitive).
+// Any other value is a unix socket path.
+func IsPipePath(endpoint string) bool {
+	return len(endpoint) > len(pipePrefix) && strings.EqualFold(endpoint[:len(pipePrefix)], pipePrefix)
+}
+
+// Dial connects to the daemon endpoint at endpoint: a named pipe (Windows only) or a unix socket. The connect is
+// bounded by a timeout. A user pipe is verified before it is returned: it must be owned by the current user and
+// grant access to nobody else, because a pipe name outside \\.\pipe\ProtectedPrefix\Administrators can be created
+// by any user in advance (squatting).
+func Dial(ctx context.Context, endpoint string) (net.Conn, error) {
+	if IsPipePath(endpoint) {
+		return dialPipe(ctx, endpoint)
 	}
-	return paths
+	d := net.Dialer{Timeout: dialTimeout}
+	return d.DialContext(ctx, "unix", endpoint)
 }
 
 // maxSocketPath returns the largest usable socket path length in bytes (sun_path less the NUL).
@@ -83,7 +112,15 @@ func maxSocketPath(goos string) int {
 	}
 }
 
-// Listen creates a unix socket listener at socketPath with the given permission bits.
+// Listen creates a listener at socketPath with the given permission bits: a unix socket, or on Windows a named
+// pipe when socketPath is a pipe path (see [IsPipePath]); a pipe path on another OS is an error. It is
+// [ListenAllow] without extra principals.
+//
+// A named pipe under \\.\pipe\ProtectedPrefix\Administrators (the [SystemSocketPath] on Windows) gets the DACL
+// SYSTEM + Administrators, any other pipe is owned by and open only to the current user; creating a system pipe needs
+// an elevated process. mode is ignored for pipes, and "already running" means that a connection to the pipe succeeds.
+//
+// For a unix socket:
 //
 // The parent directory is created with mode 0700 if it does not exist; an existing directory is left untouched (the
 // system unit's RuntimeDirectory decides its mode). If the path already exists and something answers on it, Listen
@@ -91,8 +128,20 @@ func maxSocketPath(goos string) int {
 // Windows, where the directory ACL is the access control). Two processes starting at the same moment can still race
 // between the probe and the bind; the loser gets [ErrAlreadyRunning] when the bind reports "address in use".
 func Listen(socketPath string, mode os.FileMode) (net.Listener, error) {
+	return ListenAllow(socketPath, mode, nil)
+}
+
+// ListenAllow is [Listen] that also admits the principals in allow to a system named pipe: user or group names
+// (for example "BUILTIN\\Users") or SIDs ("S-1-5-32-545"), each given read and write access without the right to
+// create further pipe instances. It is an error to pass allow for a pipe outside ProtectedPrefix\Administrators
+// (anybody could squat such a name, so the pipe stays private to its owner). allow is ignored for unix sockets: their
+// access control is mode and the directory.
+func ListenAllow(socketPath string, mode os.FileMode, allow []string) (net.Listener, error) {
 	if socketPath == "" {
 		return nil, errors.New("localapi: empty socket path")
+	}
+	if IsPipePath(socketPath) {
+		return listenPipe(socketPath, allow)
 	}
 	if n, limit := len(socketPath), maxSocketPath(runtime.GOOS); n > limit {
 		return nil, fmt.Errorf("localapi: socket path is %d bytes, the limit on %s is %d: %s", n, runtime.GOOS, limit, socketPath)

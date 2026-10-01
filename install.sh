@@ -473,6 +473,10 @@ print_next_steps() {
   else
     say "Next: porthole login https://your-server.example.com <token>, then porthole http 8080"
     say "Quickstart: https://github.com/${REPO}#2-client"
+    if [ "$os" = darwin ]; then
+      say "To keep tunnels up as a service (available from v0.4): porthole service install --user"
+      say "(a LaunchAgent for your login; run it with sudo for a system LaunchDaemon instead)."
+    fi
     say "To keep tunnels up as a service: https://github.com/${REPO}#run-the-client-as-a-service"
   fi
 }

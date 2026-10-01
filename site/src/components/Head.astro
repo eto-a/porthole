@@ -1,5 +1,7 @@
 ---
 import Default from '@astrojs/starlight/components/Head.astro';
+import interLatin from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
+import monoLatin400 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2?url';
 import { base } from '../../site.config.mjs';
 
 // Every documentation page is also served as raw Markdown next to its HTML (starlight-page-actions).
@@ -8,6 +10,10 @@ const markdown = id && id !== 'index' && id !== '404' ? `${base}/${id}.md` : und
 ---
 
 <Default />
+{/* The fonts the first screen uses are fetched in parallel with the CSS, so text is laid out once instead of
+    being re-laid out when the fonts arrive (font-display: swap). */}
+<link rel="preload" href={interLatin} as="font" type="font/woff2" crossorigin />
+<link rel="preload" href={monoLatin400} as="font" type="font/woff2" crossorigin />
 {markdown && <link rel="alternate" type="text/markdown" href={markdown} />}
 
 <script>

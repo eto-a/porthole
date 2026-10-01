@@ -3,6 +3,7 @@ module github.com/eto-a/porthole
 go 1.27.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/caddyserver/certmagic v0.25.6
 	github.com/coder/websocket v1.8.15
 	github.com/hashicorp/yamux v0.1.2
