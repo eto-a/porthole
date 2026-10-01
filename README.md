@@ -24,8 +24,9 @@ tcp://tun.example.com:20018 -> 127.0.0.1:22
   ssh -p 20018 alice@tun.example.com
 ```
 
-> **Status: early development, v0.1 in progress.** The wire protocol, the configuration format and the CLI may
-> still change before the first release. Do not rely on it for anything you cannot afford to break.
+> **Status: alpha.** The first preview, [v0.1.0-alpha.1](https://github.com/eto-a/porthole/releases), is out. The
+> wire protocol, the configuration format and the CLI may still change before v0.1.0. Do not rely on it for anything
+> you cannot afford to break.
 
 ## What makes it different
 
@@ -159,6 +160,22 @@ wire format and [docs/adr/](docs/adr/) for individual decisions.
 Tokens are 256-bit secrets stored only as hashes; authorization is re-checked on every tunnel registration and
 revocation applies to live sessions. Please report vulnerabilities privately as described in
 [SECURITY.md](SECURITY.md), not in public issues.
+
+## Installation
+
+Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for
+the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static
+binary.
+
+Every release is signed and carries build provenance. To check what you downloaded:
+
+```console
+$ sha256sum --check --ignore-missing checksums.txt
+$ cosign verify-blob --bundle checksums.txt.sigstore.json     --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v'     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+$ gh attestation verify porthole_<version>_linux_amd64.tar.gz --repo eto-a/porthole
+```
+
+Each archive also has an SPDX SBOM (`*.sbom.json`) next to it.
 
 ## Building from source
 
