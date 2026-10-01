@@ -36,8 +36,11 @@ Thumbs.db
 
 # Tooling
 graphify-out/
-.claude/settings.local.json
-# Note: .claude/agents/ is intentionally tracked.
+
+# Local AI-assistant and maintainer notes (never committed)
+.claude/
+CLAUDE.md
+HANDOFF.md
 
 # Go workspace files
 go.work

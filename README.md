@@ -1,6 +1,10 @@
 # porthole
 
 [![CI](https://github.com/eto-a/porthole/actions/workflows/ci.yml/badge.svg)](https://github.com/eto-a/porthole/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/eto-a/porthole/badge)](https://scorecard.dev/viewer/?uri=github.com/eto-a/porthole)
+[![Go Report Card](https://goreportcard.com/badge/github.com/eto-a/porthole)](https://goreportcard.com/report/github.com/eto-a/porthole)
+[![Go version](https://img.shields.io/github/go-mod/go-version/eto-a/porthole)](go.mod)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **porthole** is a self-hosted, open-source alternative to ngrok. You run one server, `portholed`, on a machine with a
 public IP address and a domain. On any machine behind NAT you run the client, `porthole`, and expose a local service
@@ -9,11 +13,15 @@ with a single command:
 ```console
 $ porthole login https://tun.example.com ph_3kq9w2m1z8xa_....     # once per machine
 $ porthole http 8080
-https://http-8080-home.tun.example.com  ->  localhost:8080
+connected as home
+https://http-8080-home.tun.example.com -> 127.0.0.1:8080
 $ porthole tcp 7575
-tcp://tun.example.com:20017  ->  localhost:7575
+connected as home
+tcp://tun.example.com:20017 -> 127.0.0.1:7575
 $ porthole ssh
-ssh -p 20018 <user>@tun.example.com  ->  localhost:22
+connected as home
+tcp://tun.example.com:20018 -> 127.0.0.1:22
+  ssh -p 20018 alice@tun.example.com
 ```
 
 > **Status: early development, v0.1 in progress.** The wire protocol, the configuration format and the CLI may
