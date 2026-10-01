@@ -79,8 +79,8 @@ type Config struct {
 	// Enable only when portholed runs behind a reverse proxy you control.
 	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
 
-	// ProxyProtocol makes the HTTP(S) listener and the SSH gateway accept PROXY protocol v1/v2 headers from the
-	// peers in TrustedProxies, so that per-IP limits, the failure limiter and the logs see the real visitor address
+	// ProxyProtocol makes the HTTP(S) listener accept PROXY protocol v1/v2 headers from the
+	// peers in TrustedProxies (the SSH gateway only with ProxyProtocolSSH), so that per-IP limits, the failure limiter and the logs see the real visitor address
 	// when a proxy forwards raw TCP (for example Traefik with TLS passthrough). A peer in TrustedProxies must send a
 	// header; any other peer must not (its connection is refused if it does). Requires TrustedProxies.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
@@ -88,6 +88,11 @@ type Config struct {
 	// ProxyProtocolHTTP extends ProxyProtocol to the plain-HTTP listener (http_listen). Off by default because
 	// proxies usually cannot add PROXY headers to HTTP routers (Traefik can only do it for TCP services).
 	ProxyProtocolHTTP bool `yaml:"proxy_protocol_http"`
+
+	// ProxyProtocolSSH extends ProxyProtocol to the SSH gateway (ssh_listen). Off by default: the gateway is usually
+	// published directly, and a wrapped listener refuses connections from peers that are not trusted proxies and
+	// send no header.
+	ProxyProtocolSSH bool `yaml:"proxy_protocol_ssh"`
 
 	// TrustedProxies lists the IP addresses and CIDR ranges of the proxies allowed to send PROXY protocol headers.
 	TrustedProxies []string `yaml:"trusted_proxies"`
@@ -359,6 +364,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 	for k, p := range map[string]*bool{
 		"PORTHOLED_PROXY_PROTOCOL":      &c.ProxyProtocol,
 		"PORTHOLED_PROXY_PROTOCOL_HTTP": &c.ProxyProtocolHTTP,
+		"PORTHOLED_PROXY_PROTOCOL_SSH":  &c.ProxyProtocolSSH,
 	} {
 		if v, ok := lookup(k); ok {
 			b, err := strconv.ParseBool(v)
@@ -478,6 +484,9 @@ func (c *Config) validateProxyProtocol() []error {
 	}
 	if c.ProxyProtocolHTTP && !c.ProxyProtocol {
 		errs = append(errs, errors.New("proxy_protocol_http: needs proxy_protocol"))
+	}
+	if c.ProxyProtocolSSH && !c.ProxyProtocol {
+		errs = append(errs, errors.New("proxy_protocol_ssh: needs proxy_protocol"))
 	}
 	return errs
 }

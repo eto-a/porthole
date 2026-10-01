@@ -241,7 +241,7 @@ func (c *session) handleRegister(m *proto.Register) {
 		}
 		scope = auth.ScopeTunnelTCP
 	case proto.KindUDP:
-		c.sendError(m.ReqID, proto.CodeInvalidRequest, "udp tunnels arrive in v0.2")
+		c.sendError(m.ReqID, proto.CodeInvalidRequest, "udp tunnels are not supported yet")
 		return
 	default:
 		c.sendError(m.ReqID, proto.CodeInvalidRequest, "unknown tunnel kind")

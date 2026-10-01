@@ -141,7 +141,7 @@ func (s *Server) startSSHGateway(ctx context.Context) error {
 // StartSSHGateway serves the SSH gateway on ln in the background until the server closes. It takes ownership of
 // ln and returns once the host key is loaded.
 func (s *Server) StartSSHGateway(ln net.Listener) error {
-	ln, err := s.wrapProxyIf(ln, s.cfg.ProxyProtocol)
+	ln, err := s.wrapProxyIf(ln, s.cfg.ProxyProtocol && s.cfg.ProxyProtocolSSH)
 	if err != nil {
 		return err
 	}

@@ -89,7 +89,9 @@ address. A request goes through only when all of these hold:
 - the client's token allows remote control: tokens made by `portholed token create` do unless `--no-remote-control` is
   given, and tokens made by a join link follow the link (`allow_remote` of `create_join_link`; `portholed token list`
   shows the setting in the `REMOTE` column);
-- the client's own `allow_remote` policy accepts the request.
+- the client's own `allow_remote` policy accepts the request. Without `allow_remote` in the machine's `tunnels.yaml`
+  only its own loopback targets (`127.0.0.1`, `::1`, `localhost`) and `ssh` are accepted; `allow_remote: any` allows
+  every target except link-local addresses (see the [client guide](client.md#remote-requests)).
 
 A refusal reaches the model with its code and text (`remote_control_disabled`, `not_allowed`, `client_unsupported`,
 `name_taken`, `timeout`, ...). The server waits at most 15 seconds for the client.

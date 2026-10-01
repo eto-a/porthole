@@ -149,7 +149,7 @@ func TestACMEModeRefusesUnknownName(t *testing.T) {
 	cfg.ShutdownGrace = 2 * time.Second
 
 	var logs syncBuffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})) // refusals are logged at debug
 	srv, err := New(Options{Config: cfg, Store: newFakeStore(), Logger: logger, Version: "test"})
 	if err != nil {
 		t.Fatal(err)

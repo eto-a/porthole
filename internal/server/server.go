@@ -316,7 +316,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
+		ErrorLog:          httpErrorLog(s.log),
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

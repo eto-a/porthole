@@ -45,6 +45,9 @@ may observe about traffic.
   enabled (the default for links an agent creates) accepts remote requests for any local address. The machine can
   narrow or refuse this in its own `tunnels.yaml` (`allow_remote: [ssh, 3000]`, or `allow_remote: none`); the client
   enforces its list and the server cannot widen it.
+  *Amended: default narrowed to the machine's own loopback after the security review.* Without `allow_remote` a
+  machine now accepts only loopback targets (`127.0.0.1`, `::1`, `localhost`) and `ssh`; `allow_remote: any` allows
+  every target except link-local addresses.
 - Requires the `admin:remote` scope; every remote request is audited with the acting token. Remotely opened tunnels
   are runtime tunnels of the daemon (ADR 0002): they survive reconnects, not a daemon restart, and are listed and
   closed like any other.

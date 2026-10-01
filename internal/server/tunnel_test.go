@@ -411,7 +411,7 @@ func TestRegisterValidation(t *testing.T) {
 	if e := c.registerErr(proto.KindHTTP, strings.Repeat("b", 32), 0); e.Code != proto.CodeInvalidRequest {
 		t.Errorf("65-char label: got %+v, want invalid_request", e)
 	}
-	if e := c.registerErr(proto.KindUDP, "dns", 0); e.Code != proto.CodeInvalidRequest || !strings.Contains(e.Message, "v0.2") {
+	if e := c.registerErr(proto.KindUDP, "dns", 0); e.Code != proto.CodeInvalidRequest || !strings.Contains(e.Message, "not supported yet") {
 		t.Errorf("udp: got %+v", e)
 	}
 	if e := c.registerErr("carrier-pigeon", "x", 0); e.Code != proto.CodeInvalidRequest {

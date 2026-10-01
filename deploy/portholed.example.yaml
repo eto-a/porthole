@@ -91,6 +91,7 @@ data_dir: /var/lib/porthole
 # proxy_protocol: true
 # trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12"]
 # proxy_protocol_http: false  # also on http_listen; most proxies cannot send it for HTTP routers
+# proxy_protocol_ssh: false   # also on the SSH gateway; only if a TCP proxy in front of it sends the header
 
 # Maximum simultaneous tunnels for tokens that have no limit of their own (see `token create --max-tunnels`).
 # Default 10. Env: PORTHOLED_MAX_TUNNELS_PER_CLIENT

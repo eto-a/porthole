@@ -132,7 +132,8 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
 | `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`, read from the right: the right-most address that is not in `trusted_proxies` (with an empty `trusted_proxies`: the right-most address). With `trusted_proxies` set, the header is honoured only from peers in that list (see [Behind a reverse proxy](#behind-a-reverse-proxy)) |
-| `proxy_protocol` | `PORTHOLED_PROXY_PROTOCOL` | `false` | Accept PROXY protocol v1/v2 headers on the HTTPS listener and the SSH gateway, from the peers in `trusted_proxies` only (see [Behind Traefik or Dokploy](#behind-traefik-or-dokploy-tls-passthrough)) |
+| `proxy_protocol` | `PORTHOLED_PROXY_PROTOCOL` | `false` | Accept PROXY protocol v1/v2 headers on the HTTPS listener (the SSH gateway only with `proxy_protocol_ssh`), from the peers in `trusted_proxies` only (see [Behind Traefik or Dokploy](#behind-traefik-or-dokploy-tls-passthrough)) |
+| `proxy_protocol_ssh` | `PORTHOLED_PROXY_PROTOCOL_SSH` | `false` | Also accept it on the SSH gateway (`ssh_gateway.listen`); needs `proxy_protocol` |
 | `proxy_protocol_http` | `PORTHOLED_PROXY_PROTOCOL_HTTP` | `false` | Also accept it on the plain HTTP listener (`http_listen`); needs `proxy_protocol` |
 | `trusted_proxies` | `PORTHOLED_TRUSTED_PROXIES` (comma-separated) | empty | IP addresses and CIDR ranges of the proxies allowed to send PROXY headers (required by `proxy_protocol`) and whose `X-Forwarded-For` is believed when `trust_proxy_headers` is on |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
@@ -416,8 +417,9 @@ a listed subnet can connect to `portholed` directly and forge the address, so on
 `dokploy-network`, prefer a network of its own for Traefik and `portholed` if you can set that up. A wrong value fails
 closed: Traefik is then not trusted, its header is refused and HTTPS stops working.
 
-- Applies to the HTTPS listener and the SSH gateway. The metrics listener and TCP tunnel ports are not affected: they
-  are reached directly.
+- Applies to the HTTPS listener. The SSH gateway is wrapped only with `proxy_protocol_ssh: true` (for a gateway that
+  sits behind a TCP proxy which sends the header); by default it is published directly and sees the real peer. The
+  metrics listener and TCP tunnel ports are not affected: they are reached directly.
 - A peer inside `trusted_proxies` must send a header (v1 or v2); a connection from it without one is refused. A peer
   outside the list must not send one (the connection is refused), so a visitor cannot choose its own address; without a
   header it is served as an ordinary connection with its real address. The header must arrive within 5 seconds.
@@ -429,7 +431,7 @@ closed: Traefik is then not trusted, its header is refused and HTTPS stops worki
 
 Pick one mechanism per proxy. `trust_proxy_headers` (`X-Forwarded-For`) is for a proxy that terminates TLS and speaks
 HTTP to `portholed` (`tls.mode: off`, the Caddy case above). The PROXY protocol is for a proxy that forwards raw TCP,
-which is TLS passthrough and also the SSH gateway behind a TCP load balancer. The Caddy equivalent is the
+which is TLS passthrough and, with `proxy_protocol_ssh`, the SSH gateway behind a TCP load balancer. The Caddy equivalent is the
 `proxy_protocol` listener wrapper with an `allow` list; the Go library used here,
 [pires/go-proxyproto](https://github.com/pires/go-proxyproto), is the one Traefik and Caddy build on.
 
@@ -571,7 +573,7 @@ What has to be true, and what the error codes say:
 | `not_found` | No client of that name is connected |
 | `client_unsupported` | The client does not accept requests: it is not the `porthole daemon` / `porthole start`, or it is too old |
 | `remote_control_disabled` | The client's token does not allow remote control |
-| `not_allowed` | The machine refused: the target is not in `allow_remote` of its tunnels file ([client guide](client.md#remote-requests)) |
+| `not_allowed` | The machine refused: the target is not allowed by `allow_remote` of its tunnels file (by default only loopback targets and `ssh`; [client guide](client.md#remote-requests)) |
 | `name_taken`, `limit_exceeded`, `port_unavailable` | The server refused to register the tunnel, as for any tunnel |
 | `timeout` | The client did not answer within 15 seconds |
 

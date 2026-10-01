@@ -91,11 +91,12 @@ func (s *Server) allowCertName(ctx context.Context, name string) error {
 	}
 	label, ok := s.labelOf(host)
 	if !ok {
-		s.log.Warn("certificate refused: name is not the control host or a tunnel host", "host", name)
+		// Scanners and stray SNI names: Debug, not Warn, so they cannot flood the log.
+		s.log.Debug("certificate refused: name is not the control host or a tunnel host", "host", name)
 		return errors.New("name is not served by this server")
 	}
 	if !s.labelKnown(label) {
-		s.log.Warn("certificate refused: no live tunnel with this label", "host", name)
+		s.log.Debug("certificate refused: no live tunnel with this label", "host", name)
 		return errors.New("no tunnel with this label")
 	}
 	if err := s.certBudget.allow(ctx, host, s.labelClient(label), s.now()); err != nil {
@@ -169,7 +170,7 @@ func (s *Server) startHTTPListener(ctx context.Context, addr string, h http.Hand
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
+		ErrorLog:          httpErrorLog(s.log),
 	}
 	if !s.start(func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
