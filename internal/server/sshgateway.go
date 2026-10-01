@@ -389,7 +389,7 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 		_ = stream.Close()
 	})
 	defer stop()
-	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle)
+	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle, s.tcpHalfClose)
 	s.metrics.AddBytes(metrics.KindSSH, entry.BytesIn, entry.BytesOut)
 	entry.Outcome = traffic.OutcomeOK
 	s.recordConn(entry, start)

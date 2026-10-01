@@ -32,7 +32,13 @@ func (*nopStore) ReleasePort(context.Context, string, string, time.Time) error {
 func (*nopStore) LoadPortReservations(context.Context, time.Time, time.Duration) ([]store.PortReservation, error) {
 	return nil, nil
 }
-func (*nopStore) AppendAudit(context.Context, *store.AuditEntry) error { return nil }
+
+func (*nopStore) ClaimLabels(context.Context, string, string, []string, time.Time) ([]string, error) {
+	return nil, nil
+}
+func (*nopStore) UnclaimLabels(context.Context, string, string, []string) error { return nil }
+func (*nopStore) ReleaseLabel(context.Context, string) error                    { return store.ErrNotFound }
+func (*nopStore) AppendAudit(context.Context, *store.AuditEntry) error          { return nil }
 func (*nopStore) ListAudit(context.Context, int) ([]store.AuditEntry, error) {
 	return nil, nil
 }

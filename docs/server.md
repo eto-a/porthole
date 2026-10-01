@@ -116,7 +116,8 @@ With no `tls` section the server gets its certificates by ACME (see [TLS](#tls))
 | `tls.acme.max_new_names_per_day` | - | `30` | Host names without a stored certificate that the server requests per 24 hours, all clients together; `-1` turns the cap off (see [Certificate budget](#certificate-budget)) |
 | `tls.acme.max_new_names_per_client_per_hour` | - | `10` | The same cap for the tunnels of one client per hour; `-1` turns it off |
 | `limits.max_conns_per_ip` | - | `32` | Simultaneous connections from one source IP (IPv6: one /64) to the TCP tunnels and, separately, to the SSH gateway; `-1` turns the limit off |
-| `limits.tcp_idle_timeout` | - | `2h` | A TCP or SSH connection through a tunnel with no bytes in either direction for this long is closed; a connection that one side has half-closed gets at most 5 minutes of silence; `-1` turns it off |
+| `limits.tcp_idle_timeout` | - | `2h` | A TCP or SSH connection through a tunnel with no bytes in either direction for this long is closed; `-1` turns it off (the half-close limit below stays) |
+| `limits.tcp_half_close_timeout` | - | `5m` | A TCP or SSH connection that one side has half-closed and that carried no bytes since is closed after this long, independently of `limits.tcp_idle_timeout`; `-1` turns it off |
 | `limits.max_http_requests_per_tunnel` | - | `512` | Simultaneous visitor requests (open WebSockets included) per HTTP tunnel; more get `503`; `-1` turns the limit off |
 | `limits.http_body_idle_timeout` | - | `60s` | A visitor request whose body makes no progress for this long is aborted with `408`; steady slow uploads are not affected; `-1` turns it off |
 | `limits.max_pending_handshakes`, `limits.max_pending_handshakes_per_ip` | - | `256`, `8` | Control connections that have not authenticated yet, overall and per source IP; more get `503` (see [Abuse limits](#abuse-limits)) |
@@ -227,12 +228,20 @@ Everything below applies per source IP (IPv6 addresses are grouped by /64, the s
 - **Failed authentication.** Wrong tokens and join codes, and control connections that stay silent or send garbage until the handshake timeout, use up a budget of 10 failures per source plus 5 per minute. The budgets are separate per surface: control handshakes, the admin API and MCP, join links, and the SSH gateway. Failures on one surface do not lock a client out of another. The table is bounded; when it is full, the entry with the most recovered budget is dropped, so a new source is always tracked and the limiter never switches off. Behind a proxy that does not pass the visitor address on (see [Behind a reverse proxy](#behind-a-reverse-proxy)), all visitors share one source.
 - **Unauthenticated control connections.** At most `limits.max_pending_handshakes_per_ip` (8) per source and `limits.max_pending_handshakes` (256) overall may be waiting for their `hello`; the rest get `503`. Until the token is accepted a connection may send at most 128 KiB; beyond that it is closed.
 - **TCP tunnels and the SSH gateway.** `limits.max_conns_per_ip` (32) simultaneous connections per source, counted separately for TCP tunnels and for the gateway, on top of the per-tunnel limits (1024 TCP connections, `ssh_gateway.max_conns_per_tunnel`). Raise it if many users reach a tunnel through one NAT.
-- **Idle connections.** TCP and SSH connections through a tunnel are closed after `limits.tcp_idle_timeout` (2h) without traffic in either direction, and after 5 minutes of silence once one side has half-closed. WebSocket connections to HTTP tunnels are not subject to it; their applications are expected to send keepalives.
+- **Idle connections.** TCP and SSH connections through a tunnel are closed after `limits.tcp_idle_timeout` (2h) without traffic in either direction, and after `limits.tcp_half_close_timeout` (5 minutes) of silence once one side has half-closed, also when the idle limit is off. WebSocket connections to HTTP tunnels are not subject to it; their applications are expected to send keepalives.
 - **HTTP tunnels.** `limits.max_http_requests_per_tunnel` (512) simultaneous requests; a request body that stalls for `limits.http_body_idle_timeout` (60s) is aborted with `408`. The timeout applies between reads of the body, so slow but steady uploads and long streaming responses are unaffected.
 
 ### Host names are per (client, tunnel)
 
-The public name of an HTTP tunnel is `<tunnel>-<client>`, and so is the address of an SSH tunnel on the gateway; both parts may contain hyphens, so different pairs can compose to the same name (client `x-b` with tunnel `a`, client `b` with tunnel `a-x`). The first registration wins, and when a client disconnects its names stay reserved for that client for two minutes (the same time during which the HTTP name answers `502`), so another client cannot take them over during a reconnect. After an explicit `unregister` the name is free at once. The gateway resolves a target by the exact name: the bare client name for its tunnel called `ssh`, otherwise the exact `<tunnel>-<client>`; it never guesses where the tunnel name ends. Choose client (token) names so that none is the combination of another client's name and a tunnel name.
+The public name of an HTTP tunnel is `<tunnel>-<client>`, and so is the address of an SSH tunnel on the gateway; both parts may contain hyphens, so different pairs can compose to the same name (client `x-b` with tunnel `a`, client `b` with tunnel `a-x`). The first registration wins and **keeps the name for good**: the store remembers the claim (table `label_claims`), so it survives the client being offline for any time, an `unregister` and a server restart. The second pair is refused with `name_taken`. The claim ends when the owner's token is revoked, or when you release it by hand:
+
+```console
+$ portholed admin release-label web-a-home
+```
+
+(the admin API does the same with `POST /_porthole/admin/v1/labels/<label>/release`, scope `admin:tunnels`, and the call is audited as `label.release`). While a client is offline for a short time, its HTTP name also answers `502` for two minutes, so visitors see "offline" rather than "not found" during a reconnect.
+
+The gateway resolves a target by the exact name: the bare client name for the client's tunnel called `ssh`, otherwise the exact `<tunnel>-<client>`; it never guesses where the tunnel name ends. The bare names and the `<tunnel>-<client>` names of SSH tunnels are one namespace, so the claims cover both: an `ssh` tunnel of client `a-b` is refused when another client's tunnel already holds `a-b`, and the other way round. For the same reason `portholed token create` and `join create` refuse a client name that is already the claimed name of another client's tunnel. HTTP and SSH names share the claim table too, so a name used by one kind is not given to another pair for the other kind (a rare false conflict that `release-label` resolves).
 
 ### Tenants share one registrable domain
 
@@ -414,6 +423,7 @@ The tunnel is a runtime tunnel of the daemon: it survives reconnects, not a daem
 | `portholed token list [--all]` | List tokens |
 | `portholed token revoke <id\|name>` | Revoke a token |
 | `portholed admin open <client> <http|tcp|ssh> [local] [--name] [--private] [--remote-port]` | Ask a connected client to open a tunnel; prints its address |
+| `portholed admin release-label <label>` | Free a hostname label that is claimed for good by a client's tunnel |
 | `portholed ssh-hostkey` | Print the fingerprint of the SSH gateway host key |
 | `portholed version` | Print the version |
 

@@ -21,6 +21,28 @@ const (
 	httpMaxIdlePerHost  = 16
 )
 
+var errTunnelClosed = errors.New("tunnel closed")
+
+// tunnelConn is a data stream of an HTTP tunnel that is closed when the tunnel is: a request or WebSocket that is
+// still running when the client unregisters the tunnel (or the operator closes it) ends with it, instead of
+// running on against the client until one side gives up.
+type tunnelConn struct {
+	net.Conn
+	stop func() bool
+}
+
+// bindToTunnel closes conn when t's context ends.
+func bindToTunnel(t *tunnel, conn net.Conn) net.Conn {
+	tc := &tunnelConn{Conn: conn}
+	tc.stop = context.AfterFunc(t.ctx, func() { _ = conn.Close() })
+	return tc
+}
+
+func (c *tunnelConn) Close() error {
+	c.stop()
+	return c.Conn.Close()
+}
+
 // initHTTPTunnel prepares the reverse proxy of an HTTP tunnel. Each tunnel has its own transport whose dialer
 // opens a data stream to the owning client, so requests can only ever reach that client: the tunnel is looked
 // up by Host, and that same object carries the route (DESIGN.md §3.5).
@@ -30,8 +52,15 @@ func (s *Server) initHTTPTunnel(t *tunnel) {
 
 	t.tr = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if err := t.ctx.Err(); err != nil {
+				return nil, errTunnelClosed
+			}
 			remote, _ := ctx.Value(visitorKey{}).(string)
-			return c.openStream(ctx, t.id, remote)
+			conn, err := c.openStream(ctx, t.id, remote)
+			if err != nil {
+				return nil, err
+			}
+			return bindToTunnel(t, conn), nil
 		},
 		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          2 * httpMaxIdlePerHost,

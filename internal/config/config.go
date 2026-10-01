@@ -120,8 +120,13 @@ type Limits struct {
 	MaxConnsPerIP int `yaml:"max_conns_per_ip"`
 
 	// TCPIdleTimeout closes a TCP or SSH connection through a tunnel that carried no bytes in either direction for
-	// this long (half-closed connections: at most five minutes). Default 2h.
+	// this long. Default 2h; negative = no idle limit (a half-closed connection is still bounded by TCPHalfCloseTimeout).
 	TCPIdleTimeout time.Duration `yaml:"tcp_idle_timeout"`
+
+	// TCPHalfCloseTimeout closes a TCP or SSH connection through a tunnel that one side has half-closed and that
+	// carried no bytes since, after this long (shorter than TCPIdleTimeout if that is shorter). It is independent of
+	// TCPIdleTimeout. Default 5m; negative = off.
+	TCPHalfCloseTimeout time.Duration `yaml:"tcp_half_close_timeout"`
 
 	// MaxHTTPRequestsPerTunnel is the number of simultaneous visitor requests (WebSocket connections included) one
 	// HTTP tunnel serves; more get 503. Default 512.

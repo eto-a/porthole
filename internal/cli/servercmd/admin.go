@@ -52,6 +52,7 @@ func NewAdmin(load func() (*config.Config, error)) *cobra.Command {
 		},
 	})
 	cmd.AddCommand(newAdminOpen(load, &socket))
+	cmd.AddCommand(newAdminReleaseLabel(load, &socket))
 	return cmd
 }
 
@@ -68,4 +69,37 @@ func adminSocketPath(load func() (*config.Config, error), override string) (stri
 		return "", errors.New("the admin socket is turned off (admin_socket: \"-\")")
 	}
 	return path, nil
+}
+
+// newAdminReleaseLabel returns `admin release-label`: free a hostname label that is claimed for good by the first
+// client and tunnel that registered it.
+func newAdminReleaseLabel(load func() (*config.Config, error), socket *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "release-label <label>",
+		Short: "Free a hostname label that is permanently claimed by a client's tunnel",
+		Long: "A tunnel's hostname label (\"<tunnel>-<client>\"; for ssh also the bare client name of the tunnel \"ssh\")\n" +
+			"belongs to the first client and tunnel that registered it, until that client's token is revoked. Two\n" +
+			"different pairs can compose the same label (client \"home\" with tunnel \"web-a\", client \"a-home\" with\n" +
+			"tunnel \"web\"); the later one is refused with name_taken. This command takes the label away from its\n" +
+			"owner so that anybody can register it.",
+		Example: "  portholed admin release-label web-a-home",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := adminSocketPath(load, *socket)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), adminCallTimeout)
+			defer cancel()
+			if err := adminapi.NewSocketClient(path).ReleaseLabel(ctx, args[0]); err != nil {
+				var ae *adminapi.Error
+				if errors.As(err, &ae) && ae.HTTPStatus == 404 {
+					return fmt.Errorf("label %q is not claimed", args[0])
+				}
+				return fmt.Errorf("%w (socket %s)", err, path)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "label %s released\n", args[0])
+			return nil
+		},
+	}
 }

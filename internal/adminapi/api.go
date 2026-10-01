@@ -110,6 +110,7 @@ type Store interface {
 	CreateJoinCode(ctx context.Context, jc *store.JoinCode) error
 	ListJoinCodes(ctx context.Context) ([]*store.JoinCode, error)
 	RevokeJoinCode(ctx context.Context, id string, at time.Time) error
+	ReleaseLabel(ctx context.Context, label string) error
 }
 
 // Status is the GET status response.
@@ -327,6 +328,7 @@ func (a *API) mount() {
 		func(ctx context.Context, name string) error { return a.be.Disconnect(ctx, name) })
 	a.mutate("DELETE "+p+"/tunnels/{id}", auth.ScopeAdminTunnels, "tunnel.close", "id",
 		func(ctx context.Context, id string) error { return a.be.CloseTunnel(ctx, id) })
+	a.mutate("POST "+p+"/labels/{label}/release", auth.ScopeAdminTunnels, "label.release", "label", a.releaseLabel)
 	a.mutate("POST "+p+"/tokens/{id}/revoke", auth.ScopeAdminTokens, "token.revoke", "id", a.revokeToken)
 	a.routes.HandleFunc("POST "+p+"/clients/{name}/tunnels", a.remoteOpen)
 
@@ -417,6 +419,13 @@ func (a *API) record(ctx context.Context, p principal, action, target, args, res
 	if err := a.st.AppendAudit(ctx, e); err != nil {
 		a.log.Error("audit write failed", "action", action, "target", target, "actor", p.actor, "result", result, "err", err)
 	}
+}
+
+// releaseLabel frees a hostname label or SSH address that is claimed for good by its first (client, tunnel) pair.
+func (a *API) releaseLabel(ctx context.Context, label string) error {
+	sctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+	return a.st.ReleaseLabel(sctx, label)
 }
 
 func (a *API) revokeToken(ctx context.Context, id string) error {

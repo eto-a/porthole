@@ -113,6 +113,7 @@ type Server struct {
 	tcpConns       *ipCounter     // visitor connections to TCP tunnels, per source IP
 	sshConns       *ipCounter     // SSH gateway connections, per source IP
 	tcpIdle        time.Duration  // idle timeout of piped connections; 0 = none
+	tcpHalfClose   time.Duration  // silence allowed after one side half-closed; 0 = none; independent of tcpIdle
 	httpMaxReqs    int            // simultaneous requests per HTTP tunnel; 0 = unlimited
 	bodyIdle       time.Duration  // stall timeout of visitor request bodies; 0 = none
 	certBudget     *certBudget    // new-certificate budget (ACME mode)
@@ -122,6 +123,8 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // every session goroutine
+	// persist runs the store writes the registry does not wait for; Close drains it.
+	persist *persister
 
 	mu        sync.Mutex // guards everything below and the tunnel maps of every session
 	closed    bool
@@ -156,35 +159,37 @@ func New(opts Options) (*Server, error) {
 		pending: newIPCounter(
 			limitOrDefault(lim.MaxPendingHandshakesPerIP, maxPendingPerIP),
 			limitOrDefault(lim.MaxPendingHandshakes, defaultMaxPendingHandshakes)),
-		tcpConns:    newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
-		sshConns:    newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
-		tcpIdle:     durationOrDefault(lim.TCPIdleTimeout, defaultTCPIdleTimeout),
-		httpMaxReqs: limitOrDefault(lim.MaxHTTPRequestsPerTunnel, defaultMaxHTTPRequests),
-		bodyIdle:    durationOrDefault(lim.HTTPBodyIdleTimeout, defaultHTTPBodyIdleTimeout),
-		certBudget:  newCertBudget(opts.Config.TLS.ACME),
-		cfg:         opts.Config,
-		store:       opts.Store,
-		log:         opts.Logger,
-		version:     opts.Version,
-		now:         opts.Now,
-		domain:      normalizeHost(opts.Config.Domain),
-		portLo:      lo,
-		portHi:      hi,
-		hb:          opts.HeartbeatInterval,
-		revalidate:  opts.RevalidateInterval,
-		hsTimeout:   opts.HandshakeTimeout,
-		openTimeout: opts.RemoteOpenTimeout,
-		sshIdle:     opts.SSHIdleTimeout,
-		limiter:     newFailLimiter(),
-		traffic:     newTrafficLog(opts.Config.Traffic),
-		metrics:     opts.Metrics,
-		sessions:    make(map[string]*session),
-		labels:      make(map[string]*tunnel),
-		ports:       make(map[int]*tunnel),
-		sshLabels:   make(map[string]*tunnel),
-		reserved:    make(map[string]reservation),
-		offline:     make(map[string]time.Time),
-		held:        make(map[string]hold),
+		tcpConns:     newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
+		sshConns:     newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
+		tcpIdle:      durationOrDefault(lim.TCPIdleTimeout, defaultTCPIdleTimeout),
+		tcpHalfClose: durationOrDefault(lim.TCPHalfCloseTimeout, halfClosedIdleTimeout),
+		httpMaxReqs:  limitOrDefault(lim.MaxHTTPRequestsPerTunnel, defaultMaxHTTPRequests),
+		bodyIdle:     durationOrDefault(lim.HTTPBodyIdleTimeout, defaultHTTPBodyIdleTimeout),
+		certBudget:   newCertBudget(opts.Config.TLS.ACME),
+		cfg:          opts.Config,
+		store:        opts.Store,
+		persist:      newPersister(storeTimeout),
+		log:          opts.Logger,
+		version:      opts.Version,
+		now:          opts.Now,
+		domain:       normalizeHost(opts.Config.Domain),
+		portLo:       lo,
+		portHi:       hi,
+		hb:           opts.HeartbeatInterval,
+		revalidate:   opts.RevalidateInterval,
+		hsTimeout:    opts.HandshakeTimeout,
+		openTimeout:  opts.RemoteOpenTimeout,
+		sshIdle:      opts.SSHIdleTimeout,
+		limiter:      newFailLimiter(),
+		traffic:      newTrafficLog(opts.Config.Traffic),
+		metrics:      opts.Metrics,
+		sessions:     make(map[string]*session),
+		labels:       make(map[string]*tunnel),
+		ports:        make(map[int]*tunnel),
+		sshLabels:    make(map[string]*tunnel),
+		reserved:     make(map[string]reservation),
+		offline:      make(map[string]time.Time),
+		held:         make(map[string]hold),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -366,6 +371,9 @@ func (s *Server) Close() error {
 	s.mu.Unlock()
 	s.cancel()
 	s.wg.Wait()
+	if !s.persist.flush(persistDrainTimeout) {
+		s.log.Warn("store writes still pending at shutdown were dropped", "timeout", persistDrainTimeout)
+	}
 	return nil
 }
 

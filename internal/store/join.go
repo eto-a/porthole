@@ -98,6 +98,9 @@ func (s *SQLite) CreateJoinCode(ctx context.Context, jc *JoinCode) error {
 	if n > 0 {
 		return fmt.Errorf("token name %q: %w", jc.ClientName, ErrNameTaken)
 	}
+	if err := checkNameNotClaimed(ctx, tx, jc.ClientName); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO join_codes (`+joinColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		jc.ID, jc.CodeHash, jc.ClientName, strings.Join(jc.Scopes, ","), jc.MaxTunnels, msOrNull(jc.TokenExpiresAt),
 		jc.RemoteControl, jc.CreatedAt.UnixMilli(), jc.ExpiresAt.UnixMilli(), msOrNull(jc.UsedAt), msOrNull(jc.RevokedAt),
@@ -156,6 +159,9 @@ func (s *SQLite) RedeemJoinCode(ctx context.Context, id, secret string, now time
 		ExpiresAt:     jc.TokenExpiresAt,
 		RemoteControl: jc.RemoteControl,
 		CreatedBy:     jc.CreatedBy,
+	}
+	if err := checkNameNotClaimed(ctx, tx, tok.Name); err != nil {
+		return nil, "", err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, remote_control, created_by)

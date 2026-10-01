@@ -18,6 +18,8 @@ var (
 	ErrRevoked   = errors.New("store: token revoked")
 	ErrExpired   = errors.New("store: token expired")
 	ErrPortHeld  = errors.New("store: port reserved for another tunnel")
+	// ErrLabelClaimed means the hostname label (or SSH address) belongs for good to another (client, tunnel) pair.
+	ErrLabelClaimed = errors.New("store: label claimed by another tunnel")
 
 	// Join code errors, from RedeemJoinCode. A wrong secret is ErrNotFound, indistinguishable from an unknown id.
 	ErrJoinUsed    = errors.New("store: join code already used")
@@ -52,6 +54,16 @@ type PortReservation struct {
 	ReleasedAt time.Time // when the tunnel went away; the reservation lasts a TTL from here
 }
 
+// LabelClaim is a hostname label or SSH gateway address that belongs for good to the tunnel (Client, Tunnel): the
+// first pair that registered it. Labels are "<tunnel>-<client>" and both parts may contain hyphens, so two different
+// pairs can compose the same one; the claim makes the first win for as long as its client token lives.
+type LabelClaim struct {
+	Label     string
+	Client    string
+	Tunnel    string
+	ClaimedAt time.Time
+}
+
 // Usable returns nil if the token may be used at now, ErrRevoked or ErrExpired otherwise.
 func (t *Token) Usable(now time.Time) error {
 	if t.RevokedAt != nil {
@@ -77,7 +89,7 @@ type Store interface {
 	// ListTokens returns all tokens, including revoked ones, ordered by CreatedAt.
 	ListTokens(ctx context.Context) ([]*Token, error)
 	// RevokeToken marks the token identified by id or by name as revoked at the given time and deletes the port
-	// reservations of its client. It returns ErrNotFound if no active token matches. Revoking is idempotent for
+	// reservations and label claims of its client. It returns ErrNotFound if no active token matches. Revoking is idempotent for
 	// already revoked ids.
 	RevokeToken(ctx context.Context, idOrName string, at time.Time) error
 	// TouchToken records the last successful use of a token.
@@ -91,6 +103,14 @@ type Store interface {
 	// LoadPortReservations is called once at server start: it marks rows of tunnels that were still live (the
 	// previous process died or stopped) as released at now, deletes reservations that expired, and returns the rest.
 	LoadPortReservations(ctx context.Context, now time.Time, ttl time.Duration) ([]PortReservation, error)
+	// ClaimLabels makes every label belong to (client, tunnel) in one transaction. A label already claimed by the
+	// same pair is left alone; one claimed by another pair fails the whole call with ErrLabelClaimed and nothing is
+	// claimed. It returns the labels this call newly claimed.
+	ClaimLabels(ctx context.Context, client, tunnel string, labels []string, at time.Time) ([]string, error)
+	// UnclaimLabels drops the claims of (client, tunnel) on labels; claims of other pairs are left alone.
+	UnclaimLabels(ctx context.Context, client, tunnel string, labels []string) error
+	// ReleaseLabel deletes the claim on label, whoever holds it. It returns ErrNotFound if there is none.
+	ReleaseLabel(ctx context.Context, label string) error
 	// AppendAudit adds e to the append-only admin audit log and sets e.ID.
 	AppendAudit(ctx context.Context, e *AuditEntry) error
 	// ListAudit returns the newest audit entries first; limit <= 0 means 100 and the maximum is 1000.
