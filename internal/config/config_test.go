@@ -59,17 +59,22 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	tests := map[string]string{
-		"no domain":      "version: 1\n",
-		"bad version":    "version: 2\ndomain: a.example\n",
-		"url as domain":  "version: 1\ndomain: https://a.example\n",
-		"half tls":       "version: 1\ndomain: a.example\ntls:\n  cert_file: c.pem\n",
-		"bad range":      "version: 1\ndomain: a.example\ntcp_port_range: 3000-2000\n",
-		"bad listen":     "version: 1\ndomain: a.example\nlisten: '443'\n",
-		"bad scheme":     "version: 1\ndomain: a.example\npublic_scheme: ftp\n",
-		"zero max tunls": "version: 1\ndomain: a.example\nmax_tunnels_per_client: 0\n",
-		"ssh no port":    "version: 1\ndomain: a.example\nssh_gateway:\n  listen: '2222'\n",
-		"ssh named port": "version: 1\ndomain: a.example\nssh_gateway:\n  listen: ':ssh'\n",
-		"ssh negative":   "version: 1\ndomain: a.example\nssh_gateway:\n  max_conns_per_tunnel: -1\n",
+		"no domain":            "version: 1\n",
+		"bad version":          "version: 2\ndomain: a.example\n",
+		"url as domain":        "version: 1\ndomain: https://a.example\n",
+		"half tls":             "version: 1\ndomain: a.example\ntls:\n  cert_file: c.pem\n",
+		"bad range":            "version: 1\ndomain: a.example\ntcp_port_range: 3000-2000\n",
+		"bad listen":           "version: 1\ndomain: a.example\nlisten: '443'\n",
+		"bad scheme":           "version: 1\ndomain: a.example\npublic_scheme: ftp\n",
+		"server_url no scheme": "version: 1\ndomain: a.example\nserver_url: tun.example.com\n",
+		"server_url ftp":       "version: 1\ndomain: a.example\nserver_url: ftp://tun.example.com\n",
+		"server_url path":      "version: 1\ndomain: a.example\nserver_url: https://tun.example.com/x\n",
+		"server_url query":     "version: 1\ndomain: a.example\nserver_url: https://tun.example.com?a=b\n",
+		"server_url no host":   "version: 1\ndomain: a.example\nserver_url: https://\n",
+		"zero max tunls":       "version: 1\ndomain: a.example\nmax_tunnels_per_client: 0\n",
+		"ssh no port":          "version: 1\ndomain: a.example\nssh_gateway:\n  listen: '2222'\n",
+		"ssh named port":       "version: 1\ndomain: a.example\nssh_gateway:\n  listen: ':ssh'\n",
+		"ssh negative":         "version: 1\ndomain: a.example\nssh_gateway:\n  max_conns_per_tunnel: -1\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -77,6 +82,38 @@ func TestValidate(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestServerURL(t *testing.T) {
+	c, err := Load(write(t, "version: 1\ndomain: a.example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ServerURL != "" || c.ClientURL() != "" {
+		t.Fatalf("default: ServerURL %q ClientURL %q, want empty", c.ServerURL, c.ClientURL())
+	}
+	for in, want := range map[string]string{
+		"https://tun.example.com":      "https://tun.example.com",
+		"https://tun.example.com/":     "https://tun.example.com",
+		"http://localhost:8080":        "http://localhost:8080",
+		"https://tun.example.com:8443": "https://tun.example.com:8443",
+	} {
+		c, err := Load(write(t, "version: 1\ndomain: a.example\nserver_url: "+in+"\n"))
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if got := c.ClientURL(); got != want {
+			t.Errorf("%s: ClientURL = %q, want %q", in, got, want)
+		}
+	}
+	t.Setenv("PORTHOLED_SERVER_URL", "https://env.example/")
+	c, err = Load(write(t, "version: 1\ndomain: a.example\nserver_url: https://file.example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ClientURL() != "https://env.example" {
+		t.Fatalf("env not applied: %q", c.ClientURL())
 	}
 }
 

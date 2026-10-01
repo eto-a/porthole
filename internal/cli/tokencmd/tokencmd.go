@@ -135,8 +135,11 @@ func validateScopes(in []string) ([]string, error) {
 	return out, nil
 }
 
-// loginURL is the server URL for the "porthole login" hint.
+// loginURL is the server URL for the "porthole login" hint: server_url when set, else derived from the public settings.
 func loginURL(cfg *config.Config) string {
+	if u := cfg.ClientURL(); u != "" {
+		return u
+	}
 	scheme := cfg.PublicScheme
 	if scheme == "" {
 		scheme = "https"
