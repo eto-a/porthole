@@ -111,7 +111,7 @@ flag of the CLI commands instead.
 ## Verify
 
 - `sudo systemctl status portholed` on the server, and `journalctl -u portholed` for the log.
-- `porthole status` on the client shows the connection and its tunnels.
+- `porthole status` on the client shows the daemon's connection and its tunnels. It needs a running daemon (`porthole daemon` or the system service) and fails with exit status 6 without one; for a one-off `porthole http` the printed address is the check.
 - Open the printed `https://...` address in a browser. The first request to a new name waits a few seconds while the
   server obtains a certificate.
 - Something does not work: [Troubleshooting](/porthole/docs/troubleshooting/) and the [FAQ](/porthole/docs/faq/).
