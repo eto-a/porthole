@@ -78,7 +78,7 @@ func NewServe(
 				"version", version,
 				"domain", cfg.Domain,
 				"listen", cfg.Listen,
-				"tls", cfg.TLS.Enabled(),
+				"tls_mode", cfg.TLS.EffectiveMode(),
 				"tcp_port_range", cfg.TCPPortRange,
 			)
 			if err := srv.Run(ctx); err != nil {

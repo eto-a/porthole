@@ -19,8 +19,56 @@ tun.example.com.     A   203.0.113.10
 
 ## TLS
 
-HTTP tunnels live on `https://<name>.tun.example.com`, so you need a wildcard certificate (a wildcard does not cover
-the apex, so request both names). With certbot and a DNS-01 plugin, for example Cloudflare:
+`portholed` has three TLS modes, set with `tls.mode` ([ADR 0004](adr/0004-automatic-https-per-tunnel.md)):
+
+| Mode | When | What it does |
+|---|---|---|
+| `acme` (default) | no certificate files configured | Obtains and renews a certificate per host name itself, from Let's Encrypt by default. No DNS provider and no external renewal job |
+| `files` | `tls.cert_file` and `tls.key_file` set | Serves the certificate you provide, for example a wildcard from certbot |
+| `off` | behind a proxy that terminates TLS | Plain HTTP, see [Behind a reverse proxy](#behind-a-reverse-proxy) |
+
+An empty `tls.mode` means `files` when the certificate files are set and `acme` otherwise.
+
+### Automatic certificates (`acme`)
+
+Nothing to configure beyond the DNS records above and reachable ports 443 and 80. The first TLS handshake for a host
+name triggers issuance (a few seconds, once per name); the certificate is then renewed in the background 30 days
+before it expires. Challenges: TLS-ALPN-01 on the HTTPS listener and HTTP-01 on the plain HTTP listener
+(`http_listen`, default `:80`), which also redirects every other request to `https://`. `GET /healthz` is answered on
+that listener as well. Certificates and the ACME account are stored in `<data_dir>/certs` (keep the directory across
+restarts; it must be writable by the service user).
+
+A certificate is requested only for the control host `tun.example.com` and for `<label>.tun.example.com` where the
+label belongs to a live tunnel (or to one whose client disconnected a moment ago). Handshakes for any other name fail
+without contacting the CA and are logged as `certificate refused` with the host name, so scanners cannot burn your
+rate limits.
+
+```yaml
+tls:
+  mode: acme              # the default
+  acme:
+    email: you@example.com                                    # optional: expiry notices from the CA
+    ca: https://acme-v02.api.letsencrypt.org/directory        # default; see staging below
+# http_listen: ":80"      # default in acme mode; "" disables the listener (then only TLS-ALPN-01 works)
+```
+
+Things to know:
+
+- **Let's Encrypt limits.** 50 certificates per registered domain per week, and 5 duplicates of the same name per
+  week (see [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/)). Every new tunnel name costs one
+  certificate; reusing a name costs nothing, because the certificate is already stored. Choose stable names.
+- **Staging.** To test without touching the production limits, set
+  `tls.acme.ca: https://acme-staging-v02.api.letsencrypt.org/directory`. Staging certificates are not trusted by
+  browsers; switch back and clear `<data_dir>/certs` when you go live.
+- **Certificate Transparency.** Every issued name is published in public CT logs. Tunnel host names are therefore not
+  secret; protect private services with the [SSH gateway](ssh.md) or authentication in the application.
+- **Ports.** The CA connects to port 443 and 80 of the domain from the internet. Behind a proxy that owns those
+  ports use TLS passthrough, see [Behind Traefik or Dokploy](#behind-traefik-or-dokploy-tls-passthrough).
+
+### Your own certificate (`files`)
+
+If you already have a wildcard certificate (a wildcard does not cover the apex, so it must list both
+`tun.example.com` and `*.tun.example.com`), point to it. With certbot and a DNS-01 plugin, for example Cloudflare:
 
 ```console
 $ certbot certonly --dns-cloudflare \
@@ -28,11 +76,15 @@ $ certbot certonly --dns-cloudflare \
     -d tun.example.com -d '*.tun.example.com'
 ```
 
-Certificates are read from files and a renewed one is picked up without a restart: within a minute, or immediately
-after `systemctl reload portholed` (SIGHUP), which is what your renewal hook should run.
+```yaml
+tls:
+  cert_file: /etc/porthole/tls/fullchain.pem
+  key_file: /etc/porthole/tls/privkey.pem
+```
 
-Alternatively, run `portholed` in plain HTTP behind a reverse proxy that terminates TLS, see
-[Behind a reverse proxy](#behind-a-reverse-proxy).
+Certificates are read from files and a renewed one is picked up without a restart: within a minute, or immediately
+after `systemctl reload portholed` (SIGHUP), which is what your renewal hook should run. `http_listen` is off in this
+mode; set it (for example `":80"`) to get the `https://` redirect.
 
 ## Configuration
 
@@ -43,14 +95,11 @@ The file is `/etc/porthole/portholed.yaml` (override with `--config`); the full 
 version: 1
 domain: tun.example.com
 listen: ":443"
-tls:
-  cert_file: /etc/porthole/tls/fullchain.pem
-  key_file: /etc/porthole/tls/privkey.pem
 tcp_port_range: "20000-29999"
 data_dir: /var/lib/porthole
 ```
 
-Unknown keys are rejected. Every setting except `version` and `shutdown_grace` can also be given as a `PORTHOLED_*`
+With no `tls` section the server gets its certificates by ACME (see [TLS](#tls)). Unknown keys are rejected. Every setting except `version` and `shutdown_grace` can also be given as a `PORTHOLED_*`
 environment variable (they override the file), for example `PORTHOLED_DOMAIN` or `PORTHOLED_TCP_PORT_RANGE`. Pass
 `--config ""` to configure the server only through the environment.
 
@@ -59,11 +108,15 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `version` | - | required (`1`) | Configuration schema version |
 | `domain` | `PORTHOLED_DOMAIN` | required | Base domain, a bare host name (no scheme or port) |
 | `listen` | `PORTHOLED_LISTEN` | `:443` | HTTP(S) listener: control endpoint, health check and HTTP tunnels |
-| `tls.cert_file`, `tls.key_file` | `PORTHOLED_TLS_CERT_FILE`, `PORTHOLED_TLS_KEY_FILE` | unset | PEM certificate and key; set both or neither. Neither: plain HTTP, for use behind a reverse proxy |
+| `tls.mode` | `PORTHOLED_TLS_MODE` | `files` if certificate files are set, else `acme` | `acme`, `files` or `off` (plain HTTP behind a TLS-terminating proxy) |
+| `tls.cert_file`, `tls.key_file` | `PORTHOLED_TLS_CERT_FILE`, `PORTHOLED_TLS_KEY_FILE` | unset | PEM certificate and key for mode `files`; set both or neither |
+| `tls.acme.email` | `PORTHOLED_ACME_EMAIL` | unset | Optional ACME account contact address (mode `acme`) |
+| `tls.acme.ca` | `PORTHOLED_ACME_CA` | Let's Encrypt production | ACME directory URL (mode `acme`); the staging URL is in [TLS](#tls) |
+| `http_listen` | `PORTHOLED_HTTP_LISTEN` | `:80` in mode `acme`, off otherwise | Plain HTTP listener for ACME HTTP-01 and the `https://` redirect; empty disables it; not allowed in mode `off` |
 | `public_scheme`, `public_port` | `PORTHOLED_PUBLIC_SCHEME`, `PORTHOLED_PUBLIC_PORT` | `https`, no port | Scheme and port in the public HTTP tunnel URLs shown to clients; change only for local development or when the public port differs from the listening port |
 | `tcp_port_range` | `PORTHOLED_TCP_PORT_RANGE` | `20000-29999` | Inclusive range of public ports for TCP (and `--public-port` SSH) tunnels |
 | `tcp_bind_host` | `PORTHOLED_TCP_BIND_HOST` | all interfaces | Address the TCP tunnel listeners bind to |
-| `data_dir` | `PORTHOLED_DATA_DIR` | `/var/lib/porthole` | Directory of the SQLite database (`porthole.db`: tokens and port reservations); must be writable by the service user |
+| `data_dir` | `PORTHOLED_DATA_DIR` | `/var/lib/porthole` | Directory of the SQLite database (`porthole.db`: tokens and port reservations) and, in mode `acme`, of `certs/`; must be writable by the service user |
 | `ssh_gateway.listen` | `PORTHOLED_SSH_LISTEN` | off | Address of the SSH gateway, for example `:2222` (see [SSH gateway](#ssh-gateway)) |
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
@@ -72,7 +125,7 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 
 ## Firewall
 
-Open TCP 443 (control connections and HTTP tunnels), the TCP port range for TCP tunnels, and the SSH gateway port
+Open TCP 443 (control connections and HTTP tunnels), TCP 80 in mode `acme` (HTTP-01 challenge and redirect), the TCP port range for TCP tunnels, and the SSH gateway port
 (for example 2222) if you enable it.
 
 ## Run it
@@ -139,12 +192,14 @@ changed `tcp_port_range` ignores reservations outside the new range. See [ADR 00
 ## Behind a reverse proxy
 
 `portholed` can run in plain HTTP on loopback behind a proxy that terminates TLS and handles the wildcard certificate.
-Omit the `tls` section, bind to loopback and trust the proxy's `X-Forwarded-For`:
+Set `tls.mode: off`, bind to loopback and trust the proxy's `X-Forwarded-For`:
 
 ```yaml
 version: 1
 domain: tun.example.com
 listen: "127.0.0.1:8080"
+tls:
+  mode: off
 trust_proxy_headers: true
 tcp_port_range: "20000-29999"
 data_dir: /var/lib/porthole
@@ -155,6 +210,16 @@ which needs a DNS provider module compiled into Caddy; WebSocket upgrades and un
 handled). Enable `trust_proxy_headers` only when `portholed` is reachable exclusively through that proxy; otherwise
 visitors can spoof their address. TCP and SSH tunnels do not pass through the proxy: `portholed` listens on the ports
 of `tcp_port_range` (and on the SSH gateway port) directly, so open them in your firewall.
+
+### Behind Traefik or Dokploy (TLS passthrough)
+
+A proxy that owns ports 80 and 443 but cannot issue a wildcard certificate (Traefik without a DNS-01 provider, the
+default in Dokploy) can instead pass the TLS connection through by SNI and leave certificates to `portholed`
+(mode `acme`): a Traefik TCP router with ``HostSNI(`tun.example.com`)`` and a `HostSNIRegexp` for
+`*.tun.example.com`, `tls.passthrough=true`, forwarding to the HTTPS port of the container, plus plain HTTP routers for
+the same hosts forwarding to `http_listen` (HTTP-01 and the redirect). TCP and SSH tunnel ports are published
+directly. [deploy/dokploy-compose.yaml](../deploy/dokploy-compose.yaml) is a ready compose file: in Dokploy create a
+Compose service, choose Raw and paste it, then set `PORTHOLED_DOMAIN` and your domain in the labels.
 
 ## Docker
 
@@ -167,13 +232,14 @@ See [Installation: Docker](install.md#docker) for a `docker run` example with a 
 without capabilities. From the repository root:
 
 ```console
-$ cp deploy/portholed.example.yaml deploy/portholed.yaml        # then set domain and TLS files
+$ cp deploy/portholed.example.yaml deploy/portholed.yaml        # then set the domain and the TLS mode
 $ docker compose -f deploy/compose.yaml up -d --build
 $ docker compose -f deploy/compose.yaml exec portholed portholed token create --name home
 ```
 
-The TLS directory is expected as `deploy/tls/fullchain.pem` and `deploy/tls/privkey.pem`, readable by uid 65532. The
-example publishes a small port range (`20000-20099`, kept in sync with `PORTHOLED_TCP_PORT_RANGE`, because publishing
+With the default `acme` mode the example publishes ports 80 and 443 and keeps the certificates in the data volume. For
+mode `files` mount the certificates as `deploy/tls/fullchain.pem` and `deploy/tls/privkey.pem`, readable by uid 65532.
+The example publishes a small port range (`20000-20099`, kept in sync with `PORTHOLED_TCP_PORT_RANGE`, because publishing
 thousands of ports is slow with the default Docker networking) and the SSH gateway on `2222` (`PORTHOLED_SSH_LISTEN`).
 
 ## SSH gateway

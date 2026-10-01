@@ -178,7 +178,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 
-	if s.cfg.TLS.Enabled() {
+	var am *acmeManager
+	switch s.cfg.TLS.EffectiveMode() {
+	case config.TLSModeFiles:
 		cr, err := newCertReloader(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile, s.log, s.now)
 		if err != nil {
 			_ = ln.Close()
@@ -193,6 +195,33 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			NextProtos:     []string{"http/1.1"},
 			GetCertificate: cr.get,
 		})
+	case config.TLSModeACME:
+		var err error
+		if am, err = s.newACME(); err != nil {
+			_ = ln.Close()
+			return err
+		}
+		defer am.close()
+		ln = tls.NewListener(ln, am.tlsConfig())
+	}
+
+	stopHTTP := func(context.Context) {}
+	if addr := s.cfg.HTTPListenAddr(); addr != "" {
+		h := s.redirectHandler()
+		if am != nil {
+			h = am.issuer.HTTPChallengeHandler(h)
+		}
+		stop, err := s.startHTTPListener(ctx, addr, h)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		stopHTTP = stop
+		defer func() { // error paths: close at once (a cancelled context makes Shutdown fall back to Close)
+			dead, cancel := context.WithCancel(context.Background())
+			cancel()
+			stop(dead)
+		}()
 	}
 
 	srv := &http.Server{
@@ -217,6 +246,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.log.Info("shutting down", "grace", s.cfg.ShutdownGrace)
 	gctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownGrace)
 	defer cancel()
+	stopHTTP(gctx)
 	if err := srv.Shutdown(gctx); err != nil {
 		s.log.Warn("graceful shutdown incomplete, closing connections", "err", err)
 		_ = srv.Close()

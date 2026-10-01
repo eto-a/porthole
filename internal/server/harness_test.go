@@ -238,6 +238,7 @@ func newHarness(t *testing.T, mods ...func(*config.Config, *Options)) *harness {
 	cfg.TCPBindHost = "127.0.0.1"
 	cfg.TCPPortRange = itoa(lo) + "-" + itoa(hi)
 	cfg.DataDir = "unused"
+	cfg.TLS.Mode = config.TLSModeOff
 
 	h := &harness{t: t, st: newFakeStore(), cfg: cfg, clock: newFakeClock(), lo: lo, hi: hi}
 	opts := Options{

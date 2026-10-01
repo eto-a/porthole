@@ -181,13 +181,21 @@ tunnel looked up by Host) — frp's CVE-2026-40910 was a mismatch between the tw
 
 TCP tunnels each get a `net.Listener` on their port; every accepted connection becomes a data stream.
 
-TLS: v0.1 loads a certificate from files (e.g. a wildcard certificate from certbot DNS-01) or runs plain HTTP behind
-an existing reverse proxy. A renewed certificate is picked up without a restart: `portholed` compares the file
+TLS ([ADR 0004](docs/adr/0004-automatic-https-per-tunnel.md)): `tls.mode` is `acme` (the default), `files` or `off`. In
+`acme` mode `portholed` obtains and renews one certificate per host name itself through `certmagic` (the library behind
+Caddy's on-demand TLS), at the first handshake for the name, with TLS-ALPN-01 on the HTTPS listener and HTTP-01 on a
+plain HTTP listener (`http_listen`, default `:80`) that also redirects to `https://`. An in-process decision function
+(Caddy's `ask`, without the HTTP round trip) allows only the control host and `<label>.<domain>` for live tunnels, so
+unknown names fail the handshake without contacting the CA. Certificates and the ACME account are stored in
+`<data_dir>/certs`. Mode `files` loads a certificate from files (e.g. a wildcard from certbot DNS-01); mode `off` runs
+plain HTTP behind an existing reverse proxy. Behind a proxy that owns 443 (Traefik/Dokploy), TLS is passed through by
+SNI to `portholed` (`deploy/dokploy-compose.yaml`). In `files` mode a renewed certificate is picked up without a restart: `portholed` compares the file
 modification times at most once a minute on a handshake, and reloads immediately on `SIGHUP` (Unix; the systemd unit
 has `ExecReload=/bin/kill -HUP $MAINPID`, so `systemctl reload portholed` works as a certbot deploy hook). A failed
 reload is logged and the previous certificate stays in use. (Same convention as Prometheus and Traefik's file
-provider, which reload on SIGHUP; Caddy ignores SIGHUP and uses `caddy reload`.) v0.2 adds automatic certificates via `certmagic` with DNS-01 (`libdns` providers) for the
-wildcard, obtained once rather than per tunnel (boringproxy issues one per domain).
+provider, which reload on SIGHUP; Caddy ignores SIGHUP and uses `caddy reload`.) The earlier plan of a DNS-01
+wildcard through `libdns` providers is superseded by ADR 0004: no DNS provider integration, one certificate per tunnel
+name.
 
 ### 3.6 Client
 
@@ -229,10 +237,7 @@ Server: YAML file with a `version: 1` field, strict decoding (unknown keys are e
 ```yaml
 version: 1
 domain: tun.example.com
-listen: ":443"
-tls:
-  cert_file: /etc/porthole/tls/fullchain.pem
-  key_file: /etc/porthole/tls/privkey.pem
+listen: ":443"           # tls.mode defaults to acme; see 3.5
 tcp_port_range: "20000-29999"
 data_dir: /var/lib/porthole
 ```
