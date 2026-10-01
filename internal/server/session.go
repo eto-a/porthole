@@ -88,6 +88,7 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 
 	reject := func(e *proto.Error) error {
 		e.Fatal = true
+		s.metrics.HandshakeFailed(e.Code)
 		_ = writeFrame(ctrl, nil, e)
 		_ = ctrl.Close() // half-close: FIN after the error frame
 		_ = ctrl.SetReadDeadline(time.Now().Add(lingerTimeout))

@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/eto-a/porthole/internal/metrics"
 	"github.com/eto-a/porthole/internal/store"
 )
 
@@ -224,6 +225,7 @@ func (s *Server) sshPasswordAuth(md ssh.ConnMetadata, password []byte) (*ssh.Per
 	tok, perr, fromClient := s.authenticate(s.ctx, string(password))
 	if perr != nil {
 		if fromClient {
+			s.metrics.SSHAuthFailed()
 			s.limiter.fail(ip, s.now())
 			s.log.Warn("ssh gateway login failed", "ip", ip, "code", perr.Code)
 		}
@@ -315,17 +317,20 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 	deny := func() { _ = nc.Reject(ssh.ConnectionFailed, "connect failed") }
 	var p directTCPIP
 	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil {
+		s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeRefused)
 		deny()
 		return
 	}
 	t, ok := s.lookupSSH(p.Host)
 	if !ok || (t.private && !s.sshMayConnect(sc, t)) {
 		s.log.Debug("ssh gateway channel refused", "ip", ipOf(sc.RemoteAddr().String()), "target", p.Host)
+		s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeRefused)
 		deny()
 		return
 	}
 	if !t.acquire() {
 		t.sess.log.Warn("ssh tunnel at its channel limit", "tunnel", t.id, "limit", cap(t.sem))
+		s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeLimit)
 		deny()
 		return
 	}
@@ -338,6 +343,7 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 	stream, err := t.openStream(remote)
 	if err != nil {
 		t.sess.log.Debug("open stream for ssh channel failed", "tunnel", t.id, "remote", remote, "err", err)
+		s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeStreamError)
 		deny()
 		return
 	}
@@ -346,6 +352,7 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 		_ = stream.Close()
 		return
 	}
+	s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeAccepted)
 	go ssh.DiscardRequests(chReqs)
 	t.sess.log.Debug("ssh channel opened", "tunnel", t.id, "remote", remote,
 		"originator", net.JoinHostPort(p.OrigHost, strconv.FormatUint(uint64(p.OrigPort), 10)))
@@ -356,7 +363,8 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 		_ = stream.Close()
 	})
 	defer stop()
-	pipe(conn, stream)
+	fromVisitor, fromTunnel := pipe(conn, stream)
+	s.metrics.AddBytes(metrics.KindSSH, fromVisitor, fromTunnel)
 }
 
 // sshMayConnect reports whether the password session of sc may reach the private tunnel t: its token, re-read from

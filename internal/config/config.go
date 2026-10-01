@@ -38,6 +38,11 @@ type Config struct {
 	// modes; an explicit empty string disables it. It is an error in mode "off", where Listen is already plain HTTP.
 	HTTPListen *string `yaml:"http_listen"`
 
+	// MetricsListen is the address of the listener that serves Prometheus metrics at /metrics and the Go profiler
+	// at /debug/pprof/. Empty (the default) disables it. Use a loopback address such as "127.0.0.1:9090": the
+	// endpoints are unauthenticated.
+	MetricsListen string `yaml:"metrics_listen"`
+
 	TLS TLS `yaml:"tls"`
 
 	// PublicScheme is the scheme used in public HTTP tunnel URLs ("https" or "http").
@@ -224,6 +229,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_TCP_BIND_HOST":  &c.TCPBindHost,
 		"PORTHOLED_DATA_DIR":       &c.DataDir,
 		"PORTHOLED_SSH_LISTEN":     &c.SSHGateway.Listen,
+		"PORTHOLED_METRICS_LISTEN": &c.MetricsListen,
 	}
 	for k, p := range str {
 		if v, ok := lookup(k); ok {
@@ -288,6 +294,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %w", err))
 		} else if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
 			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %q needs a numeric port 1-65535", c.SSHGateway.Listen))
+		}
+	}
+	if c.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.MetricsListen); err != nil {
+			errs = append(errs, fmt.Errorf("metrics_listen: %w", err))
 		}
 	}
 	if c.SSHGateway.MaxConnsPerTunnel < 0 {

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/eto-a/porthole/internal/config"
+	"github.com/eto-a/porthole/internal/metrics"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/store"
 	"github.com/eto-a/porthole/internal/transport"
@@ -63,6 +64,10 @@ type Options struct {
 
 	// SSHIdleTimeout closes SSH gateway connections without open channels after this long (default 60 s).
 	SSHIdleTimeout time.Duration
+
+	// Metrics receives the Prometheus instrumentation. Nil turns it off, unless cfg.MetricsListen is set: then
+	// the server creates its own.
+	Metrics *metrics.Metrics
 }
 
 // Server is the portholed core. Create it with New and always release it with Close (Run and Serve do so).
@@ -80,6 +85,7 @@ type Server struct {
 	hsTimeout      time.Duration
 	sshIdle        time.Duration // gateway connections without channels are closed after this
 	limiter        *failLimiter
+	metrics        *metrics.Metrics // nil = off; every hook is nil-safe
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,6 +130,7 @@ func New(opts Options) (*Server, error) {
 		hsTimeout:  opts.HandshakeTimeout,
 		sshIdle:    opts.SSHIdleTimeout,
 		limiter:    newFailLimiter(),
+		metrics:    opts.Metrics,
 		sessions:   make(map[string]*session),
 		labels:     make(map[string]*tunnel),
 		ports:      make(map[int]*tunnel),
@@ -148,6 +155,10 @@ func New(opts Options) (*Server, error) {
 	if s.hsTimeout <= 0 {
 		s.hsTimeout = defaultHandshakeTimeout
 	}
+	if s.metrics == nil && s.cfg.MetricsListen != "" {
+		s.metrics = metrics.New(s.version)
+	}
+	s.metrics.SetStateSource(s.metricsState)
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.loadReservations()
 	return s, nil
@@ -174,6 +185,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer func() { _ = s.Close() }()
 
 	if err := s.startSSHGateway(ctx); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	if err := s.startMetricsListener(ctx); err != nil {
 		_ = ln.Close()
 		return err
 	}
@@ -300,7 +315,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if label, ok := s.labelOf(host); ok {
-		s.serveTunnel(w, r, label)
+		s.metrics.InstrumentHTTP(w, r, func(w http.ResponseWriter) { s.serveTunnel(w, r, label) })
 		return
 	}
 	// Load balancers and orchestrators probe by IP, with no usable Host. Hosts outside our domain get /healthz

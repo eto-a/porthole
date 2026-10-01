@@ -10,6 +10,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/eto-a/porthole/internal/metrics"
 )
 
 const (
@@ -42,6 +44,7 @@ func (t *tunnel) acceptLoop() {
 
 		if !t.acquire() {
 			c.log.Warn("tcp tunnel at its connection limit, dropping connection", "tunnel", t.id, "limit", cap(t.sem))
+			c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeLimit)
 			_ = conn.Close()
 			continue
 		}
@@ -59,6 +62,7 @@ func (t *tunnel) handleConn(conn net.Conn) {
 	stream, err := t.openStream(remote)
 	if err != nil {
 		c.log.Debug("open stream for tcp visitor failed", "tunnel", t.id, "remote", remote, "err", err)
+		c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeStreamError)
 		_ = conn.Close()
 		return
 	}
@@ -68,12 +72,15 @@ func (t *tunnel) handleConn(conn net.Conn) {
 		_ = stream.Close()
 	})
 	defer stop()
-	pipe(conn, stream)
+	c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeAccepted)
+	fromVisitor, fromTunnel := pipe(conn, stream)
+	c.srv.metrics.AddBytes(metrics.KindTCP, fromVisitor, fromTunnel)
 }
 
 // pipe copies a<->b. A clean EOF in one direction half-closes the other side so request/response protocols that
 // shut down their write side still receive the answer; any error closes both sides. Both are closed on return.
-func pipe(a, b net.Conn) {
+// It returns the number of bytes read from a and from b.
+func pipe(a, b net.Conn) (fromA, fromB int64) {
 	defer func() {
 		_ = a.Close()
 		_ = b.Close()
@@ -81,7 +88,13 @@ func pipe(a, b net.Conn) {
 	var wg sync.WaitGroup
 	cp := func(dst, src net.Conn) {
 		defer wg.Done()
-		if _, err := io.Copy(dst, src); err != nil {
+		n, err := io.Copy(dst, src)
+		if src == a {
+			fromA = n
+		} else {
+			fromB = n
+		}
+		if err != nil {
 			_ = a.Close()
 			_ = b.Close()
 			return
@@ -92,6 +105,7 @@ func pipe(a, b net.Conn) {
 	go cp(a, b)
 	go cp(b, a)
 	wg.Wait()
+	return fromA, fromB
 }
 
 // halfClose shuts down the write side of c. For TCP that is CloseWrite; yamux streams implement Close as a

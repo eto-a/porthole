@@ -119,6 +119,7 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `data_dir` | `PORTHOLED_DATA_DIR` | `/var/lib/porthole` | Directory of the SQLite database (`porthole.db`: tokens and port reservations) and, in mode `acme`, of `certs/`; must be writable by the service user |
 | `ssh_gateway.listen` | `PORTHOLED_SSH_LISTEN` | off | Address of the SSH gateway, for example `:2222` (see [SSH gateway](#ssh-gateway)) |
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
+| `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
 | `shutdown_grace` | - | `10s` | How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut |
@@ -268,6 +269,42 @@ or `PORTHOLED_SSH_LISTEN=:2222`. Open that port in the firewall (port 22 of the 
 - Without a gateway, a plain `porthole ssh` falls back to a public TCP port with a warning.
 
 Design and rejected alternatives: [ADR 0003](adr/0003-ssh-gateway-and-port-reservations.md).
+
+## Metrics
+
+Set `metrics_listen` (for example `127.0.0.1:9090`) to serve Prometheus metrics at `/metrics` and the Go profiler at
+`/debug/pprof/` on a separate listener. It is off by default. The listener has no authentication and the profiler can
+expose memory contents and slow the server down, so bind it to a loopback address and scrape it from the same host
+(Prometheus agent, node-local collector) or through a proxy that authenticates. Any other address works but logs a
+warning at start.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `porthole_build_info` | gauge | `version` | Always 1; the version of `portholed` |
+| `porthole_sessions` | gauge | - | Connected client sessions |
+| `porthole_tunnels` | gauge | `kind` (`http`, `tcp`, `ssh`) | Registered tunnels |
+| `porthole_http_requests_total` | counter | `status_class` (`1xx` to `5xx`) | Requests to tunnel hosts, by response status |
+| `porthole_http_request_duration_seconds` | histogram | - | Request time until the response is fully written; long-lived streaming responses land in the top buckets |
+| `porthole_bytes_total` | counter | `direction` (`in` toward the tunnel client, `out` toward the visitor), `kind` | Relayed bytes. For `http` only request and response bodies are counted, and a WebSocket upgrade counts as one `101` response without its frames |
+| `porthole_tcp_connections_total` | counter | `kind` (`tcp`, `ssh`), `outcome` | Visitor connections to TCP tunnels and SSH gateway channels. `outcome`: `accepted`, `limit` (tunnel at its connection limit), `stream_error` (the client did not open a stream), `refused` (`ssh` only: unknown or not permitted target) |
+| `porthole_ssh_gateway_auth_failures_total` | counter | - | Failed token logins at the SSH gateway |
+| `porthole_handshake_failures_total` | counter | `reason` | Control handshakes answered with an error; `reason` is the protocol error code (`unauthorized`, `unsupported_version`, `limit_exceeded`, ...) |
+| `porthole_acme_certificates_total` | counter | `result` (`obtained`, `failed`) | Certificate issuance and renewal attempts in mode `acme` |
+
+The standard `go_*` and `process_*` metrics are included. Metrics are never labelled by tunnel, client, host or
+address, so the number of series does not grow with traffic. Bytes of a TCP or SSH connection are added when the
+connection ends.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: portholed
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+Profiling, for example a 30 second CPU profile: `go tool pprof http://127.0.0.1:9090/debug/pprof/profile?seconds=30`.
+From your workstation use an SSH port forward (`ssh -L 9090:127.0.0.1:9090 tun.example.com`) instead of opening the port.
 
 ## Command reference
 
