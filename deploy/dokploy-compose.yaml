@@ -29,7 +29,11 @@
 
 services:
   portholed:
-    image: ghcr.io/eto-a/porthole/portholed:latest
+    # A fixed version, not :latest: a redeploy must not pull whatever was released last. The :latest tag is not set for
+    # pre-releases at all. To update, change the version here after reading the release notes; to pin by content, use
+    # `portholed:0.3.0-alpha.1@sha256:<digest>` (digest from `docker buildx imagetools inspect <image>:<tag>`) and
+    # verify the signature first, see docs/install.md#verifying-a-download.
+    image: ghcr.io/eto-a/porthole/portholed:0.3.0-alpha.1
     restart: unless-stopped
     # Environment-only setup: no configuration file.
     command: ["serve", "--config", ""]
@@ -42,11 +46,20 @@ services:
       PORTHOLED_TCP_PORT_RANGE: "20000-20099"
       PORTHOLED_SSH_LISTEN: ":2222"
       # Accept PROXY protocol headers on the HTTPS listener from the proxies below, and require them from those
-      # proxies. The list is the address range of dokploy-network, where Traefik runs; the values here are the usual
-      # Docker private ranges, so narrow them to the subnet shown by `docker network inspect dokploy-network`.
-      # Connections from any other address (the published SSH and TCP tunnel ports) must NOT send a header.
+      # proxies. A peer in this list can claim any visitor address, so keep it as narrow as you can. The value below
+      # is an EXAMPLE: put the subnet of dokploy-network, where Traefik runs, which you get with
+      #   docker network inspect dokploy-network -f '{{(index .IPAM.Config 0).Subnet}}'
+      # (an overlay network, often 10.0.1.0/24). A wrong value fails closed: Traefik is then not trusted, its header is
+      # refused and HTTPS stops working, so a typo cannot open anything up.
+      # Caveat: every container on dokploy-network (your other Dokploy apps and databases) is inside that subnet and
+      # could connect to portholed:443 itself with a forged header. If you can, give Traefik and portholed a network of
+      # their own and list only that subnet (or only Traefik's address, if it is fixed). Do not widen this to
+      # 10.0.0.0/8 or 172.16.0.0/12.
+      # Connections from any other address (the published TCP tunnel ports) must NOT send a header.
+      # Today the SSH gateway on 2222 is wrapped too when this is on, so a client reaching it from an address inside
+      # the list is refused unless it sends a header; a per-listener switch for the SSH gateway is planned.
       PORTHOLED_PROXY_PROTOCOL: "true"
-      PORTHOLED_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12"
+      PORTHOLED_TRUSTED_PROXIES: "10.0.1.0/24"
     ports:
       # TCP/SSH tunnels. Keep the range in sync with PORTHOLED_TCP_PORT_RANGE; a small range keeps Docker's port
       # publishing fast.

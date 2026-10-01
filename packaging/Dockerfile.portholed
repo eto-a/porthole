@@ -12,7 +12,9 @@ COPY ${TARGETPLATFORM}/portholed /usr/local/bin/portholed
 
 # The data directory must exist and belong to the non-root user (uid/gid 65532) so that a fresh volume is writable.
 # The rootfs tree (packaging/docker/rootfs) only holds an empty .keep file; GoReleaser copies it via extra_files.
-COPY --chown=65532:65532 packaging/docker/rootfs/ /
+# Copy only the leaf directory: --chown on the whole tree would also hand /var and /var/lib to the service user,
+# which could then replace entries next to the distroless package inventory (/var/lib/dpkg/status.d).
+COPY --chown=65532:65532 packaging/docker/rootfs/var/lib/porthole /var/lib/porthole
 
 # SQLite database (tokens). Mount a volume here.
 VOLUME /var/lib/porthole
