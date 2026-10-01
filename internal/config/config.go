@@ -100,6 +100,32 @@ type Config struct {
 
 	// Traffic sizes the in-memory request and connection journals (ADR 0005).
 	Traffic Traffic `yaml:"traffic"`
+
+	// Limits bounds what a single peer can hold open (connections, requests, unauthenticated sessions).
+	Limits Limits `yaml:"limits"`
+}
+
+// Limits are abuse limits. For every field 0 selects the built-in default and a negative value turns the limit off.
+type Limits struct {
+	// MaxConnsPerIP is the number of simultaneous connections one source IP (IPv6: /64) may hold on the TCP
+	// tunnels and on the SSH gateway. Default 32.
+	MaxConnsPerIP int `yaml:"max_conns_per_ip"`
+
+	// TCPIdleTimeout closes a TCP or SSH connection through a tunnel that carried no bytes in either direction for
+	// this long (half-closed connections: at most five minutes). Default 2h.
+	TCPIdleTimeout time.Duration `yaml:"tcp_idle_timeout"`
+
+	// MaxHTTPRequestsPerTunnel is the number of simultaneous visitor requests (WebSocket connections included) one
+	// HTTP tunnel serves; more get 503. Default 512.
+	MaxHTTPRequestsPerTunnel int `yaml:"max_http_requests_per_tunnel"`
+
+	// HTTPBodyIdleTimeout aborts a visitor request whose body stalls for this long between two reads. Default 60s.
+	HTTPBodyIdleTimeout time.Duration `yaml:"http_body_idle_timeout"`
+
+	// MaxPendingHandshakes and MaxPendingHandshakesPerIP bound the control connections that have not authenticated
+	// yet, overall (default 256) and per source IP (default 8).
+	MaxPendingHandshakes      int `yaml:"max_pending_handshakes"`
+	MaxPendingHandshakesPerIP int `yaml:"max_pending_handshakes_per_ip"`
 }
 
 // DefaultTrafficMax is the default size of each traffic journal.
@@ -156,6 +182,15 @@ type ACME struct {
 
 	// CA is the ACME directory URL; empty means Let's Encrypt production (DefaultACMECA).
 	CA string `yaml:"ca"`
+
+	// MaxNewNamesPerDay caps how many host names without a stored certificate the server requests per 24 hours, all
+	// clients together (Let's Encrypt allows 50 new certificates per registered domain per week). 0 means 30;
+	// negative turns the cap off.
+	MaxNewNamesPerDay int `yaml:"max_new_names_per_day"`
+
+	// MaxNewNamesPerClientPerHour is the same cap for the tunnels of one client per hour. 0 means 10; negative
+	// turns the cap off.
+	MaxNewNamesPerClientPerHour int `yaml:"max_new_names_per_client_per_hour"`
 }
 
 // DefaultSSHMaxConnsPerTunnel is the default for SSHGateway.MaxConnsPerTunnel.

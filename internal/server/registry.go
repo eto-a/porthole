@@ -84,6 +84,9 @@ type tunnel struct {
 	ln   net.Listener
 	sem  chan struct{} // limits concurrent connections (also used by ssh tunnels)
 
+	// HTTP: limits concurrent visitor requests; nil = unlimited
+	httpSem chan struct{}
+
 	// SSH
 	private bool // the gateway requires a porthole token to reach this tunnel
 
@@ -128,7 +131,10 @@ func (s *Server) adopt(c *session) error {
 	s.mu.Unlock()
 
 	if old != nil {
-		old.log.Info("session replaced by a newer login", "new_session", c.id)
+		// A thief with a copied token takes the tunnels over exactly like this (the old client is told "session_replaced"
+		// and does not retry), so say where the new login came from.
+		old.log.Warn("session replaced by a newer login",
+			"new_session", c.id, "new_remote", c.remote, "old_remote", old.remote, "same_ip", ipOf(c.remote) == ipOf(old.remote))
 		s.releaseAll(old)
 		old.kill("replaced by a newer login", &proto.Error{
 			Code:    proto.CodeSessionReplaced,
@@ -169,6 +175,18 @@ func (s *Server) removeLocked(t *tunnel, offline bool) {
 		if offline {
 			s.sweepOfflineLocked(now)
 			s.offline[t.label] = now.Add(offlineGrace)
+			s.holdLocked(addrKey(proto.KindHTTP, t.label), reservationKey(t.sess.name, t.name), now)
+		}
+	case proto.KindSSH:
+		label := sshLabel(t.sess.name, t.name)
+		if s.sshLabels[label] == t {
+			delete(s.sshLabels, label)
+		}
+		if offline {
+			s.sweepOfflineLocked(now)
+			for _, a := range sshAddrs(t.sess.name, t.name) {
+				s.holdLocked(addrKey(proto.KindSSH, a), reservationKey(t.sess.name, t.name), now)
+			}
 		}
 	case proto.KindTCP:
 		if s.ports[t.port] == t {
@@ -181,6 +199,7 @@ func (s *Server) removeLocked(t *tunnel, offline bool) {
 }
 
 func (s *Server) sweepOfflineLocked(now time.Time) {
+	s.sweepHeldLocked(now)
 	for l, exp := range s.offline {
 		if !now.Before(exp) {
 			delete(s.offline, l)
@@ -333,9 +352,17 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 			t.cancel()
 			return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "hostname is already in use"}
 		}
+		if s.heldByOtherLocked(addrKey(proto.KindHTTP, t.label), reservationKey(c.name, name), s.now()) {
+			t.cancel()
+			return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "hostname is already in use"}
+		}
 		s.initHTTPTunnel(t)
+		if s.httpMaxReqs > 0 {
+			t.httpSem = make(chan struct{}, s.httpMaxReqs)
+		}
 		s.labels[t.label] = t
 		delete(s.offline, t.label)
+		delete(s.held, addrKey(proto.KindHTTP, t.label))
 	case proto.KindTCP:
 		ln, perr := s.listenTCPLocked(reservationKey(c.name, name), m.RemotePort)
 		if perr != nil {
@@ -350,7 +377,15 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		s.holdPort(c.name, name, t.port)
 		c.wg.Go(t.acceptLoop)
 	case proto.KindSSH:
-		// No public listener: the SSH gateway looks the tunnel up with LookupSSH and opens streams itself.
+		if s.conflictingSSHLocked(c.name, name, s.now()) {
+			t.cancel()
+			return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "this ssh address is already in use"}
+		}
+		s.sshLabels[sshLabel(c.name, name)] = t
+		for _, a := range sshAddrs(c.name, name) {
+			delete(s.held, addrKey(proto.KindSSH, a))
+		}
+		// No public listener: the SSH gateway looks the tunnel up with lookupSSH and opens streams itself.
 		n := s.cfg.SSHGateway.MaxConnsPerTunnel
 		if n <= 0 {
 			n = config.DefaultSSHMaxConnsPerTunnel

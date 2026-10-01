@@ -36,6 +36,7 @@ func TestRequestTunnelSuccess(t *testing.T) {
 	h := newHarness(t)
 	be := adminBackend{h.srv}
 	c := h.loginRemote("home")
+	c.mustRegister(proto.KindHTTP, "web", 0) // the client registers the tunnel, then reports it
 
 	type result struct {
 		tun adminapi.RemoteTunnel
@@ -58,7 +59,7 @@ func TestRequestTunnelSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := <-done
-	if r.err != nil || r.tun.Name != "web" || r.tun.URL != "https://web-home.example.com" {
+	if r.err != nil || r.tun.Name != "web" || r.tun.URL != "https://web-home.example.test" {
 		t.Fatalf("result %+v, %v", r.tun, r.err)
 	}
 }

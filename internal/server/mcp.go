@@ -17,7 +17,7 @@ func (s *Server) newMCPHandler() (http.Handler, error) {
 		mcpserver.Options{Audit: s.store, Now: s.now, Logger: s.log, Version: s.version},
 		mcpserver.HTTPOptions{
 			Authenticate: s.adminAuthenticate,
-			ClientIP:     func(r *http.Request) string { return ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders)) },
+			ClientIP:     func(r *http.Request) string { return ipOf(s.visitorAddr(r)) },
 			Logger:       s.log,
 		})
 }

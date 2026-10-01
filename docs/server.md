@@ -43,6 +43,17 @@ label belongs to a live tunnel (or to one whose client disconnected a moment ago
 without contacting the CA and are logged as `certificate refused` with the host name, so scanners cannot burn your
 rate limits.
 
+#### Certificate budget
+
+A client that registers a tunnel, opens its host name once and unregisters again could request new certificates in a
+loop and use up the CA's limit for the whole domain (Let's Encrypt: 50 new certificates per registered domain per
+week), leaving every other tenant without TLS for days. The server therefore keeps a budget of *new* names: at most
+`tls.acme.max_new_names_per_client_per_hour` (default 10) per client and `tls.acme.max_new_names_per_day` (default 30)
+for all clients together. A name is charged when its certificate is first requested (failed requests count too, as
+they count at the CA); a name that already has a certificate in `<data_dir>/certs` costs nothing, and neither do
+renewals. Refused requests are logged as `certificate refused: issuance budget`. For a multi-tenant server with many
+short-lived names, use a wildcard certificate instead (`tls.mode: files`, see below), which has no per-name issuance.
+
 ```yaml
 tls:
   mode: acme              # the default
@@ -120,15 +131,22 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `ssh_gateway.listen` | `PORTHOLED_SSH_LISTEN` | off | Address of the SSH gateway, for example `:2222` (see [SSH gateway](#ssh-gateway)) |
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
 | `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
-| `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
+| `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`, read from the right: the right-most address that is not in `trusted_proxies` (with an empty `trusted_proxies`: the right-most address). With `trusted_proxies` set, the header is honoured only from peers in that list (see [Behind a reverse proxy](#behind-a-reverse-proxy)) |
 | `proxy_protocol` | `PORTHOLED_PROXY_PROTOCOL` | `false` | Accept PROXY protocol v1/v2 headers on the HTTPS listener and the SSH gateway, from the peers in `trusted_proxies` only (see [Behind Traefik or Dokploy](#behind-traefik-or-dokploy-tls-passthrough)) |
 | `proxy_protocol_http` | `PORTHOLED_PROXY_PROTOCOL_HTTP` | `false` | Also accept it on the plain HTTP listener (`http_listen`); needs `proxy_protocol` |
-| `trusted_proxies` | `PORTHOLED_TRUSTED_PROXIES` (comma-separated) | empty | IP addresses and CIDR ranges of the proxies allowed to send PROXY headers; required by `proxy_protocol` |
+| `trusted_proxies` | `PORTHOLED_TRUSTED_PROXIES` (comma-separated) | empty | IP addresses and CIDR ranges of the proxies allowed to send PROXY headers (required by `proxy_protocol`) and whose `X-Forwarded-For` is believed when `trust_proxy_headers` is on |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
 | `traffic.max_requests`, `traffic.max_conns` | `PORTHOLED_TRAFFIC_MAX_REQUESTS`, `PORTHOLED_TRAFFIC_MAX_CONNS` | `10000` each | Size of the in-memory request log and connection log; `0` turns a log off. Lost on restart (see [Request log and inspection](#request-log-and-inspection)) |
 | `traffic.allow_inspect` | `PORTHOLED_TRAFFIC_ALLOW_INSPECT` | `true` | Let clients ask for body inspection of an HTTP tunnel (`porthole http --inspect`); with `false` such a tunnel is refused |
 | `traffic.max_detail_bytes` | `PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES` | `67108864` (64 MiB) | Memory for stored headers and bodies of inspected requests; when exceeded the oldest details are dropped (the log entries stay). `0` stores no details |
 | `shutdown_grace` | - | `10s` | How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut |
+| `tls.acme.max_new_names_per_day` | - | `30` | Host names without a stored certificate that the server requests per 24 hours, all clients together; `-1` turns the cap off (see [Certificate budget](#certificate-budget)) |
+| `tls.acme.max_new_names_per_client_per_hour` | - | `10` | The same cap for the tunnels of one client per hour; `-1` turns it off |
+| `limits.max_conns_per_ip` | - | `32` | Simultaneous connections from one source IP (IPv6: one /64) to the TCP tunnels and, separately, to the SSH gateway; `-1` turns the limit off |
+| `limits.tcp_idle_timeout` | - | `2h` | A TCP or SSH connection through a tunnel with no bytes in either direction for this long is closed; a connection that one side has half-closed gets at most 5 minutes of silence; `-1` turns it off |
+| `limits.max_http_requests_per_tunnel` | - | `512` | Simultaneous visitor requests (open WebSockets included) per HTTP tunnel; more get `503`; `-1` turns the limit off |
+| `limits.http_body_idle_timeout` | - | `60s` | A visitor request whose body makes no progress for this long is aborted with `408`; steady slow uploads are not affected; `-1` turns it off |
+| `limits.max_pending_handshakes`, `limits.max_pending_handshakes_per_ip` | - | `256`, `8` | Control connections that have not authenticated yet, overall and per source IP; more get `503` (see [Abuse limits](#abuse-limits)) |
 
 ## Firewall
 
@@ -238,6 +256,61 @@ goes away, the reservation is kept for 24 hours, so a reconnecting client gets t
 stored in the SQLite database, so they survive a server restart or crash (the 24 hours then start at the restart). A
 changed `tcp_port_range` ignores reservations outside the new range. See [ADR 0003](adr/0003-ssh-gateway-and-port-reservations.md).
 
+## Abuse limits
+
+Everything below applies per source IP (IPv6 addresses are grouped by /64, the smallest block one customer holds), and
+all numbers are configurable (see the `limits.*` rows of the [Configuration](#configuration) table).
+
+- **Failed authentication.** Wrong tokens and join codes, and control connections that stay silent or send garbage
+  until the handshake timeout, use up a budget of 10 failures per source plus 5 per minute. The budgets are separate
+  per surface: control handshakes, the admin API and MCP, join links, and the SSH gateway. Failures on one surface do
+  not lock a client out of another. The table is bounded; when it is full, the entry with the most recovered budget is
+  dropped, so a new source is always tracked and the limiter never switches off. Behind a proxy that does not pass the
+  visitor address on (see [Behind a reverse proxy](#behind-a-reverse-proxy)), all visitors share one source.
+- **Unauthenticated control connections.** At most `limits.max_pending_handshakes_per_ip` (8) per source and
+  `limits.max_pending_handshakes` (256) overall may be waiting for their `hello`; the rest get `503`. Until the token
+  is accepted a connection may send at most 128 KiB; beyond that it is closed.
+- **TCP tunnels and the SSH gateway.** `limits.max_conns_per_ip` (32) simultaneous connections per source, counted
+  separately for TCP tunnels and for the gateway, on top of the per-tunnel limits (1024 TCP connections,
+  `ssh_gateway.max_conns_per_tunnel`). Raise it if many users reach a tunnel through one NAT.
+- **Idle connections.** TCP and SSH connections through a tunnel are closed after `limits.tcp_idle_timeout` (2h)
+  without traffic in either direction, and after 5 minutes of silence once one side has half-closed. WebSocket
+  connections to HTTP tunnels are not subject to it; their applications are expected to send keepalives.
+- **HTTP tunnels.** `limits.max_http_requests_per_tunnel` (512) simultaneous requests; a request body that stalls for
+  `limits.http_body_idle_timeout` (60s) is aborted with `408`. The timeout applies between reads of the body, so slow
+  but steady uploads and long streaming responses are unaffected.
+
+### Host names are per (client, tunnel)
+
+The public name of an HTTP tunnel is `<tunnel>-<client>`, and so is the address of an SSH tunnel on the gateway; both
+parts may contain hyphens, so different pairs can compose to the same name (client `x-b` with tunnel `a`, client `b`
+with tunnel `a-x`). The first registration wins, and when a client disconnects its names stay reserved for that
+client for two minutes (the same time during which the HTTP name answers `502`), so another client cannot take them
+over during a reconnect. After an explicit `unregister` the name is free at once. The gateway resolves a target by the
+exact name: the bare client name for its tunnel called `ssh`, otherwise the exact `<tunnel>-<client>`; it never guesses
+where the tunnel name ends. Choose client (token) names so that none is the combination of another client's name and
+a tunnel name.
+
+### Tenants share one registrable domain
+
+Every tunnel lives under `tun.example.com`, so a tunnel can set cookies for the whole domain (`Domain=tun.example.com`),
+which every other tunnel and the control host then receive (cookie tossing, session fixation). For a server shared by
+mutually untrusting users, give the tunnels their own domain that is not used for anything else, and consider adding it
+to the [Public Suffix List](https://publicsuffix.org/) (as ngrok, GitHub Pages and others do for their user content
+domains): browsers then refuse domain-wide cookies on it.
+
+### Taken-over sessions
+
+A new login with a client's token replaces its live session; the old connection receives `session_replaced` and stops
+(it does not reconnect, so two machines do not fight over the name). A stolen token is used the same way, so the
+server logs every replacement as a warning with the new and old addresses and whether they match
+(`session replaced by a newer login`). Watch for it, and revoke the token if the new address is not yours.
+
+### Directory permissions
+
+At startup `portholed` tightens `data_dir` and `<data_dir>/certs` to mode `0700` if they are accessible to group or
+others (as OpenSSH does for host keys) and logs a warning when it does or when it cannot.
+
 ## Behind a reverse proxy
 
 `portholed` can run in plain HTTP on loopback behind a proxy that terminates TLS and handles the wildcard certificate.
@@ -256,9 +329,31 @@ data_dir: /var/lib/porthole
 
 [deploy/Caddyfile.example](../deploy/Caddyfile.example) is a ready Caddy configuration (wildcard certificate via DNS-01,
 which needs a DNS provider module compiled into Caddy; WebSocket upgrades and unbuffered streaming responses are
-handled). Enable `trust_proxy_headers` only when `portholed` is reachable exclusively through that proxy; otherwise
-visitors can spoof their address. TCP and SSH tunnels do not pass through the proxy: `portholed` listens on the ports
-of `tcp_port_range` (and on the SSH gateway port) directly, so open them in your firewall.
+handled). TCP and SSH tunnels do not pass through the proxy: `portholed` listens on the ports of `tcp_port_range`
+(and on the SSH gateway port) directly, so open them in your firewall.
+
+How `X-Forwarded-For` is read (it feeds the per-IP limits, the failure limiter, the audit log, the request log and the
+address shown to your local service):
+
+- Proxies append the address of the peer they received the request from, so the *left* side of the header is whatever
+  the visitor sent and can be forged. `portholed` reads it from the right.
+- With `trusted_proxies` set (list your proxy's addresses or networks, here `127.0.0.1`), the header is honoured only
+  when the direct peer is in that list, and the visitor is the right-most address that is **not** itself a trusted
+  proxy. A direct connection from anywhere else is taken at face value and its header ignored, so a server that is also
+  reachable without the proxy cannot be spoofed.
+- Without `trusted_proxies` the right-most address is used: it is what the single proxy in front of you saw. That is
+  correct for exactly one proxy hop and wrong when the port is reachable directly, so set `trusted_proxies`.
+- A header that is missing or whose relevant entry is not an IP address falls back to the peer's own address.
+
+```yaml
+trust_proxy_headers: true
+trusted_proxies: ["127.0.0.1"]
+```
+
+(If `proxy_protocol` is on as well, the peer address is the one from the PROXY header, and `X-Forwarded-For` is
+honoured only when that address is in `trusted_proxies`.) At startup `portholed` warns when it listens on a loopback or
+private address with neither `trust_proxy_headers` nor `proxy_protocol`: behind a proxy every visitor then shares the
+proxy's address in all per-IP limits.
 
 ### Behind Traefik or Dokploy (TLS passthrough)
 

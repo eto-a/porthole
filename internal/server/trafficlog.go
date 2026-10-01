@@ -213,7 +213,7 @@ func (s *Server) serveLogged(t *tunnel, w http.ResponseWriter, r *http.Request, 
 func (s *Server) requestEntry(r *http.Request, at time.Time, status int, latency time.Duration, in, out int64, t *tunnel) traffic.Request {
 	e := traffic.Request{
 		Time:      at,
-		VisitorIP: ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders)),
+		VisitorIP: ipOf(s.visitorAddr(r)),
 		Method:    r.Method,
 		Host:      r.Host,
 		Path:      r.URL.Path,

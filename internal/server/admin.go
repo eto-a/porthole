@@ -28,7 +28,7 @@ func (s *Server) newAdminAPI() (*adminapi.API, error) {
 		Backend:      adminBackend{s},
 		Store:        s.store,
 		Authenticate: s.adminAuthenticate,
-		ClientIP:     func(r *http.Request) string { return ipOf(visitorAddr(r, s.cfg.TrustProxyHeaders)) },
+		ClientIP:     func(r *http.Request) string { return ipOf(s.visitorAddr(r)) },
 		Now:          s.now,
 		Logger:       s.log,
 		ServerURL:    s.cfg.PublicURL(),
@@ -38,7 +38,7 @@ func (s *Server) newAdminAPI() (*adminapi.API, error) {
 // adminAuthenticate checks a bearer token for the admin API with the same rules and the same per-IP failure
 // limiter as the control handshake.
 func (s *Server) adminAuthenticate(ctx context.Context, ip, raw string) (*store.Token, error) {
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	if wait, blocked := s.limiter.blocked(surfaceAdmin, ip, s.now()); blocked {
 		s.log.Warn("admin request refused: too many failed attempts", "ip", ip)
 		return nil, &adminapi.RateLimitedError{RetryAfter: wait}
 	}
@@ -47,7 +47,7 @@ func (s *Server) adminAuthenticate(ctx context.Context, ip, raw string) (*store.
 		return tok, nil
 	}
 	if fromClient {
-		s.limiter.fail(ip, s.now())
+		s.limiter.fail(surfaceAdmin, ip, s.now())
 		s.log.Warn("admin authentication failed", "ip", ip, "code", perr.Code)
 	}
 	if perr.Code == proto.CodeInternal {

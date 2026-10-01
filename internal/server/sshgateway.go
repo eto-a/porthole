@@ -226,7 +226,7 @@ func (s *Server) sshNoneAuth(md ssh.ConnMetadata) (*ssh.Permissions, error) {
 // store), the client name and the scopes granted at login.
 func (s *Server) sshPasswordAuth(md ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	ip := ipOf(md.RemoteAddr().String())
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	if wait, blocked := s.limiter.blocked(surfaceSSH, ip, s.now()); blocked {
 		s.log.Warn("ssh gateway login refused: too many failed attempts", "ip", ip, "wait", wait)
 		s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeLimit}, s.now())
 		return nil, errors.New("too many failed attempts")
@@ -235,7 +235,7 @@ func (s *Server) sshPasswordAuth(md ssh.ConnMetadata, password []byte) (*ssh.Per
 	if perr != nil {
 		if fromClient {
 			s.metrics.SSHAuthFailed()
-			s.limiter.fail(ip, s.now())
+			s.limiter.fail(surfaceSSH, ip, s.now())
 			s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeAuthFailed}, s.now())
 			s.log.Warn("ssh gateway login failed", "ip", ip, "code", perr.Code)
 		}
@@ -287,11 +287,18 @@ func (g *idleGuard) stop() {
 func (s *Server) serveSSHConn(gw *sshGateway, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	ip := ipOf(conn.RemoteAddr().String())
-	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
+	if wait, blocked := s.limiter.blocked(surfaceSSH, ip, s.now()); blocked {
 		s.log.Warn("ssh gateway connection refused: too many failed attempts", "ip", ip, "wait", wait)
 		s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeLimit}, s.now())
 		return
 	}
+	if !s.sshConns.acquire(ip) {
+		s.log.Warn("ssh gateway connection refused: too many connections from this address", "ip", ip)
+		s.metrics.ConnOutcome(metrics.KindSSH, metrics.OutcomeLimit)
+		s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeLimit}, s.now())
+		return
+	}
+	defer s.sshConns.release(ip)
 	stop := context.AfterFunc(s.ctx, func() { _ = conn.Close() })
 	defer stop()
 
@@ -382,7 +389,7 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 		_ = stream.Close()
 	})
 	defer stop()
-	entry.BytesIn, entry.BytesOut = pipe(conn, stream)
+	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle)
 	s.metrics.AddBytes(metrics.KindSSH, entry.BytesIn, entry.BytesOut)
 	entry.Outcome = traffic.OutcomeOK
 	s.recordConn(entry, start)

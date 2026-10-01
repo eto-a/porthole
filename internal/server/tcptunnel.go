@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eto-a/porthole/internal/metrics"
@@ -43,20 +44,33 @@ func (t *tunnel) acceptLoop() {
 		}
 		backoff = acceptBackoffFloor
 
-		if !t.acquire() {
+		ip := ipOf(conn.RemoteAddr().String())
+		switch {
+		case !c.srv.tcpConns.acquire(ip):
+			c.log.Warn("tcp visitor at its per-IP connection limit, dropping connection", "tunnel", t.id, "ip", ip)
+			t.refuseLimit(conn)
+			continue
+		case !t.acquire():
+			c.srv.tcpConns.release(ip)
 			c.log.Warn("tcp tunnel at its connection limit, dropping connection", "tunnel", t.id, "limit", cap(t.sem))
-			entry := t.connEntry(traffic.KindTCP, conn.RemoteAddr().String())
-			entry.Outcome = traffic.OutcomeLimit
-			c.srv.recordConn(entry, c.srv.now())
-			c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeLimit)
-			_ = conn.Close()
+			t.refuseLimit(conn)
 			continue
 		}
 		c.wg.Go(func() {
 			defer t.release()
+			defer c.srv.tcpConns.release(ip)
 			t.handleConn(conn)
 		})
 	}
+}
+
+// refuseLimit drops a visitor connection that is over a limit and records it.
+func (t *tunnel) refuseLimit(conn net.Conn) {
+	entry := t.connEntry(traffic.KindTCP, conn.RemoteAddr().String())
+	entry.Outcome = traffic.OutcomeLimit
+	t.sess.srv.recordConn(entry, t.sess.srv.now())
+	t.sess.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeLimit)
+	_ = conn.Close()
 }
 
 // handleConn opens a stream for one visitor connection and copies bytes both ways until both directions end.
@@ -82,7 +96,7 @@ func (t *tunnel) handleConn(conn net.Conn) {
 	})
 	defer stop()
 	c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeAccepted)
-	entry.BytesIn, entry.BytesOut = pipe(conn, stream)
+	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle)
 	c.srv.metrics.AddBytes(metrics.KindTCP, entry.BytesIn, entry.BytesOut)
 	entry.Outcome = traffic.OutcomeOK
 	s.recordConn(entry, start)
@@ -93,24 +107,46 @@ func (t *tunnel) connEntry(kind, remote string) traffic.Conn {
 	return traffic.Conn{TunnelID: t.id, Tunnel: t.name, Client: t.sess.name, Kind: kind, VisitorIP: ipOf(remote)}
 }
 
-// pipe copies a<->b. A clean EOF in one direction half-closes the other side so request/response protocols that
-// shut down their write side still receive the answer; any error closes both sides. Both are closed on return.
-// It returns the number of bytes copied from a to b and from b to a.
-func pipe(a, b net.Conn) (aToB, bToA int64) {
-	defer func() {
+// pipe copies a<->b without an idle limit; see pipeIdle.
+func pipe(a, b net.Conn) (aToB, bToA int64) { return pipeIdle(a, b, 0) }
+
+// pipeIdle copies a<->b. A clean EOF in one direction half-closes the other side so request/response protocols
+// that shut down their write side still receive the answer; any error closes both sides. Both are closed on
+// return. It returns the number of bytes copied from a to b and from b to a.
+//
+// With idle > 0 the pair is closed once no byte has moved in either direction for idle; after one direction has
+// ended, the other gets at most halfClosedIdleTimeout of silence (a peer that half-closed and then went away
+// would otherwise hold the slot forever).
+func pipeIdle(a, b net.Conn, idle time.Duration) (aToB, bToA int64) {
+	closeBoth := func() {
 		_ = a.Close()
 		_ = b.Close()
-	}()
+	}
+	defer closeBoth()
+	var halfClosed atomic.Bool
+	touch := func() {}
+	if idle > 0 {
+		timer := time.AfterFunc(idle, closeBoth)
+		defer timer.Stop()
+		touch = func() {
+			d := idle
+			if halfClosed.Load() {
+				d = min(d, halfClosedIdleTimeout)
+			}
+			timer.Reset(d)
+		}
+	}
 	var wg sync.WaitGroup
 	cp := func(dst, src net.Conn, n *int64) {
 		defer wg.Done()
 		var err error
-		*n, err = io.Copy(dst, src)
+		*n, err = io.Copy(activityWriter{w: dst, touch: touch}, src)
 		if err != nil {
-			_ = a.Close()
-			_ = b.Close()
+			closeBoth()
 			return
 		}
+		halfClosed.Store(true)
+		touch()
 		halfClose(dst)
 	}
 	wg.Add(2)
@@ -118,6 +154,20 @@ func pipe(a, b net.Conn) (aToB, bToA int64) {
 	go cp(b, a, &aToB)
 	wg.Wait()
 	return aToB, bToA
+}
+
+// activityWriter reports every write to touch, before and after it (a write blocked by a slow reader is activity
+// of the connection, not idleness).
+type activityWriter struct {
+	w     io.Writer
+	touch func()
+}
+
+func (a activityWriter) Write(p []byte) (int, error) {
+	a.touch()
+	n, err := a.w.Write(p)
+	a.touch()
+	return n, err
 }
 
 // halfClose shuts down the write side of c. For TCP that is CloseWrite; yamux streams implement Close as a

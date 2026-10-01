@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,18 @@ const (
 	httpIdleTimeout          = 120 * time.Second
 	httpMaxHeaderBytes       = 64 << 10
 	httpResponseHeaderTimout = 2 * time.Minute
+
+	// Defaults of config.Limits.
+	defaultMaxConnsPerIP              = 32
+	defaultTCPIdleTimeout             = 2 * time.Hour
+	defaultMaxHTTPRequests            = 512
+	defaultHTTPBodyIdleTimeout        = time.Minute
+	defaultMaxPendingHandshakes       = 256
+	maxPendingPerIP                   = 8 // default of config.Limits.MaxPendingHandshakesPerIP
+	halfClosedIdleTimeout             = 5 * time.Minute
+	defaultNewNamesPerDay             = 30
+	maxNewNamesPerClientPerHour       = 10        // default of config.ACME.MaxNewNamesPerClientPerHour
+	preAuthByteBudget           int64 = 128 << 10 // bytes an unauthenticated peer may send before hello_ok
 )
 
 // Options configures a Server.
@@ -95,6 +108,14 @@ type Server struct {
 	openTimeout    time.Duration
 	sshIdle        time.Duration // gateway connections without channels are closed after this
 	limiter        *failLimiter
+	trustedNets    []netip.Prefix // trusted_proxies, parsed
+	pending        *ipCounter     // control connections that have not authenticated yet
+	tcpConns       *ipCounter     // visitor connections to TCP tunnels, per source IP
+	sshConns       *ipCounter     // SSH gateway connections, per source IP
+	tcpIdle        time.Duration  // idle timeout of piped connections; 0 = none
+	httpMaxReqs    int            // simultaneous requests per HTTP tunnel; 0 = unlimited
+	bodyIdle       time.Duration  // stall timeout of visitor request bodies; 0 = none
+	certBudget     *certBudget    // new-certificate budget (ACME mode)
 	traffic        *traffic.Log
 	metrics        *metrics.Metrics // nil = off; every hook is nil-safe
 
@@ -102,14 +123,16 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // every session goroutine
 
-	mu       sync.Mutex // guards everything below and the tunnel maps of every session
-	closed   bool
-	certs    *certReloader          // nil until Serve has loaded the TLS certificate (and always nil without TLS)
-	sessions map[string]*session    // by client name
-	labels   map[string]*tunnel     // HTTP tunnels by DNS label
-	ports    map[int]*tunnel        // live TCP tunnels by public port
-	reserved map[string]reservation // released TCP ports by "client/tunnel"
-	offline  map[string]time.Time   // labels of tunnels whose client just went away, until expiry
+	mu        sync.Mutex // guards everything below and the tunnel maps of every session
+	closed    bool
+	certs     *certReloader          // nil until Serve has loaded the TLS certificate (and always nil without TLS)
+	sessions  map[string]*session    // by client name
+	labels    map[string]*tunnel     // HTTP tunnels by DNS label
+	ports     map[int]*tunnel        // live TCP tunnels by public port
+	sshLabels map[string]*tunnel     // live ssh tunnels by gateway label "<tunnel>-<client>"
+	reserved  map[string]reservation // released TCP ports by "client/tunnel"
+	offline   map[string]time.Time   // labels of tunnels whose client just went away, until expiry
+	held      map[string]hold        // addresses (see addrKey) kept for the owner of a tunnel that just went away
 }
 
 // New validates opts and returns a Server. It starts nothing.
@@ -127,7 +150,18 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: %w", err)
 	}
+	lim := opts.Config.Limits
 	s := &Server{
+		trustedNets: parseTrustedProxies(opts.Config.TrustedProxies),
+		pending: newIPCounter(
+			limitOrDefault(lim.MaxPendingHandshakesPerIP, maxPendingPerIP),
+			limitOrDefault(lim.MaxPendingHandshakes, defaultMaxPendingHandshakes)),
+		tcpConns:    newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
+		sshConns:    newIPCounter(limitOrDefault(lim.MaxConnsPerIP, defaultMaxConnsPerIP), 0),
+		tcpIdle:     durationOrDefault(lim.TCPIdleTimeout, defaultTCPIdleTimeout),
+		httpMaxReqs: limitOrDefault(lim.MaxHTTPRequestsPerTunnel, defaultMaxHTTPRequests),
+		bodyIdle:    durationOrDefault(lim.HTTPBodyIdleTimeout, defaultHTTPBodyIdleTimeout),
+		certBudget:  newCertBudget(opts.Config.TLS.ACME),
 		cfg:         opts.Config,
 		store:       opts.Store,
 		log:         opts.Logger,
@@ -147,8 +181,10 @@ func New(opts Options) (*Server, error) {
 		sessions:    make(map[string]*session),
 		labels:      make(map[string]*tunnel),
 		ports:       make(map[int]*tunnel),
+		sshLabels:   make(map[string]*tunnel),
 		reserved:    make(map[string]reservation),
 		offline:     make(map[string]time.Time),
+		held:        make(map[string]hold),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -208,6 +244,8 @@ func (s *Server) Run(ctx context.Context) error {
 // Serve is Run on an existing listener. It takes ownership of ln.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer func() { _ = s.Close() }()
+	tightenDir(s.cfg.DataDir, s.log)
+	s.warnSharedAddresses()
 
 	// PROXY protocol is parsed below TLS, so wrap the raw listener first.
 	ln, err := s.wrapProxyIf(ln, s.cfg.ProxyProtocol)
@@ -403,13 +441,24 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
 		return
 	}
-	addr := visitorAddr(r, s.cfg.TrustProxyHeaders)
-	ts, err := transport.AcceptWebSocket(w, r, hostAddr(addr)) // writes the HTTP error itself on failure
+	addr := s.visitorAddr(r)
+	ip := ipOf(addr)
+	// Unauthenticated sessions cost goroutines, buffers and a file descriptor each: cap them per source and overall
+	// before upgrading, so an anonymous peer cannot pile them up.
+	if !s.pending.acquire(ip) {
+		s.log.Warn("connection refused: too many unauthenticated sessions", "ip", ip)
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many pending connections", http.StatusServiceUnavailable)
+		return
+	}
+	ts, err := transport.AcceptWebSocketGated(w, r, hostAddr(addr), preAuthByteBudget) // writes the HTTP error itself on failure
 	if err != nil {
+		s.pending.release(ip)
 		s.log.Debug("websocket accept failed", "remote", addr, "err", err)
 		return
 	}
-	if !s.start(func() { s.runSession(ts, ipOf(addr)) }) {
+	if !s.start(func() { s.runSession(ts, ip) }) {
+		s.pending.release(ip)
 		_ = ts.Close()
 	}
 }
@@ -428,6 +477,15 @@ func (s *Server) serveTunnel(w http.ResponseWriter, r *http.Request, label strin
 
 	switch {
 	case t != nil:
+		release := t.acquireHTTP()
+		if release == nil {
+			t.sess.log.Warn("http tunnel at its request limit", "tunnel", t.id, "limit", cap(t.httpSem))
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "tunnel is busy", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		r = s.limitBody(w, r)
 		s.serveRecorded(t, w, r)
 	case offline:
 		if reqs := s.traffic.Requests(); reqs.Enabled() {
