@@ -97,6 +97,12 @@ It does **not** start or enable the service, because the configuration has to be
 keeps the configuration, the data directory and the user; `apt purge` also deletes `/var/lib/porthole` (the token
 database) and the user, but leaves anything you added under `/etc/porthole/` (such as certificates).
 
+The client package installs `/usr/bin/porthole`, the systemd unit `porthole.service` of the client daemon, an example
+`/etc/porthole/tunnels.yaml` (kept on upgrade) and the `porthole-client` system user and group. It does not enable or
+start the service either; see [Run the client as a service](#run-the-client-as-a-service). Both packages can be
+installed on one machine: they share only the directory `/etc/porthole`. `apt purge porthole` also deletes
+`/etc/porthole/config.yaml` and `/etc/porthole/token` (the stored credentials) and the user and group.
+
 The packages themselves are not signed (apt and dnf will say so); check them against the signed `checksums.txt` as
 described in [Verifying a download](#verifying-a-download). There is no apt or dnf repository yet.
 
@@ -261,7 +267,9 @@ $ porthole ssh                        # TCP tunnel to localhost:22
 Commands run in the foreground, print the public address, and reconnect automatically if the connection drops.
 If the server cannot be reached at all when the command starts (wrong URL, server down), it gives up after 5
 attempts, or at once on an unknown host name or an untrusted certificate; change the limit with
-`--max-initial-attempts N` (`0` retries forever). Once connected, the command keeps reconnecting.
+`--max-initial-attempts N` (`0` retries forever). Once connected, the command keeps reconnecting. To keep tunnels up
+across reboots, run the client as a service instead: see
+[Run the client as a service](#run-the-client-as-a-service).
 
 CLI summary:
 
@@ -276,7 +284,86 @@ CLI summary:
 | `porthole http <port\|host:port> [--name]` | Expose a local web service |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | Expose a local TCP service |
 | `porthole ssh [--local-port 22] [--user] [--name]` | Expose the local SSH server |
+| `porthole http\|tcp\|ssh ... [--detach\|--no-daemon\|--daemon]` | With a running daemon, add the tunnel to it (`--detach`: keep it after the command exits); `--no-daemon` runs it in this process, `--daemon` requires the daemon |
+| `porthole daemon [--config] [--tunnels] [--socket]` | Run the client daemon: the tunnels file plus tunnels added from the CLI |
+| `porthole start [names...]` | Run the tunnels of the tunnels file in the foreground, without a daemon |
+| `porthole status` | Show the daemon's connection and tunnels |
+| `porthole reload` | Make the daemon re-read the tunnels file |
+| `porthole close <name>` | Close a tunnel added with `--detach` |
 | `porthole version` | Print the version |
+
+## Run the client as a service
+
+`porthole daemon` keeps one session to the server and the tunnels listed in a tunnels file up across reboots and
+network drops, and accepts more tunnels from the CLI over a local unix socket. Design: [ADR 0002](docs/adr/0002-client-daemon-and-tunnels-file.md).
+
+### Linux, system-wide (deb and rpm)
+
+```console
+$ sudo apt install ./porthole_<version>_linux_amd64.deb     # or: sudo dnf install ./porthole_<version>_linux_amd64.rpm
+$ sudo porthole login --config /etc/porthole/config.yaml https://tun.example.com ph_...
+$ sudo chown porthole-client: /etc/porthole/config.yaml && sudo chmod 0600 /etc/porthole/config.yaml
+$ sudoedit /etc/porthole/tunnels.yaml
+$ sudo systemctl enable --now porthole
+$ sudo usermod -aG porthole-client "$USER"      # log in again afterwards
+$ porthole status
+```
+
+The daemon runs as the `porthole-client` user (created by the package; it is not the server's `porthole` user), so that
+user must be able to read the credentials: the commands above hand `config.yaml` to that user, readable by nobody
+else. Instead of keeping the token in `config.yaml` you can put it in a file of its own, for example
+`/etc/porthole/token` (one line, owned by `porthole-client`, mode `0600`; porthole refuses a token file that its group
+or others can read, like ssh does for private keys), and set `token_file: /etc/porthole/token` in
+`config.yaml` instead of `token`.
+
+The tunnels file holds no secrets (see [deploy/tunnels.example.yaml](deploy/tunnels.example.yaml), also installed as
+`/usr/share/doc/porthole/tunnels.example.yaml`; the entries of the shipped file are all disabled):
+
+```yaml
+version: 1
+tunnels:
+  blog:
+    type: http
+    addr: 3000
+  db:
+    type: tcp
+    addr: nas.local:5432
+    remote_port: 20017    # optional
+  ssh:
+    type: ssh             # TCP tunnel to 127.0.0.1:22 unless addr is given
+```
+
+After editing it run `sudo systemctl reload porthole` or `porthole reload`: the file is validated first, a broken file
+is rejected and the running tunnels stay as they are. A broken file at start stops the service for good (exit code 78)
+instead of restarting it in a loop; look at `journalctl -u porthole`.
+
+Members of the group `porthole-client` (and root) can use the daemon's socket, `/run/porthole/porthole.sock`. Adding a
+tunnel publishes a local service to the Internet, so treat the group like the `docker` group. With the daemon running:
+
+```console
+$ porthole http 3000                  # attaches to the daemon; the tunnel closes when you press Ctrl-C
+$ porthole http 3000 --detach         # stays until `porthole close http-3000` or a daemon restart
+$ porthole close <name>
+$ porthole status
+```
+
+Tunnels added from the command line are not written to the file: what runs after a reboot is exactly the tunnels file.
+If a daemon is running but you may not use its socket, `porthole http` fails with a hint instead of starting a second
+session with the same token (that would replace the daemon's session). `--no-daemon` forces a standalone run, and
+`--daemon` makes the command fail when no daemon is reachable.
+
+### Linux, as your own user
+
+No root and no extra user: copy [deploy/porthole.user.service](deploy/porthole.user.service) to
+`~/.config/systemd/user/porthole.service`, run `porthole login` and create `~/.config/porthole/tunnels.yaml`, then
+`systemctl --user enable --now porthole` (the header of the unit has the details, including `loginctl enable-linger`).
+The socket is then `$XDG_RUNTIME_DIR/porthole/porthole.sock`, which only you can reach.
+
+### macOS and Windows
+
+There are no service definitions yet. Run `porthole daemon` yourself, for example in a terminal or from your login
+items or Task Scheduler. It uses the per-user configuration directory (`porthole login` writes the credentials there)
+and a per-user socket, so `porthole http 3000` finds it by itself.
 
 ## How it works
 

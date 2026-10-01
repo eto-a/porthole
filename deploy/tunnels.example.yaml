@@ -1,0 +1,39 @@
+# Tunnels that the porthole daemon keeps up (`porthole daemon`, the systemd service) or that `porthole start` runs in
+# the foreground. The deb and rpm packages install this file as /etc/porthole/tunnels.yaml, and it is kept on upgrade;
+# in user mode copy it to ~/.config/porthole/tunnels.yaml (on macOS and Windows: the "porthole" folder of your user
+# configuration directory).
+#
+# The file holds no secrets (the token lives in config.yaml or in a token_file), so it is safe to commit or share.
+# After editing run `porthole reload` (or `systemctl reload porthole`): the whole file is checked first and the running
+# tunnels stay untouched if it is invalid. Unchanged tunnels are not restarted.
+#
+# Tunnels you add with `porthole http|tcp|ssh --detach` are not written here and are gone after a daemon restart.
+
+version: 1
+
+# Optional: the server to connect to; overrides `server` in config.yaml (the token still comes from config.yaml).
+# server: https://tun.example.com
+
+# The key of each entry is the tunnel name. It becomes part of the public address (https://<name>-<client>.<domain> for
+# http): 1 to 32 characters of a-z, 0-9 and "-", not starting or ending with "-".
+#
+# Every entry below is disabled so that installing the package never publishes anything by accident. Set
+# `enabled: true` (or delete the line: the default is true) for the ones you want.
+tunnels:
+  # A web service on this machine, reachable over HTTPS on your domain.
+  blog:
+    type: http # http | tcp | ssh
+    addr: 3000 # "3000", ":3000" or "host:port" (a host on your network works too)
+    enabled: false
+
+  # A TCP service on another machine, on a port of the server's TCP range.
+  db:
+    type: tcp
+    addr: nas.local:5432
+    remote_port: 20017 # tcp and ssh only; optional, the server picks a free port if you omit it
+    enabled: false
+
+  # The local SSH server: a TCP tunnel to 127.0.0.1:22 unless addr is given.
+  ssh:
+    type: ssh
+    enabled: false
