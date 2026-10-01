@@ -63,6 +63,168 @@ archives:
       - NOTICE
       - README.md
 
+# Linux packages (deb and rpm, amd64 and arm64) built by nfpm. They land in checksums.txt, so they are covered by the
+# cosign signature and the build provenance attestation like the archives. File names follow the archives,
+# <name>_<version>_linux_<arch>.deb|rpm, instead of ConventionalFileName, whose "~" GitHub rewrites in asset names.
+#
+# portholed: binary, systemd unit, example configuration (kept on upgrade) and maintainer scripts. The scripts create
+# the "porthole" user and the data directory but do not enable or start the service (the configuration has to be
+# edited first). porthole: just the binary.
+nfpms:
+  - id: portholed-pkg
+    package_name: portholed
+    ids: [portholed]
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    homepage: https://github.com/eto-a/porthole
+    maintainer: porthole maintainers <eto-a@users.noreply.github.com>
+    description: |-
+      Self-hosted tunnel server, an alternative to ngrok
+      portholed is the server side of porthole: it accepts connections from porthole clients and exposes their
+      local web, TCP and SSH services on your own domain.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    section: net
+    priority: optional
+    bindir: /usr/bin
+    mtime: "{{ .CommitDate }}"
+    contents:
+      # /lib is the Debian location; Fedora and RHEL use /usr/lib.
+      - src: deploy/portholed.service
+        dst: /lib/systemd/system/portholed.service
+        packager: deb
+        file_info:
+          mode: 0644
+      - src: deploy/portholed.service
+        dst: /usr/lib/systemd/system/portholed.service
+        packager: rpm
+        file_info:
+          mode: 0644
+      - dst: /etc/porthole
+        type: dir
+        file_info:
+          mode: 0755
+      # Edited by the operator; never overwritten on upgrade (rpm: %config(noreplace), deb: conffile).
+      - src: deploy/portholed.example.yaml
+        dst: /etc/porthole/portholed.yaml
+        type: config|noreplace
+        file_info:
+          mode: 0644
+      # A pristine copy to diff against after an upgrade that changes the defaults.
+      - src: deploy/portholed.example.yaml
+        dst: /usr/share/doc/portholed/portholed.example.yaml
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/doc/portholed/copyright
+        packager: deb
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/licenses/portholed/LICENSE
+        type: license
+        packager: rpm
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh
+    overrides:
+      rpm:
+        dependencies:
+          - shadow-utils # useradd and groupadd in the post-install script
+
+  - id: porthole-pkg
+    package_name: porthole
+    ids: [porthole]
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    homepage: https://github.com/eto-a/porthole
+    maintainer: porthole maintainers <eto-a@users.noreply.github.com>
+    description: |-
+      Self-hosted alternative to ngrok, client
+      porthole exposes a local web, TCP or SSH service through a portholed server that you run yourself,
+      for example `porthole http 8080`.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    section: net
+    priority: optional
+    bindir: /usr/bin
+    mtime: "{{ .CommitDate }}"
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/porthole/copyright
+        packager: deb
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/licenses/porthole/LICENSE
+        type: license
+        packager: rpm
+        file_info:
+          mode: 0644
+
+# Container images (multi-arch linux/amd64 + linux/arm64) pushed to GHCR. GoReleaser reuses the binaries it just built
+# (packaging/Dockerfile.* only COPY them), so no compiler and no QEMU emulation is involved. The latest tag is skipped
+# for pre-releases (an empty tag is ignored). Needs `docker buildx` with a multi-platform builder and a login to
+# ghcr.io (see release.yml). With --snapshot, one local image per platform is built instead (tags get a platform suffix).
+dockers_v2:
+  - id: portholed-image
+    ids: [portholed]
+    dockerfile: packaging/Dockerfile.portholed
+    images:
+      - ghcr.io/eto-a/porthole/portholed
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms: [linux/amd64, linux/arm64]
+    extra_files:
+      - packaging/docker/rootfs
+    labels:
+      org.opencontainers.image.title: portholed
+      org.opencontainers.image.description: porthole tunnel server, a self-hosted alternative to ngrok
+      org.opencontainers.image.url: https://github.com/eto-a/porthole
+      org.opencontainers.image.source: https://github.com/eto-a/porthole
+      org.opencontainers.image.documentation: https://github.com/eto-a/porthole#readme
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+    annotations:
+      # Scoped to the index and to each manifest so that `docker buildx imagetools inspect` and GHCR both see them.
+      "index,manifest:org.opencontainers.image.description": porthole tunnel server, a self-hosted alternative to ngrok
+      "index,manifest:org.opencontainers.image.source": https://github.com/eto-a/porthole
+      "index,manifest:org.opencontainers.image.licenses": Apache-2.0
+      "index,manifest:org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "index,manifest:org.opencontainers.image.version": "{{ .Version }}"
+
+  # The client image is handy as a sidecar next to the service it exposes (configure it with PORTHOLE_SERVER and
+  # PORTHOLE_TOKEN). frp ships a client image (frpc) too; cloudflared ships only the client.
+  - id: porthole-image
+    ids: [porthole]
+    dockerfile: packaging/Dockerfile.porthole
+    images:
+      - ghcr.io/eto-a/porthole/porthole
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms: [linux/amd64, linux/arm64]
+    labels:
+      org.opencontainers.image.title: porthole
+      org.opencontainers.image.description: porthole tunnel client, a self-hosted alternative to ngrok
+      org.opencontainers.image.url: https://github.com/eto-a/porthole
+      org.opencontainers.image.source: https://github.com/eto-a/porthole
+      org.opencontainers.image.documentation: https://github.com/eto-a/porthole#readme
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+    annotations:
+      "index,manifest:org.opencontainers.image.description": porthole tunnel client, a self-hosted alternative to ngrok
+      "index,manifest:org.opencontainers.image.source": https://github.com/eto-a/porthole
+      "index,manifest:org.opencontainers.image.licenses": Apache-2.0
+      "index,manifest:org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "index,manifest:org.opencontainers.image.version": "{{ .Version }}"
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256
@@ -86,6 +248,18 @@ signs:
       - "${artifact}"
       - "--yes"
     artifacts: checksum
+    output: true
+
+# Keyless signature of the container images, by digest, with cosign. Without `artifacts`, the images built by
+# dockers_v2 are signed. Verify: cosign verify ghcr.io/eto-a/porthole/portholed:<version> with the same
+# --certificate-identity-regexp and --certificate-oidc-issuer flags as above.
+docker_signs:
+  - id: images
+    cmd: cosign
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
     output: true
 
 changelog:
@@ -131,4 +305,14 @@ release:
     sha256sum --check --ignore-missing checksums.txt
     ```
 
-    Build provenance: `gh attestation verify <archive> --repo eto-a/porthole`.
+    `checksums.txt` covers the archives and the `.deb`/`.rpm` packages. Build provenance:
+    `gh attestation verify <archive-or-package> --repo eto-a/porthole`.
+
+    Container images (`ghcr.io/eto-a/porthole/portholed` and `ghcr.io/eto-a/porthole/porthole`, tag `{{ .Version }}`) are
+    signed too:
+
+    ```
+    cosign verify ghcr.io/eto-a/porthole/portholed:{{ .Version }} \
+      --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```

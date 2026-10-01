@@ -1,0 +1,29 @@
+# Image of the server, built by GoReleaser (dockers_v2 in .goreleaser.yaml) and published to
+# ghcr.io/eto-a/porthole/portholed.
+#
+# GoReleaser has already built the static binaries and passes them in the build context as <os>/<arch>/<binary>
+# (TARGETPLATFORM), so nothing is compiled here. To build the server from source, use deploy/Dockerfile instead.
+#
+# Base: distroless static (no shell, no package manager), non-root user 65532. Pinned by digest of the multi-arch index.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/portholed /usr/local/bin/portholed
+
+# The data directory must exist and belong to the non-root user (uid/gid 65532) so that a fresh volume is writable.
+# The rootfs tree (packaging/docker/rootfs) only holds an empty .keep file; GoReleaser copies it via extra_files.
+COPY --chown=65532:65532 packaging/docker/rootfs/ /
+
+# SQLite database (tokens). Mount a volume here.
+VOLUME /var/lib/porthole
+
+# HTTP(S) listener: control endpoint, health check and HTTP tunnels (set `listen` accordingly; binding a port below
+# 1024 as non-root needs net.ipv4.ip_unprivileged_port_start=0, which Docker sets by default, or a different port).
+EXPOSE 443
+# TCP tunnels use ports from `tcp_port_range` (default 20000-29999). Publish the range you configure, for example
+# `-p 20000-20099:20000-20099` with PORTHOLED_TCP_PORT_RANGE=20000-20099, or use host networking.
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/portholed"]
+# Reads /etc/porthole/portholed.yaml (mount it) and PORTHOLED_* variables. Use `serve --config ""` for env-only setups.
+CMD ["serve"]

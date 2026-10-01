@@ -1,0 +1,19 @@
+# Image of the client, built by GoReleaser (dockers_v2 in .goreleaser.yaml) and published to
+# ghcr.io/eto-a/porthole/porthole. Useful as a sidecar: it reaches targets by host name on the container network.
+#
+# GoReleaser has already built the static binaries and passes them in the build context as <os>/<arch>/<binary>
+# (TARGETPLATFORM), so nothing is compiled here.
+#
+# Configuration comes from the environment: PORTHOLE_SERVER and PORTHOLE_TOKEN (or --server/--token flags).
+# Example: docker run --rm -e PORTHOLE_SERVER=https://tun.example.com -e PORTHOLE_TOKEN=ph_... \
+#            ghcr.io/eto-a/porthole/porthole http web:8080
+#
+# Base: distroless static (no shell, no package manager), non-root user 65532. Pinned by digest of the multi-arch index.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/porthole /usr/local/bin/porthole
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/porthole"]
+CMD ["--help"]

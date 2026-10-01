@@ -11,7 +11,8 @@ updates:
         patterns:
           - "*"
     commit-message:
-      prefix: "deps"
+      prefix: "build"
+      include: scope
 
   - package-ecosystem: github-actions
     directory: /
@@ -25,3 +26,21 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+      include: scope
+
+  # Base images pinned by digest in the Dockerfiles.
+  - package-ecosystem: docker
+    directories:
+      - /packaging
+      - /deploy
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7 # do not adopt releases younger than a week
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build"
+      include: scope

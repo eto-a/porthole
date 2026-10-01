@@ -89,6 +89,23 @@ jobs:
       - name: Fuzz token parser
         run: go test -run='^$' -fuzz='^FuzzParse$' -fuzztime=30s ./internal/auth
 
+  shellcheck:
+    name: shell lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck
+        # koalaman/shellcheck v0.11.0, pinned by the digest of its multi-arch index. Dependabot does not see this
+        # line: update tag and digest by hand (docker buildx imagetools inspect koalaman/shellcheck:<tag>).
+        run: >-
+          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          install.sh packaging/scripts/*.sh
+
   zizmor:
     name: workflow lint (zizmor)
     runs-on: ubuntu-latest

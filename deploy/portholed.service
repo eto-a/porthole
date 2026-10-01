@@ -1,8 +1,12 @@
 # systemd unit for the porthole server.
 #
-# Install:
+# The deb and rpm packages from the GitHub releases install this file, the "porthole" user and the example
+# configuration for you; then edit /etc/porthole/portholed.yaml and run `systemctl enable --now portholed`.
+#
+# Manual install (the unit expects the binary in /usr/bin; for another location, override ExecStart with
+# `systemctl edit portholed`):
 #   useradd --system --home-dir /var/lib/porthole --shell /usr/sbin/nologin porthole
-#   install -m 0755 portholed /usr/local/bin/portholed
+#   install -m 0755 portholed /usr/bin/portholed
 #   install -d -m 0755 /etc/porthole
 #   install -m 0640 -g porthole portholed.yaml /etc/porthole/portholed.yaml
 #   install -m 0644 portholed.service /etc/systemd/system/portholed.service
@@ -22,7 +26,7 @@ Wants=network-online.target
 Type=simple
 User=porthole
 Group=porthole
-ExecStart=/usr/local/bin/portholed serve --config /etc/porthole/portholed.yaml
+ExecStart=/usr/bin/portholed serve --config /etc/porthole/portholed.yaml
 Restart=on-failure
 RestartSec=2s
 # Longer than shutdown_grace in the configuration (default 10s).
