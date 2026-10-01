@@ -51,6 +51,7 @@ func NewAdmin(load func() (*config.Config, error)) *cobra.Command {
 			return nil
 		},
 	})
+	cmd.AddCommand(newAdminOpen(load, &socket))
 	return cmd
 }
 

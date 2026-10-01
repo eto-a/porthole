@@ -100,3 +100,10 @@ func TestServeErrors(t *testing.T) {
 		})
 	}
 }
+
+func (*nopStore) CreateJoinCode(context.Context, *store.JoinCode) error { return nil }
+func (*nopStore) RedeemJoinCode(context.Context, string, string, time.Time) (*store.Token, string, error) {
+	return nil, "", store.ErrNotFound
+}
+func (*nopStore) ListJoinCodes(context.Context) ([]*store.JoinCode, error) { return nil, nil }
+func (*nopStore) RevokeJoinCode(context.Context, string, time.Time) error  { return nil }

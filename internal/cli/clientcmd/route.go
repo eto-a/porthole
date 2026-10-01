@@ -181,7 +181,7 @@ func toClientEvent(ev localapi.Event, tun localapi.Tunnel) (client.Event, bool) 
 		return client.Disconnected{Err: errors.New(msg), RetryIn: time.Duration(ev.RetryInMS) * time.Millisecond}, true
 	case localapi.EventTunnelReady:
 		return client.TunnelReady{
-			Spec:      client.TunnelSpec{Kind: tun.Type, Name: tun.Name, LocalAddr: tun.LocalAddr, Private: tun.Private},
+			Spec:      client.TunnelSpec{Kind: tun.Type, Name: tun.Name, LocalAddr: tun.LocalAddr, Private: tun.Private, Inspect: tun.Inspect},
 			Name:      ev.Name,
 			PublicURL: ev.PublicURL,
 			SSHJump:   ev.SSHJump,
@@ -287,7 +287,7 @@ func (a *app) detachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 				hint := tr.hint()
 				a.learnClient(ctx, cl, hint)
 				printEvent(out, cmd.ErrOrStderr(), client.TunnelReady{
-					Spec: client.TunnelSpec{Kind: t.Type, Name: t.Name, LocalAddr: t.LocalAddr, Private: t.Private},
+					Spec: client.TunnelSpec{Kind: t.Type, Name: t.Name, LocalAddr: t.LocalAddr, Private: t.Private, Inspect: t.Inspect},
 					Name: t.Name, PublicURL: t.PublicURL, SSHJump: t.SSHJump,
 				}, hint)
 				fmt.Fprintf(out, "  stays until `porthole close %s` or a daemon restart\n", t.Name)

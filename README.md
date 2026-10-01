@@ -29,18 +29,19 @@ the [roadmap](#status).
 ```console
 # On the server (public IP, domain and wildcard DNS record, TLS certificate: see docs/server.md)
 $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server
-$ sudo -u porthole portholed token create --name home      # prints a ready `porthole login` command
+$ sudo -u porthole portholed join create --name home       # prints a one-time `porthole join` command
 
 # On your machine, behind NAT
 $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh
-$ porthole login https://tun.example.com ph_3kq9w2m1z8xa_....
+$ porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_....    # works once, valid for 15 minutes
 $ porthole http 3000
 connected as home
 https://http-3000-home.tun.example.com -> 127.0.0.1:3000
 ```
 
 The first command only installs the server: edit `/etc/porthole/portholed.yaml` and start the service as described in
-[Server setup](docs/server.md) before creating the token.
+[Server setup](docs/server.md) before creating the join link (it needs the running server). A join link hands the
+machine its own token without anyone copying a secret; `portholed token create` and `porthole login` remain for scripted setups.
 
 ## Use cases
 
@@ -112,6 +113,7 @@ See the [Client guide](docs/client.md) for the daemon, user units and `--detach`
 | **Tokens** | Created, listed and revoked on the server; they can expire and carry scopes and tunnel limits; a token is a client identity, and each client sees only its own tunnels and names |
 | **Stable addresses** | HTTP names are derived from the tunnel name; TCP ports stay reserved for a client and tunnel name for 24 hours, also across server restarts |
 | **TLS** | From certificate files (renewals picked up without a restart) or behind a reverse proxy such as Caddy ([server setup](docs/server.md)) |
+| **Agent-managed** | MCP servers for LLM agents: an operator endpoint on the server (`/_porthole/mcp`, bearer token with scopes, toolsets, `--read-only`, audit log; list and search clients, tunnels and traffic, replay recorded requests, open a tunnel on a connected client on request, create single-use join links) and `porthole mcp` for opening tunnels on a machine ([agents](docs/agents.md)) |
 | **Supply chain** | Signed releases (cosign), build provenance attestations, SBOMs ([verify a download](docs/install.md#verifying-a-download)) |
 
 ### How it compares
@@ -148,6 +150,7 @@ target and copies bytes both ways. HTTP routing by `Host`, TLS and WebSocket upg
 - [Server setup](docs/server.md): DNS, TLS, configuration, reverse proxy, Docker Compose, SSH gateway, tokens, ports
 - [Client guide](docs/client.md): login, `http`/`tcp`/`ssh`, tunnels file, daemon and services
 - [SSH by name](docs/ssh.md): `ssh -J`, public and private machines, `~/.ssh/config`, host key
+- [Agents](docs/agents.md): MCP servers for Claude Code and other agents, tools, toolsets, scopes
 - [DESIGN.md](DESIGN.md): architecture and reasoning; [docs/protocol.md](docs/protocol.md): wire format;
   [docs/adr/](docs/adr/): individual decisions
 - Examples: [portholed.example.yaml](deploy/portholed.example.yaml), [tunnels.example.yaml](deploy/tunnels.example.yaml),

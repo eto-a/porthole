@@ -23,6 +23,7 @@ import (
 
 	"github.com/eto-a/porthole/internal/auth"
 	"github.com/eto-a/porthole/internal/store"
+	"github.com/eto-a/porthole/internal/traffic"
 )
 
 const (
@@ -44,6 +45,12 @@ var (
 	ErrUnauthorized = errors.New("adminapi: unauthorized")
 )
 
+// ConflictError reports a request that is valid but cannot be carried out in the current state (HTTP 409); its
+// message is shown to the caller.
+type ConflictError struct{ Message string }
+
+func (e *ConflictError) Error() string { return "adminapi: " + e.Message }
+
 // RateLimitedError is returned by Options.Authenticate when the caller has failed too often (HTTP 429).
 type RateLimitedError struct{ RetryAfter time.Duration }
 
@@ -64,6 +71,26 @@ type Backend interface {
 	Tunnels(ctx context.Context) ([]Tunnel, error)
 	// CloseTunnel closes the tunnel with the given id and tells its client. ErrNotFound if there is none.
 	CloseTunnel(ctx context.Context, id string) error
+
+	// Requests returns the logged HTTP requests matching f, newest first, without details.
+	Requests(ctx context.Context, f traffic.RequestFilter) ([]traffic.Request, error)
+	// RequestAggregates summarises the requests matching f; top lists hold at most topN entries.
+	RequestAggregates(ctx context.Context, f traffic.RequestFilter, topN int) (traffic.Aggregates, error)
+	// Request returns one logged request with its Detail (nil unless the request was inspected). ErrNotFound if
+	// it is no longer in the log. The API drops Detail for callers without the admin:traffic scope.
+	Request(ctx context.Context, id uint64) (traffic.Request, error)
+	// ReplayRequest sends the recorded request again into its tunnel and returns the new log entry. It returns
+	// ErrNotFound for an unknown id and a *ConflictError when the request cannot be replayed (not inspected,
+	// body truncated, tunnel offline).
+	ReplayRequest(ctx context.Context, id uint64) (traffic.Request, error)
+	// Connections returns the logged TCP and SSH connections matching f, newest first.
+	Connections(ctx context.Context, f traffic.ConnFilter) ([]traffic.Conn, error)
+	// AuthFailures returns the SSH gateway authentication failures since the given time (zero for all), newest
+	// first, at most limit of them (0 is the default).
+	AuthFailures(ctx context.Context, since time.Time, limit int) ([]traffic.Conn, error)
+	// RequestTunnel asks the named client to open a tunnel on its machine and waits for the outcome (at most 15 s).
+	// ErrNotFound if the client is offline; *RemoteError if the request cannot be carried out.
+	RequestTunnel(ctx context.Context, client string, req RemoteOpen) (RemoteTunnel, error)
 }
 
 // Store is the persistent state the API needs; store.Store satisfies it.
@@ -73,6 +100,9 @@ type Store interface {
 	RevokeToken(ctx context.Context, idOrName string, at time.Time) error
 	AppendAudit(ctx context.Context, e *store.AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]store.AuditEntry, error)
+	CreateJoinCode(ctx context.Context, jc *store.JoinCode) error
+	ListJoinCodes(ctx context.Context) ([]*store.JoinCode, error)
+	RevokeJoinCode(ctx context.Context, id string, at time.Time) error
 }
 
 // Status is the GET status response.
@@ -105,6 +135,7 @@ type Tunnel struct {
 	URL     string `json:"url,omitempty"`
 	Port    int    `json:"port,omitempty"`
 	Private bool   `json:"private,omitempty"`
+	Inspect bool   `json:"inspect,omitempty"` // HTTP: request and response bodies are stored for the inspector
 }
 
 // Token is a token as the API shows it: never the secret or its hash.
@@ -118,6 +149,8 @@ type Token struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// RemoteControl: operators may open tunnels on this token's client remotely.
+	RemoteControl bool `json:"remote_control"`
 }
 
 // AuditEntry is one audit log record.
@@ -142,6 +175,8 @@ type Options struct {
 	ClientIP func(r *http.Request) string
 	Now      func() time.Time
 	Logger   *slog.Logger
+	// ServerURL is the address clients connect to, the base of join links ("https://tun.example.com").
+	ServerURL string
 }
 
 // API serves the admin endpoints.
@@ -153,6 +188,8 @@ type API struct {
 	now    func() time.Time
 	log    *slog.Logger
 	routes *http.ServeMux
+
+	serverURL string
 }
 
 // New builds the API. Backend, Store and Authenticate are required.
@@ -160,7 +197,7 @@ func New(opts Options) (*API, error) {
 	if opts.Backend == nil || opts.Store == nil || opts.Authenticate == nil {
 		return nil, errors.New("adminapi: Backend, Store and Authenticate are required")
 	}
-	a := &API{be: opts.Backend, st: opts.Store, authn: opts.Authenticate, ip: opts.ClientIP, now: opts.Now, log: opts.Logger}
+	a := &API{be: opts.Backend, st: opts.Store, authn: opts.Authenticate, ip: opts.ClientIP, now: opts.Now, log: opts.Logger, serverURL: opts.ServerURL}
 	if a.ip == nil {
 		a.ip = func(r *http.Request) string {
 			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
@@ -263,12 +300,16 @@ func (a *API) mount() {
 	})
 	a.read("GET "+p+"/tokens", auth.ScopeAdminRead, a.listTokens)
 	a.read("GET "+p+"/audit", auth.ScopeAdminRead, a.listAudit)
+	a.mountTraffic()
 
 	a.mutate("POST "+p+"/clients/{name}/disconnect", auth.ScopeAdminClients, "client.disconnect", "name",
 		func(ctx context.Context, name string) error { return a.be.Disconnect(ctx, name) })
 	a.mutate("DELETE "+p+"/tunnels/{id}", auth.ScopeAdminTunnels, "tunnel.close", "id",
 		func(ctx context.Context, id string) error { return a.be.CloseTunnel(ctx, id) })
 	a.mutate("POST "+p+"/tokens/{id}/revoke", auth.ScopeAdminTokens, "token.revoke", "id", a.revokeToken)
+	a.routes.HandleFunc("POST "+p+"/clients/{name}/tunnels", a.remoteOpen)
+
+	a.mountJoin()
 
 	a.routes.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint")
@@ -303,6 +344,13 @@ func (a *API) read(pattern, scope string, fn func(ctx context.Context, r *http.R
 // mutate registers an endpoint that changes state. Every call by an authenticated principal, allowed or not, is
 // written to the audit log.
 func (a *API) mutate(pattern, scope, action, param string, fn func(ctx context.Context, target string) error) {
+	a.mutateValue(pattern, scope, action, param, func(ctx context.Context, target string) (any, error) {
+		return map[string]bool{"ok": true}, fn(ctx, target)
+	})
+}
+
+// mutateValue is mutate for an action whose success reply is a value.
+func (a *API) mutateValue(pattern, scope, action, param string, fn func(ctx context.Context, target string) (any, error)) {
 	a.routes.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		p := principalOf(r)
 		target := r.PathValue(param)
@@ -315,7 +363,7 @@ func (a *API) mutate(pattern, scope, action, param string, fn func(ctx context.C
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		ctx, cancel := context.WithTimeout(r.Context(), backendTimeout)
 		defer cancel()
-		err := fn(ctx, target)
+		v, err := fn(ctx, target)
 		if err != nil {
 			status, code, msg := classify(err)
 			a.record(r.Context(), p, action, target, args, "error: "+code)
@@ -326,7 +374,7 @@ func (a *API) mutate(pattern, scope, action, param string, fn func(ctx context.C
 			return
 		}
 		a.record(r.Context(), p, action, target, args, "ok")
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, v)
 	})
 }
 
@@ -371,7 +419,7 @@ func (a *API) listTokens(ctx context.Context, _ *http.Request) (any, error) {
 	for _, t := range toks {
 		out = append(out, Token{
 			ID: t.ID, Name: t.Name, Last4: t.Last4, Scopes: nonNil(t.Scopes), MaxTunnels: t.MaxTunnels,
-			CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt, LastUsedAt: t.LastUsedAt,
+			CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt, LastUsedAt: t.LastUsedAt, RemoteControl: t.RemoteControl,
 		})
 	}
 	return map[string]any{"tokens": out}, nil
@@ -405,12 +453,35 @@ func (e badRequestError) Error() string { return string(e) }
 
 func errBadRequest(msg string) error { return badRequestError(msg) }
 
+type forbiddenError string
+
+func (e forbiddenError) Error() string { return string(e) }
+
+func errForbidden(msg string) error { return forbiddenError(msg) }
+
+type conflictError string
+
+func (e conflictError) Error() string { return string(e) }
+
+func errConflict(msg string) error { return conflictError(msg) }
+
 // classify maps an error to an HTTP status, a stable error code and a message safe to show to the caller.
 func classify(err error) (status int, code, msg string) {
-	var br badRequestError
+	var (
+		br badRequestError
+		fb forbiddenError
+		cf conflictError
+		ce *ConflictError
+	)
 	switch {
 	case errors.As(err, &br):
 		return http.StatusBadRequest, "invalid_request", string(br)
+	case errors.As(err, &fb):
+		return http.StatusForbidden, "forbidden", string(fb)
+	case errors.As(err, &cf):
+		return http.StatusConflict, "conflict", string(cf)
+	case errors.As(err, &ce):
+		return http.StatusConflict, "conflict", ce.Message
 	case errors.Is(err, ErrNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "not_found", "not found"
 	default:

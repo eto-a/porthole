@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package traffic keeps the in-memory journal of proxied HTTP requests and tunnel connections (ADR 0005). It
-// stores metadata only: no bodies and no Authorization, Cookie or other headers. Everything is bounded by a ring
+// stores metadata only, except for requests of tunnels with inspection on, which also keep headers (Authorization,
+// Cookie and similar always redacted) and bodies up to MaxBodyBytes within a byte budget. Everything is bounded by a ring
 // buffer and lost on restart.
 package traffic
 
@@ -16,6 +17,11 @@ type ring[T any] struct {
 	next int    // index of the slot the next entry goes to
 	n    int    // number of valid entries
 	seq  uint64 // id of the newest entry, 0 when empty
+
+	// Optional hooks, called with the lock held. onEvict sees the entry about to be overwritten; afterAdd runs
+	// after a new entry is stored and may modify entries through at.
+	onEvict  func(old *T)
+	afterAdd func()
 }
 
 func newRing[T any](size int) *ring[T] {
@@ -29,11 +35,28 @@ func (r *ring[T]) add(mk func(id uint64) T) uint64 {
 	if len(r.buf) == 0 {
 		return 0
 	}
+	if r.n == len(r.buf) && r.onEvict != nil {
+		r.onEvict(&r.buf[r.next])
+	}
 	r.seq++
 	r.buf[r.next] = mk(r.seq)
 	r.next = (r.next + 1) % len(r.buf)
 	r.n = min(r.n+1, len(r.buf))
+	if r.afterAdd != nil {
+		r.afterAdd()
+	}
 	return r.seq
+}
+
+// at returns a pointer to the entry with the given id, or nil if it is not in the buffer. The caller holds the
+// lock.
+func (r *ring[T]) at(id uint64) *T {
+	// n is at most len(buf), so both conversions are lossless.
+	if id == 0 || id > r.seq || r.seq-id >= uint64(r.n) { //nolint:gosec // see above
+		return nil
+	}
+	back := int(r.seq - id) //nolint:gosec // r.seq-id < r.n
+	return &r.buf[(r.next-1-back+2*len(r.buf))%len(r.buf)]
 }
 
 // collect returns the entries for which keep reports true, newest first, at most limit of them (limit <= 0 means
@@ -59,13 +82,12 @@ func (r *ring[T]) collect(keep func(*T) bool, limit int) []T {
 func (r *ring[T]) get(id uint64) (T, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var zero T
-	// n is at most len(buf), so both conversions are lossless.
-	if id == 0 || id > r.seq || r.seq-id >= uint64(r.n) { //nolint:gosec // see above
+	e := r.at(id)
+	if e == nil {
+		var zero T
 		return zero, false
 	}
-	back := int(r.seq - id) //nolint:gosec // r.seq-id < r.n
-	return r.buf[(r.next-1-back+2*len(r.buf))%len(r.buf)], true
+	return *e, true
 }
 
 // len returns the number of stored entries.

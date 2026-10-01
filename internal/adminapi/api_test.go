@@ -16,12 +16,16 @@ import (
 
 	"github.com/eto-a/porthole/internal/auth"
 	"github.com/eto-a/porthole/internal/store"
+	"github.com/eto-a/porthole/internal/traffic"
 )
 
 type fakeBackend struct {
 	mu           sync.Mutex
 	disconnected []string
 	closed       []string
+	filter       traffic.RequestFilter // the last filter Requests or RequestAggregates saw
+	replayed     []uint64
+	opened       []RemoteOpen
 }
 
 func (*fakeBackend) Status(context.Context) (Status, error) {
@@ -59,6 +63,7 @@ type fakeStore struct {
 	tokens  map[string]*store.Token
 	revoked []string
 	audit   []store.AuditEntry
+	joins   []*store.JoinCode
 }
 
 func (f *fakeStore) GetToken(_ context.Context, id string) (*store.Token, error) {
@@ -353,4 +358,35 @@ func TestNewRequiresDependencies(t *testing.T) {
 	if _, err := New(Options{}); err == nil {
 		t.Fatal("New without dependencies succeeded")
 	}
+}
+
+func (f *fakeStore) CreateJoinCode(_ context.Context, jc *store.JoinCode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.tokens {
+		if t.Name == jc.ClientName {
+			return store.ErrNameTaken
+		}
+	}
+	c := *jc
+	f.joins = append(f.joins, &c)
+	return nil
+}
+
+func (f *fakeStore) ListJoinCodes(context.Context) ([]*store.JoinCode, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*store.JoinCode(nil), f.joins...), nil
+}
+
+func (f *fakeStore) RevokeJoinCode(_ context.Context, id string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, j := range f.joins {
+		if j.ID == id {
+			j.RevokedAt = &at
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }

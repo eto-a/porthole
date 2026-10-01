@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/eto-a/porthole/internal/config"
+	mcpserver "github.com/eto-a/porthole/internal/mcp/server"
 	"github.com/eto-a/porthole/internal/metrics"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/store"
@@ -62,6 +63,8 @@ type Options struct {
 	RevalidateInterval time.Duration
 	// HandshakeTimeout bounds session establishment (default 10 s).
 	HandshakeTimeout time.Duration
+	// RemoteOpenTimeout bounds the wait for a client's answer to a remote tunnel request (default 15 s).
+	RemoteOpenTimeout time.Duration
 
 	// SSHIdleTimeout closes SSH gateway connections without open channels after this long (default 60 s).
 	SSHIdleTimeout time.Duration
@@ -82,12 +85,14 @@ type Server struct {
 
 	adminBearer http.Handler // admin API for the control host, bearer token required
 	adminSocket http.Handler // admin API for the unix socket, no token
+	mcpHandler  http.Handler // operator MCP endpoint for the control host, bearer token required
 
 	domain         string
 	portLo, portHi int
 	hb             time.Duration
 	revalidate     time.Duration
 	hsTimeout      time.Duration
+	openTimeout    time.Duration
 	sshIdle        time.Duration // gateway connections without channels are closed after this
 	limiter        *failLimiter
 	traffic        *traffic.Log
@@ -123,26 +128,27 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("server: %w", err)
 	}
 	s := &Server{
-		cfg:        opts.Config,
-		store:      opts.Store,
-		log:        opts.Logger,
-		version:    opts.Version,
-		now:        opts.Now,
-		domain:     normalizeHost(opts.Config.Domain),
-		portLo:     lo,
-		portHi:     hi,
-		hb:         opts.HeartbeatInterval,
-		revalidate: opts.RevalidateInterval,
-		hsTimeout:  opts.HandshakeTimeout,
-		sshIdle:    opts.SSHIdleTimeout,
-		limiter:    newFailLimiter(),
-		traffic:    traffic.NewLog(opts.Config.Traffic.MaxRequests, opts.Config.Traffic.MaxConns),
-		metrics:    opts.Metrics,
-		sessions:   make(map[string]*session),
-		labels:     make(map[string]*tunnel),
-		ports:      make(map[int]*tunnel),
-		reserved:   make(map[string]reservation),
-		offline:    make(map[string]time.Time),
+		cfg:         opts.Config,
+		store:       opts.Store,
+		log:         opts.Logger,
+		version:     opts.Version,
+		now:         opts.Now,
+		domain:      normalizeHost(opts.Config.Domain),
+		portLo:      lo,
+		portHi:      hi,
+		hb:          opts.HeartbeatInterval,
+		revalidate:  opts.RevalidateInterval,
+		hsTimeout:   opts.HandshakeTimeout,
+		openTimeout: opts.RemoteOpenTimeout,
+		sshIdle:     opts.SSHIdleTimeout,
+		limiter:     newFailLimiter(),
+		traffic:     newTrafficLog(opts.Config.Traffic),
+		metrics:     opts.Metrics,
+		sessions:    make(map[string]*session),
+		labels:      make(map[string]*tunnel),
+		ports:       make(map[int]*tunnel),
+		reserved:    make(map[string]reservation),
+		offline:     make(map[string]time.Time),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -156,6 +162,9 @@ func New(opts Options) (*Server, error) {
 	if s.revalidate <= 0 {
 		s.revalidate = defaultRevalidateEvery
 	}
+	if s.openTimeout <= 0 {
+		s.openTimeout = defaultRemoteOpenTimeout
+	}
 	if s.sshIdle <= 0 {
 		s.sshIdle = defaultSSHIdleTimeout
 	}
@@ -168,6 +177,9 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("server: %w", err)
 	}
 	s.adminBearer, s.adminSocket = api.BearerHandler(), api.SocketHandler()
+	if s.mcpHandler, err = s.newMCPHandler(); err != nil {
+		return nil, fmt.Errorf("server: %w", err)
+	}
 	if s.metrics == nil && s.cfg.MetricsListen != "" {
 		s.metrics = metrics.New(s.version)
 	}
@@ -370,6 +382,12 @@ func (s *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 		serveHealth(w)
 	case isAdminPath(r.URL.Path):
 		s.serveAdmin(w, r)
+	case r.URL.Path == proto.JoinPath:
+		s.handleJoin(w, r)
+	case isJoinPage(r.URL.Path):
+		s.serveJoinPage(w, r)
+	case r.URL.Path == mcpserver.Path:
+		s.serveMCP(w, r)
 	default:
 		http.NotFound(w, r)
 	}

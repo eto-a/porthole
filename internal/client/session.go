@@ -137,6 +137,7 @@ func (m *Manager) hello(sess transport.Session) (*proto.HelloOK, net.Conn, error
 		Token:           m.opts.Token,
 		ClientVersion:   m.opts.Version,
 		OS:              runtime.GOOS + "/" + runtime.GOARCH,
+		Features:        m.features(),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -244,6 +245,8 @@ func (m *Manager) session(ctx context.Context, at *attemptInfo) error {
 					return fmt.Errorf("server error: %w", msg)
 				}
 				m.log.Warn("server error", "err", msg)
+			case *proto.OpenRequest:
+				wg.Go(func() { m.handleOpen(cctx, ctl, msg) })
 			case *proto.TunnelClosed:
 				w.onTunnelClosed(msg)
 				if m.strict && settled && w.table.len() == 0 {
@@ -340,7 +343,7 @@ func (w *wire) reconcile() error {
 	}
 	for _, wt := range register {
 		sp := wt.spec
-		err := w.ctl.send(&proto.Register{ReqID: wt.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort, Private: sp.Private})
+		err := w.ctl.send(&proto.Register{ReqID: wt.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort, Private: sp.Private, Inspect: sp.Inspect})
 		if err != nil {
 			return fmt.Errorf("register %q: %w", sp.Name, err)
 		}
@@ -375,6 +378,11 @@ func (w *wire) onRegistered(msg *proto.Registered) error {
 		werr := fmt.Errorf("register tunnel %q: the server did not confirm a private tunnel (server too old?)", wt.spec.Name)
 		m.log.Warn("registration refused", "name", wt.spec.Name, "reason", "private not confirmed")
 		return w.refuse(wt, proto.CodeInvalidRequest, "private tunnel not confirmed by the server", werr)
+	}
+	if wt.spec.Inspect && !msg.Inspect {
+		// Not an error: the tunnel works, there is just nothing to inspect on an old server.
+		m.log.Warn("the server did not confirm request inspection: nothing will be recorded for this tunnel (server too old?)",
+			"name", wt.spec.Name)
 	}
 	// The record may have been removed or replaced after the request went out without reconcile having noticed yet
 	// (Remove and the reply race), so the desired set is consulted here, in the same critical section that

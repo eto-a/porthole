@@ -20,6 +20,9 @@ import (
 // Prefix starts every token so secret scanners can recognise leaked tokens.
 const Prefix = "ph_"
 
+// JoinPrefix starts every one-time join code: pj_<id>_<secret>, same shape as a token (ADR 0005).
+const JoinPrefix = "pj_"
+
 const (
 	idLen     = 12 // base32 characters
 	secretLen = 32 // random bytes
@@ -45,13 +48,16 @@ type Token struct {
 // String returns the wire form ph_<id>_<secret>.
 func (t Token) String() string { return Prefix + t.ID + "_" + t.Secret }
 
+// JoinString returns the join code form pj_<id>_<secret>.
+func (t Token) JoinString() string { return JoinPrefix + t.ID + "_" + t.Secret }
+
 // Hash returns sha256 of the secret, the only form stored by the server.
 func (t Token) Hash() []byte { return HashSecret(t.Secret) }
 
 // Last4 returns the last four characters of the secret, safe to display.
 func (t Token) Last4() string { return t.Secret[len(t.Secret)-4:] }
 
-// Generate creates a new random token.
+// Generate creates a new random token. Join codes are generated the same way: use JoinString to print one.
 func Generate() (Token, error) {
 	idBytes := make([]byte, 8) // 8 bytes → 13 base32 chars, truncated to 12 (60 bits)
 	if _, err := rand.Read(idBytes); err != nil {
@@ -65,8 +71,13 @@ func Generate() (Token, error) {
 }
 
 // Parse validates the format of s and splits it. It does not check the token against any store.
-func Parse(s string) (Token, error) {
-	rest, ok := strings.CutPrefix(s, Prefix)
+func Parse(s string) (Token, error) { return parse(Prefix, s) }
+
+// ParseJoin validates the format of a join code pj_<id>_<secret> and splits it.
+func ParseJoin(s string) (Token, error) { return parse(JoinPrefix, s) }
+
+func parse(prefix, s string) (Token, error) {
+	rest, ok := strings.CutPrefix(s, prefix)
 	if !ok {
 		return Token{}, ErrMalformed
 	}
@@ -102,7 +113,7 @@ const (
 	ScopeAdminClients = "admin:clients" // disconnect clients
 	ScopeAdminTunnels = "admin:tunnels" // close tunnels
 	ScopeAdminTokens  = "admin:tokens"  // revoke tokens
-	ScopeAdminRemote  = "admin:remote"  // open tunnels on machines (declared, not served yet)
+	ScopeAdminRemote  = "admin:remote"  // open tunnels on machines
 	ScopeAdminTraffic = "admin:traffic" // request details and bodies (declared, not served yet)
 )
 

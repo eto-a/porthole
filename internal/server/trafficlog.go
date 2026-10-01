@@ -8,9 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/traffic"
 )
 
@@ -38,11 +40,16 @@ type respRecorder struct {
 	hijackIn atomic.Int64 // bytes the visitor sent over a hijacked connection
 	hijacked bool
 	upgraded time.Time // set at Hijack: the latency of an upgrade ends there
+
+	// Inspection: the response headers when the status was decided, and the first bytes of the body.
+	body    *capture
+	headers http.Header
 }
 
 func (w *respRecorder) WriteHeader(code int) {
 	if w.status == 0 && (code >= 200 || code == http.StatusSwitchingProtocols) {
 		w.status = code
+		w.snapshot()
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -50,10 +57,19 @@ func (w *respRecorder) WriteHeader(code int) {
 func (w *respRecorder) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
+		w.snapshot()
 	}
 	n, err := w.ResponseWriter.Write(p)
 	w.bytes.Add(int64(n))
+	w.body.write(p[:n])
 	return n, err
+}
+
+// snapshot keeps a copy of the response headers as they are sent (inspected tunnels only).
+func (w *respRecorder) snapshot() {
+	if w.body != nil {
+		w.headers = w.Header().Clone()
+	}
 }
 
 func (w *respRecorder) Flush() {
@@ -96,18 +112,61 @@ func (c *countingConn) Write(p []byte) (int, error) {
 // countingBody counts the bytes the visitor sends as the request body.
 type countingBody struct {
 	io.ReadCloser
-	n atomic.Int64
+	n    atomic.Int64
+	copy *capture // the first bytes of the body, inspected tunnels only
 }
 
 func (b *countingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	b.n.Add(int64(n))
+	b.copy.write(p[:n])
 	return n, err
+}
+
+// capture keeps the first traffic.MaxBodyBytes of a stream and counts all of it. A nil *capture ignores writes.
+type capture struct {
+	mu   sync.Mutex
+	buf  []byte
+	size int64
+}
+
+func (c *capture) write(p []byte) {
+	if c == nil || len(p) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.size += int64(len(p))
+	if room := traffic.MaxBodyBytes - len(c.buf); room > 0 {
+		c.buf = append(c.buf, p[:min(room, len(p))]...)
+	}
+}
+
+func (c *capture) body() traffic.Body {
+	if c == nil {
+		return traffic.Body{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return traffic.Body{Data: c.buf, Size: c.size, Truncated: c.size > int64(len(c.buf))}
+}
+
+// newTrafficLog builds the journals as configured.
+func newTrafficLog(c config.Traffic) *traffic.Log {
+	l := traffic.NewLog(c.MaxRequests, c.MaxConns)
+	l.Requests().SetMaxDetailBytes(c.MaxDetailBytes)
+	return l
 }
 
 // serveRecorded runs the tunnel's reverse proxy and records the request after the response (or after the end of
 // an upgraded connection). The record is written even when the proxy aborts the handler with a panic.
 func (s *Server) serveRecorded(t *tunnel, w http.ResponseWriter, r *http.Request) {
+	s.serveLogged(t, w, r, 0, nil)
+}
+
+// serveLogged is serveRecorded for a request that may replay an earlier one (replayOf is its id, else 0). It
+// stores the id of the journal entry in *idOut (when not nil), 0 if none was written.
+func (s *Server) serveLogged(t *tunnel, w http.ResponseWriter, r *http.Request, replayOf uint64, idOut *uint64) {
 	reqs := s.traffic.Requests()
 	if !reqs.Enabled() {
 		t.handler.ServeHTTP(w, r)
@@ -117,6 +176,13 @@ func (s *Server) serveRecorded(t *tunnel, w http.ResponseWriter, r *http.Request
 	begin := time.Now()
 	rec := &respRecorder{ResponseWriter: w}
 	body := &countingBody{}
+	// Upgrades (WebSocket) are never inspected: after the switch the bytes are not HTTP.
+	inspect := t.inspect && r.Header.Get("Upgrade") == ""
+	var detail *traffic.Detail
+	if inspect {
+		rec.body, body.copy = &capture{}, &capture{}
+		detail = &traffic.Detail{RequestHeaders: r.Header.Clone(), Target: r.URL.RequestURI()}
+	}
 	if r.Body != nil && r.Body != http.NoBody {
 		body.ReadCloser = r.Body
 		r.Body = body
@@ -130,7 +196,15 @@ func (s *Server) serveRecorded(t *tunnel, w http.ResponseWriter, r *http.Request
 		if rec.hijacked {
 			latency = rec.upgraded.Sub(begin)
 		}
-		reqs.Add(s.requestEntry(r, arrived, status, latency, body.n.Load()+rec.hijackIn.Load(), rec.bytes.Load(), t))
+		e := s.requestEntry(r, arrived, status, latency, body.n.Load()+rec.hijackIn.Load(), rec.bytes.Load(), t)
+		e.ReplayOf = replayOf
+		if detail != nil && !rec.hijacked {
+			detail.RequestBody, detail.ResponseBody, detail.ResponseHeaders = body.copy.body(), rec.body.body(), rec.headers
+			e.Detail = detail
+		}
+		if id := reqs.Add(e); idOut != nil {
+			*idOut = id
+		}
 	}()
 	t.handler.ServeHTTP(rec, r)
 }

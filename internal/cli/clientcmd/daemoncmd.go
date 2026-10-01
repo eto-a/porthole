@@ -203,6 +203,8 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 		Logger:             a.logger(cmd),
 		OnEvent:            eventSink(cmd, nil, true), // several tunnels: the text form says which is which
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
+		AcceptRemoteOpen:   true,
+		RemoteOpen:         file.RemotePolicy(),
 	})
 	if err != nil {
 		return explain(err)

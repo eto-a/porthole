@@ -103,3 +103,30 @@ func TestValidScopeConnect(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinCode(t *testing.T) {
+	code, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := code.JoinString()
+	if !strings.HasPrefix(s, "pj_") || len(s) != 3+12+1+52 {
+		t.Fatalf("unexpected join code form %q", s)
+	}
+	got, err := ParseJoin(s)
+	if err != nil || got != code {
+		t.Fatalf("ParseJoin(%q) = %+v, %v; want %+v", s, got, err, code)
+	}
+	// A token is not a join code and the other way round: the prefixes keep them apart.
+	if _, err := ParseJoin(code.String()); err == nil {
+		t.Error("ParseJoin accepted a ph_ token")
+	}
+	if _, err := Parse(s); err == nil {
+		t.Error("Parse accepted a pj_ join code")
+	}
+	for _, bad := range []string{"", "pj_", "pj_abc_def", s + "x", strings.ToUpper(s), "pj_" + code.ID + code.Secret} {
+		if _, err := ParseJoin(bad); err == nil {
+			t.Errorf("ParseJoin(%q) succeeded", bad)
+		}
+	}
+}

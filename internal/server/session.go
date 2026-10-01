@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,8 @@ type session struct {
 	since         time.Time
 	clientVersion string
 	os            string
+	remoteOpen    bool // the client announced proto.FeatureRemoteOpen
+	opens         openWaiters
 	name          string // client name = token name
 	ts            transport.Session
 	ctrl          net.Conn
@@ -147,6 +150,8 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 		since:         s.now(),
 		clientVersion: hello.ClientVersion,
 		os:            hello.OS,
+		remoteOpen:    slices.Contains(hello.Features, proto.FeatureRemoteOpen),
+		opens:         openWaiters{m: make(map[int]chan *proto.OpenResult)},
 		ts:            ts,
 		ctrl:          ctrl,
 		log:           s.log.With("client", tok.Name, "session", id, "token_id", tok.ID),
@@ -324,6 +329,8 @@ func (c *session) controlLoop() {
 			c.onPong(m.Seq)
 		case *proto.Register:
 			c.handleRegister(m)
+		case *proto.OpenResult:
+			c.opens.deliver(m)
 		case *proto.Unregister:
 			c.handleUnregister(m)
 		case *proto.Error:

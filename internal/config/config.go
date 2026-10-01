@@ -98,7 +98,18 @@ type Traffic struct {
 
 	// MaxConns is the number of TCP and SSH connections kept; 0 turns the connection log off.
 	MaxConns int `yaml:"max_conns"`
+
+	// AllowInspect lets clients ask for body inspection of an HTTP tunnel (porthole http --inspect); when false
+	// such a register request is refused.
+	AllowInspect bool `yaml:"allow_inspect"`
+
+	// MaxDetailBytes bounds the memory held by stored request and response bodies and headers of inspected
+	// requests; the oldest details are dropped first. 0 stores no details.
+	MaxDetailBytes int64 `yaml:"max_detail_bytes"`
 }
+
+// DefaultMaxDetailBytes is the default budget of inspected request details: 64 MiB.
+const DefaultMaxDetailBytes = 64 << 20
 
 // TLS modes (ADR 0004).
 const (
@@ -206,7 +217,7 @@ func Default() *Config {
 		DataDir:             "/var/lib/porthole",
 		MaxTunnelsPerClient: 10,
 		ShutdownGrace:       10 * time.Second,
-		Traffic:             Traffic{MaxRequests: DefaultTrafficMax, MaxConns: DefaultTrafficMax},
+		Traffic:             Traffic{MaxRequests: DefaultTrafficMax, MaxConns: DefaultTrafficMax, AllowInspect: true, MaxDetailBytes: DefaultMaxDetailBytes},
 	}
 }
 
@@ -282,6 +293,20 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		}
 		c.TrustProxyHeaders = b
 	}
+	if v, ok := lookup("PORTHOLED_TRAFFIC_ALLOW_INSPECT"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("config: PORTHOLED_TRAFFIC_ALLOW_INSPECT: %w", err)
+		}
+		c.Traffic.AllowInspect = b
+	}
+	if v, ok := lookup("PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES"); ok {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("config: PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES: %w", err)
+		}
+		c.Traffic.MaxDetailBytes = n
+	}
 	return nil
 }
 
@@ -341,6 +366,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Traffic.MaxConns < 0 {
 		errs = append(errs, errors.New("traffic.max_conns: must not be negative"))
+	}
+	if c.Traffic.MaxDetailBytes < 0 {
+		errs = append(errs, errors.New("traffic.max_detail_bytes: must not be negative"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("config: %w", err)

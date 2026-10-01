@@ -86,6 +86,9 @@ type tunnel struct {
 
 	// SSH
 	private bool // the gateway requires a porthole token to reach this tunnel
+
+	// inspect (HTTP) stores bodies and headers of the tunnel's requests in the traffic journal.
+	inspect bool
 }
 
 // closeTunnel cancels the tunnel's context (which also tears down its in-flight TCP connections) and closes its
@@ -234,6 +237,15 @@ func (c *session) handleRegister(m *proto.Register) {
 		return
 	}
 
+	if m.Inspect && m.Kind != proto.KindHTTP {
+		c.sendError(m.ReqID, proto.CodeInvalidRequest, "inspect applies to http tunnels only")
+		return
+	}
+	if m.Inspect && !srv.cfg.Traffic.AllowInspect {
+		c.sendError(m.ReqID, proto.CodeForbidden, "this server does not allow request inspection (traffic.allow_inspect is false)")
+		return
+	}
+
 	name := m.Name
 	switch {
 	case name == "" && m.Kind == proto.KindSSH:
@@ -259,7 +271,7 @@ func (c *session) handleRegister(m *proto.Register) {
 		return
 	}
 	c.log.Info("tunnel registered", "tunnel", t.id, "kind", t.kind, "name", t.name, "label", t.label, "port", t.port)
-	reply := &proto.Registered{ReqID: m.ReqID, TunnelID: t.id, Kind: t.kind, Name: t.name, PublicURL: srv.publicURL(t)}
+	reply := &proto.Registered{ReqID: m.ReqID, TunnelID: t.id, Kind: t.kind, Name: t.name, PublicURL: srv.publicURL(t), Inspect: t.inspect}
 	if t.kind == proto.KindSSH {
 		reply.Private = t.private
 		reply.SSHJump = net.JoinHostPort(srv.cfg.Domain, strconv.Itoa(srv.cfg.SSHGateway.Port()))
@@ -293,6 +305,7 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		nameKey: m.Kind + ":" + name,
 		sess:    c,
 		private: m.Private,
+		inspect: m.Inspect,
 	}
 	if m.Kind == proto.KindHTTP {
 		t.label = name + "-" + c.name

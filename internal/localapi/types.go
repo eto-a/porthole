@@ -114,6 +114,7 @@ type Tunnel struct {
 	RemotePort int    `json:"remote_port,omitempty"`
 	PublicURL  string `json:"public_url,omitempty"`
 	Private    bool   `json:"private,omitempty"`  // ssh only
+	Inspect    bool   `json:"inspect,omitempty"`  // http only: bodies are stored on the server
 	SSHJump    string `json:"ssh_jump,omitempty"` // ssh only: host:port of the SSH gateway, once ready
 	State      string `json:"state"`              // pending | ready | failed
 	Error      string `json:"error,omitempty"`
@@ -130,6 +131,8 @@ type AddTunnelRequest struct {
 	Lifetime   string `json:"lifetime,omitempty"` // attached (default) | runtime
 	// Private (ssh only) makes the SSH gateway require a porthole token.
 	Private bool `json:"private,omitempty"`
+	// Inspect (http only) asks the server to store request and response bodies and headers of the tunnel.
+	Inspect bool `json:"inspect,omitempty"`
 	// PublicPort (ssh only) selects the v0.1 mode: a public TCP port instead of the gateway. RemotePort is only
 	// valid together with it.
 	PublicPort bool `json:"public_port,omitempty"`

@@ -18,6 +18,11 @@ var (
 	ErrRevoked   = errors.New("store: token revoked")
 	ErrExpired   = errors.New("store: token expired")
 	ErrPortHeld  = errors.New("store: port reserved for another tunnel")
+
+	// Join code errors, from RedeemJoinCode. A wrong secret is ErrNotFound, indistinguishable from an unknown id.
+	ErrJoinUsed    = errors.New("store: join code already used")
+	ErrJoinExpired = errors.New("store: join code expired")
+	ErrJoinRevoked = errors.New("store: join code revoked")
 )
 
 // Token is a client identity. The secret itself is never stored, only its sha256.
@@ -32,6 +37,9 @@ type Token struct {
 	ExpiresAt  *time.Time // nil = never
 	RevokedAt  *time.Time // nil = active
 	LastUsedAt *time.Time // nil = never used
+	// RemoteControl says that the machine accepts tunnels opened remotely by an operator (ADR 0005). Tokens made by a
+	// join link get it from the link; `portholed token create` sets it unless given --no-remote-control.
+	RemoteControl bool
 }
 
 // PortReservation is a public TCP port remembered for the tunnel (Client, Tunnel).
@@ -85,6 +93,18 @@ type Store interface {
 	AppendAudit(ctx context.Context, e *AuditEntry) error
 	// ListAudit returns the newest audit entries first; limit <= 0 means 100 and the maximum is 1000.
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
+	// CreateJoinCode inserts a one-time join code. It returns ErrNameTaken if an active token already has
+	// jc.ClientName.
+	CreateJoinCode(ctx context.Context, jc *JoinCode) error
+	// RedeemJoinCode atomically spends the code id/secret at now and returns the permanent token it creates (and the
+	// raw token string, shown once). Errors: ErrNotFound (unknown id or wrong secret), ErrJoinUsed, ErrJoinExpired,
+	// ErrJoinRevoked, ErrNameTaken; on any error nothing is spent.
+	RedeemJoinCode(ctx context.Context, id, secret string, now time.Time) (*Token, string, error)
+	// ListJoinCodes returns all join codes ordered by CreatedAt.
+	ListJoinCodes(ctx context.Context) ([]*JoinCode, error)
+	// RevokeJoinCode marks the code revoked at the given time; revoking a used or revoked code changes nothing.
+	// It returns ErrNotFound for an unknown id.
+	RevokeJoinCode(ctx context.Context, id string, at time.Time) error
 	// Close releases resources.
 	Close() error
 }

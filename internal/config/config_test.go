@@ -274,3 +274,30 @@ func TestTLSEnv(t *testing.T) {
 		t.Fatalf("empty env should disable the http listener, got %q", c.HTTPListenAddr())
 	}
 }
+
+func TestTrafficInspectSettings(t *testing.T) {
+	base := "version: 1\ndomain: a.example\ndata_dir: /tmp/x\n"
+	c, err := Load(write(t, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Traffic.AllowInspect || c.Traffic.MaxDetailBytes != 64<<20 {
+		t.Fatalf("defaults: %+v", c.Traffic)
+	}
+	c, err = Load(write(t, base+"traffic:\n  allow_inspect: false\n  max_detail_bytes: 1000\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Traffic.AllowInspect || c.Traffic.MaxDetailBytes != 1000 {
+		t.Fatalf("file: %+v", c.Traffic)
+	}
+	t.Setenv("PORTHOLED_TRAFFIC_ALLOW_INSPECT", "true")
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES", "5")
+	if c, err = Load(write(t, base+"traffic:\n  allow_inspect: false\n")); err != nil || !c.Traffic.AllowInspect || c.Traffic.MaxDetailBytes != 5 {
+		t.Fatalf("env: %+v, %v", c, err)
+	}
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES", "-1")
+	if _, err := Load(write(t, base)); err == nil || !strings.Contains(err.Error(), "traffic.max_detail_bytes") {
+		t.Fatalf("negative budget: %v", err)
+	}
+}

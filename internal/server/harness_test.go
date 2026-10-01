@@ -184,12 +184,13 @@ func (f *fakeStore) newToken(t *testing.T, name string, mut ...func(*store.Token
 		t.Fatal(err)
 	}
 	tok := &store.Token{
-		ID:         g.ID,
-		Name:       name,
-		SecretHash: g.Hash(),
-		Last4:      g.Last4(),
-		Scopes:     append([]string(nil), auth.DefaultScopes...),
-		CreatedAt:  time.Now(),
+		ID:            g.ID,
+		Name:          name,
+		SecretHash:    g.Hash(),
+		Last4:         g.Last4(),
+		Scopes:        append([]string(nil), auth.DefaultScopes...),
+		CreatedAt:     time.Now(),
+		RemoteControl: true,
 	}
 	for _, m := range mut {
 		m(tok)
@@ -412,9 +413,15 @@ func goodHello(token string) *proto.Hello {
 // loginAt connects, authenticates and starts the client's background reader.
 func loginAt(t *testing.T, wsURL, token string, opts transport.DialOptions) *client {
 	t.Helper()
+	return loginWith(t, wsURL, goodHello(token), opts)
+}
+
+// loginWith is loginAt with a caller-built hello.
+func loginWith(t *testing.T, wsURL string, hello *proto.Hello, opts transport.DialOptions) *client {
+	t.Helper()
 	ts, ctrl := dialSession(t, wsURL, opts)
 	_ = ctrl.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := proto.WriteMessage(ctrl, goodHello(token)); err != nil {
+	if err := proto.WriteMessage(ctrl, hello); err != nil {
 		t.Fatalf("write hello: %v", err)
 	}
 	ok, err := proto.ReadAs[*proto.HelloOK](ctrl)
@@ -616,4 +623,15 @@ func writeRawFrame(c *client, payload string) error {
 	copy(frame[4:], payload)
 	_, err := c.ctrl.Write(frame)
 	return err
+}
+
+// The join code methods are exercised against a real SQLite store (join_test.go); the fake does not keep codes.
+func (f *fakeStore) CreateJoinCode(context.Context, *store.JoinCode) error { return store.ErrNotFound }
+
+func (f *fakeStore) RedeemJoinCode(context.Context, string, string, time.Time) (*store.Token, string, error) {
+	return nil, "", store.ErrNotFound
+}
+func (f *fakeStore) ListJoinCodes(context.Context) ([]*store.JoinCode, error) { return nil, nil }
+func (f *fakeStore) RevokeJoinCode(context.Context, string, time.Time) error {
+	return store.ErrNotFound
 }
