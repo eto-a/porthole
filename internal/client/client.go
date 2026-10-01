@@ -26,14 +26,18 @@ import (
 
 // TunnelSpec describes one tunnel the client wants the server to expose.
 type TunnelSpec struct {
-	// Kind is proto.KindHTTP or proto.KindTCP.
+	// Kind is proto.KindHTTP, proto.KindTCP or proto.KindSSH.
 	Kind string
-	// Name is the requested tunnel name. If empty it defaults to "http-<port>" / "tcp-<port>" taken from LocalAddr.
+	// Name is the requested tunnel name. If empty it defaults to "http-<port>" / "tcp-<port>" taken from LocalAddr,
+	// and to "ssh" for an ssh tunnel.
 	Name string
 	// LocalAddr is the local target, "host:port".
 	LocalAddr string
 	// RemotePort is the requested public port (tcp only); 0 lets the server choose.
 	RemotePort int
+	// Private (ssh only) asks the gateway to require a porthole token. A server that does not confirm it is an
+	// error: the tunnel is never left public silently.
+	Private bool
 }
 
 // Options configures Run and Check.
@@ -101,6 +105,7 @@ type TunnelReady struct {
 	Spec      TunnelSpec // the requested tunnel, with the default name filled in
 	Name      string     // effective name chosen by the server
 	PublicURL string
+	SSHJump   string // host:port of the SSH gateway (ssh tunnels only)
 }
 
 // TunnelClosed is emitted when a tunnel is gone: the server dropped it (tunnel_closed), or the server refused
@@ -275,8 +280,8 @@ func trimSlash(p string) string {
 
 // normalizeSpec validates one spec and fills in the default name.
 func normalizeSpec(s TunnelSpec) (TunnelSpec, error) {
-	if s.Kind != proto.KindHTTP && s.Kind != proto.KindTCP {
-		return TunnelSpec{}, fmt.Errorf("tunnel kind %q is not supported (want %s or %s)", s.Kind, proto.KindHTTP, proto.KindTCP)
+	if s.Kind != proto.KindHTTP && s.Kind != proto.KindTCP && s.Kind != proto.KindSSH {
+		return TunnelSpec{}, fmt.Errorf("tunnel kind %q is not supported (want %s, %s or %s)", s.Kind, proto.KindHTTP, proto.KindTCP, proto.KindSSH)
 	}
 	_, port, err := net.SplitHostPort(s.LocalAddr)
 	if err != nil {
@@ -285,7 +290,10 @@ func normalizeSpec(s TunnelSpec) (TunnelSpec, error) {
 	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
 		return TunnelSpec{}, fmt.Errorf("local address %q: invalid port", s.LocalAddr)
 	}
-	if s.Name == "" {
+	switch {
+	case s.Name == "" && s.Kind == proto.KindSSH:
+		s.Name = "ssh"
+	case s.Name == "":
 		s.Name = s.Kind + "-" + port
 	}
 	if !auth.ValidName(s.Name) {
@@ -296,6 +304,9 @@ func normalizeSpec(s TunnelSpec) (TunnelSpec, error) {
 	}
 	if s.RemotePort != 0 && s.Kind != proto.KindTCP {
 		return TunnelSpec{}, errors.New("remote port is only valid for tcp tunnels")
+	}
+	if s.Private && s.Kind != proto.KindSSH {
+		return TunnelSpec{}, errors.New("private is only valid for ssh tunnels")
 	}
 	return s, nil
 }

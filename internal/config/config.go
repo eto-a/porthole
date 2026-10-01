@@ -47,6 +47,9 @@ type Config struct {
 	// TCPBindHost is the address TCP tunnel listeners bind to (default all interfaces).
 	TCPBindHost string `yaml:"tcp_bind_host"`
 
+	// SSHGateway configures the SSH jump-host gateway (ADR 0003).
+	SSHGateway SSHGateway `yaml:"ssh_gateway"`
+
 	// DataDir holds the SQLite database.
 	DataDir string `yaml:"data_dir"`
 
@@ -67,6 +70,34 @@ type TLS struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
+// DefaultSSHMaxConnsPerTunnel is the default for SSHGateway.MaxConnsPerTunnel.
+const DefaultSSHMaxConnsPerTunnel = 256
+
+// SSHGateway configures the SSH gateway: a listener that forwards direct-tcpip channels to "ssh" tunnels.
+type SSHGateway struct {
+	// Listen is the gateway address, e.g. ":2222". Empty disables the gateway.
+	Listen string `yaml:"listen"`
+
+	// MaxConnsPerTunnel limits concurrent channels per ssh tunnel.
+	MaxConnsPerTunnel int `yaml:"max_conns_per_tunnel"`
+}
+
+// Enabled reports whether the gateway is configured.
+func (g SSHGateway) Enabled() bool { return g.Listen != "" }
+
+// Port returns the port of Listen, or 0 when the gateway is disabled or Listen has no numeric port.
+func (g SSHGateway) Port() int {
+	_, p, err := net.SplitHostPort(g.Listen)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // Enabled reports whether the server terminates TLS itself.
 func (t TLS) Enabled() bool { return t.CertFile != "" }
 
@@ -77,6 +108,7 @@ func Default() *Config {
 		Listen:              ":443",
 		PublicScheme:        "https",
 		TCPPortRange:        "20000-29999",
+		SSHGateway:          SSHGateway{MaxConnsPerTunnel: DefaultSSHMaxConnsPerTunnel},
 		DataDir:             "/var/lib/porthole",
 		MaxTunnelsPerClient: 10,
 		ShutdownGrace:       10 * time.Second,
@@ -117,6 +149,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_TCP_PORT_RANGE": &c.TCPPortRange,
 		"PORTHOLED_TCP_BIND_HOST":  &c.TCPBindHost,
 		"PORTHOLED_DATA_DIR":       &c.DataDir,
+		"PORTHOLED_SSH_LISTEN":     &c.SSHGateway.Listen,
 	}
 	for k, p := range str {
 		if v, ok := lookup(k); ok {
@@ -171,6 +204,16 @@ func (c *Config) Validate() error {
 	}
 	if _, _, err := c.PortRange(); err != nil {
 		errs = append(errs, err)
+	}
+	if c.SSHGateway.Enabled() {
+		if _, p, err := net.SplitHostPort(c.SSHGateway.Listen); err != nil {
+			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %w", err))
+		} else if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %q needs a numeric port 1-65535", c.SSHGateway.Listen))
+		}
+	}
+	if c.SSHGateway.MaxConnsPerTunnel < 0 {
+		errs = append(errs, errors.New("ssh_gateway.max_conns_per_tunnel: must not be negative"))
 	}
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir: required"))

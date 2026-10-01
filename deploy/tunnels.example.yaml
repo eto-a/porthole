@@ -30,10 +30,14 @@ tunnels:
   db:
     type: tcp
     addr: nas.local:5432
-    remote_port: 20017 # tcp and ssh only; optional, the server picks a free port if you omit it
+    remote_port: 20017 # tcp (and ssh with public_port) only; optional, the server picks a free port if you omit it
     enabled: false
 
-  # The local SSH server: a TCP tunnel to 127.0.0.1:22 unless addr is given.
+  # The local SSH server (127.0.0.1:22 unless addr is given), reached through the server's SSH gateway as a jump host:
+  # `ssh -J <gateway> <user>@<client name>`; no public port is opened. For a tunnel named other than "ssh" the target
+  # is <tunnel name>-<client name>. Needs a server with ssh_gateway.listen set.
   ssh:
     type: ssh
+    # private: true      # the gateway then asks for a porthole token (as the password) before it opens the tunnel
+    # public_port: true  # the older mode: a public TCP port instead of the gateway; only here remote_port is allowed
     enabled: false

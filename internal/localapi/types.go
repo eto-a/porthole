@@ -51,7 +51,7 @@ const (
 const (
 	TypeHTTP = "http"
 	TypeTCP  = "tcp"
-	TypeSSH  = "ssh" // only in requests: sugar for a tcp tunnel to port 22
+	TypeSSH  = "ssh" // reachable through the SSH gateway (with public_port: a tcp tunnel to port 22)
 )
 
 // Tunnel sources reported in [Tunnel.Source].
@@ -109,11 +109,13 @@ type Status struct {
 // Tunnel describes one tunnel of the daemon.
 type Tunnel struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"` // http | tcp
+	Type       string `json:"type"` // http | tcp | ssh
 	LocalAddr  string `json:"local_addr"`
 	RemotePort int    `json:"remote_port,omitempty"`
 	PublicURL  string `json:"public_url,omitempty"`
-	State      string `json:"state"` // pending | ready | failed
+	Private    bool   `json:"private,omitempty"`  // ssh only
+	SSHJump    string `json:"ssh_jump,omitempty"` // ssh only: host:port of the SSH gateway, once ready
+	State      string `json:"state"`              // pending | ready | failed
 	Error      string `json:"error,omitempty"`
 	Source     string `json:"source"`   // file | runtime
 	Lifetime   string `json:"lifetime"` // file | runtime | attached
@@ -126,6 +128,11 @@ type AddTunnelRequest struct {
 	Addr       string `json:"addr,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"`
 	Lifetime   string `json:"lifetime,omitempty"` // attached (default) | runtime
+	// Private (ssh only) makes the SSH gateway require a porthole token.
+	Private bool `json:"private,omitempty"`
+	// PublicPort (ssh only) selects the v0.1 mode: a public TCP port instead of the gateway. RemotePort is only
+	// valid together with it.
+	PublicPort bool `json:"public_port,omitempty"`
 }
 
 // ReloadResult is the outcome of POST /v1/reload: tunnel names by what the reload did to them.
@@ -142,6 +149,7 @@ type Event struct {
 	Type       string    `json:"type"` // connected | disconnected | tunnel_ready | tunnel_closed | attached
 	Name       string    `json:"name,omitempty"`
 	PublicURL  string    `json:"public_url,omitempty"`
+	SSHJump    string    `json:"ssh_jump,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	ClientName string    `json:"client_name,omitempty"`
 	Error      string    `json:"error,omitempty"`

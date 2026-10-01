@@ -66,8 +66,8 @@ func (d *Daemon) Tunnels(context.Context) []localapi.Tunnel {
 // tunnelsLocked maps a manager snapshot to API tunnels. d.mu must be held.
 func (d *Daemon) tunnelsLocked(st client.State) []localapi.Tunnel {
 	out := make([]localapi.Tunnel, 0, len(st.Tunnels))
-	for _, ts := range st.Tunnels {
-		out = append(out, d.toTunnel(ts))
+	for i := range st.Tunnels {
+		out = append(out, d.toTunnel(st.Tunnels[i]))
 	}
 	return out
 }
@@ -84,6 +84,8 @@ func (d *Daemon) toTunnel(ts client.TunnelState) localapi.Tunnel {
 		LocalAddr:  ts.Spec.LocalAddr,
 		RemotePort: ts.Spec.RemotePort,
 		PublicURL:  ts.PublicURL,
+		Private:    ts.Spec.Private,
+		SSHJump:    ts.SSHJump,
 		State:      tunnelState(ts.Status),
 		Source:     e.source(),
 		Lifetime:   e.lifetime,
@@ -169,7 +171,8 @@ func addError(err error) error {
 	}
 }
 
-// specFromRequest converts and validates an API request. ssh is a tcp tunnel to 127.0.0.1:22 named "ssh" by default.
+// specFromRequest converts and validates an API request. ssh is a tunnel of kind ssh to 127.0.0.1:22 named "ssh"
+// by default; with public_port it is a tcp tunnel (the v0.1 behaviour).
 func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 	bad := func(format string, a ...any) error {
 		return localapi.NewError(localapi.CodeInvalidRequest, format, a...)
@@ -178,10 +181,21 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 	switch req.Type {
 	case localapi.TypeHTTP:
 		kind = proto.KindHTTP
-	case localapi.TypeTCP, localapi.TypeSSH:
+	case localapi.TypeTCP:
 		kind = proto.KindTCP
+	case localapi.TypeSSH:
+		kind = proto.KindSSH
+		if req.PublicPort {
+			kind = proto.KindTCP
+		}
 	default:
 		return client.TunnelSpec{}, bad("type must be http, tcp or ssh")
+	}
+	if (req.Private || req.PublicPort) && req.Type != localapi.TypeSSH {
+		return client.TunnelSpec{}, bad("private and public_port are only valid for ssh tunnels")
+	}
+	if req.Private && req.PublicPort {
+		return client.TunnelSpec{}, bad("private and public_port cannot be combined: a public port has no gateway to authenticate")
 	}
 	addr := req.Addr
 	if addr == "" && req.Type == localapi.TypeSSH {
@@ -196,7 +210,7 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 			return client.TunnelSpec{}, bad("remote_port %d out of range (1-65535)", req.RemotePort)
 		}
 		if kind != proto.KindTCP {
-			return client.TunnelSpec{}, bad("remote_port is only valid for tcp and ssh tunnels")
+			return client.TunnelSpec{}, bad("remote_port is only valid for tcp tunnels and ssh tunnels with public_port")
 		}
 	}
 	name := req.Name
@@ -208,7 +222,7 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 			name = kind + "-" + port
 		}
 	}
-	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: req.RemotePort}, nil
+	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: req.RemotePort, Private: req.Private}, nil
 }
 
 // RemoveTunnel implements [localapi.Backend]. Tunnels of the tunnels file cannot be removed this way.
@@ -278,12 +292,13 @@ func (d *Daemon) Reload(context.Context) (localapi.ReloadResult, error) {
 		inFile[sp.Name] = true
 	}
 	all := slices.Clone(fileSpecs)
-	for _, ts := range d.mgr.Snapshot().Tunnels {
-		name := ts.Spec.Name
+	current := d.mgr.Snapshot().Tunnels
+	for i := range current {
+		name := current[i].Spec.Name
 		if d.meta[name].lifetime == localapi.LifetimeFile || inFile[name] {
 			continue // old file tunnels follow the new file; a same-named tunnel is replaced by the file's
 		}
-		all = append(all, ts.Spec)
+		all = append(all, current[i].Spec)
 	}
 	added, removed, changed, err := d.mgr.Replace(all)
 	if err != nil {
@@ -355,7 +370,7 @@ func toEvent(e client.Event) (localapi.Event, bool) {
 		}
 		return ev, true
 	case client.TunnelReady:
-		return localapi.Event{Type: localapi.EventTunnelReady, Name: e.Name, PublicURL: e.PublicURL, Time: now}, true
+		return localapi.Event{Type: localapi.EventTunnelReady, Name: e.Name, PublicURL: e.PublicURL, SSHJump: e.SSHJump, Time: now}, true
 	case client.TunnelClosed:
 		return localapi.Event{Type: localapi.EventTunnelClosed, Name: e.Name, Reason: e.Reason, Error: e.Reason, Time: now}, true
 	case client.TunnelRemoved:

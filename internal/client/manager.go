@@ -66,6 +66,8 @@ type TunnelState struct {
 	Spec      TunnelSpec // normalized
 	Status    TunnelStatus
 	PublicURL string // set when Status is StatusReady
+	// SSHJump is the host:port of the server's SSH gateway; set when Status is StatusReady for an ssh tunnel.
+	SSHJump string
 	// Err is set when Status is StatusFailed. For a refused registration it wraps the server's *proto.Error.
 	Err error
 }
@@ -91,6 +93,7 @@ type tunnelRec struct {
 	seq    int // registration order
 	status TunnelStatus
 	url    string
+	jump   string // SSH gateway address of a ready ssh tunnel
 	err    error
 }
 
@@ -325,7 +328,7 @@ func (m *Manager) Snapshot() State {
 		Tunnels:    make([]TunnelState, 0, len(m.desired)),
 	}
 	for _, rec := range m.desired {
-		st.Tunnels = append(st.Tunnels, TunnelState{Spec: rec.spec, Status: rec.status, PublicURL: rec.url, Err: rec.err})
+		st.Tunnels = append(st.Tunnels, TunnelState{Spec: rec.spec, Status: rec.status, PublicURL: rec.url, SSHJump: rec.jump, Err: rec.err})
 	}
 	sort.Slice(st.Tunnels, func(i, j int) bool { return st.Tunnels[i].Spec.Name < st.Tunnels[j].Spec.Name })
 	return st

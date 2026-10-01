@@ -466,6 +466,10 @@ func TestAddTunnelValidationAndDefaults(t *testing.T) {
 		"bad name":         {Type: "http", Addr: "80", Name: "-x"},
 		"remote port http": {Type: "http", Addr: "80", RemotePort: 1234},
 		"remote port high": {Type: "tcp", Addr: "80", RemotePort: 70000},
+		"private on tcp":   {Type: "tcp", Addr: "80", Private: true},
+		"public_port http": {Type: "http", Addr: "80", PublicPort: true},
+		"private+public":   {Type: "ssh", Private: true, PublicPort: true},
+		"remote port ssh":  {Type: "ssh", RemotePort: 2222},
 	} {
 		req.Lifetime = localapi.LifetimeRuntime
 		if _, err := h.d.AddTunnel(ctx, req); err == nil {
@@ -480,14 +484,22 @@ func TestAddTunnelValidationAndDefaults(t *testing.T) {
 		t.Fatalf("default http tunnel: %+v, %v", tn, err)
 	}
 	tn, err = h.cl.AddTunnel(ctx, localapi.AddTunnelRequest{Type: "ssh"})
-	if err != nil || tn.Name != "ssh" || tn.Type != "tcp" || tn.LocalAddr != "127.0.0.1:22" {
+	if err != nil || tn.Name != "ssh" || tn.Type != "ssh" || tn.LocalAddr != "127.0.0.1:22" || tn.Private {
 		t.Fatalf("ssh tunnel: %+v, %v", tn, err)
+	}
+	tn, err = h.cl.AddTunnel(ctx, localapi.AddTunnelRequest{Type: "ssh", Name: "ssh-pub", PublicPort: true, RemotePort: 20043})
+	if err != nil || tn.Type != "tcp" || tn.RemotePort != 20043 {
+		t.Fatalf("ssh --public-port tunnel: %+v, %v", tn, err)
+	}
+	tn, err = h.cl.AddTunnel(ctx, localapi.AddTunnelRequest{Type: "ssh", Name: "ssh-priv", Private: true})
+	if err != nil || tn.Type != "ssh" || !tn.Private {
+		t.Fatalf("private ssh tunnel: %+v, %v", tn, err)
 	}
 	tn, err = h.cl.AddTunnel(ctx, localapi.AddTunnelRequest{Type: "tcp", Addr: "nas:5432", Name: "pg", RemotePort: 20042})
 	if err != nil || tn.RemotePort != 20042 {
 		t.Fatalf("tcp tunnel: %+v, %v", tn, err)
 	}
-	h.waitReady("http-8080", "ssh", "pg")
+	h.waitReady("http-8080", "ssh", "ssh-pub", "pg")
 	if got := h.tunnels()["pg"].PublicURL; got != "tcp://tun.test:20042" {
 		t.Errorf("pg public url %q", got)
 	}

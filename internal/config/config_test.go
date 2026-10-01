@@ -33,6 +33,23 @@ func TestLoadMinimal(t *testing.T) {
 	}
 }
 
+func TestSSHGateway(t *testing.T) {
+	c, err := Load(write(t, "version: 1\ndomain: a.example\ndata_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SSHGateway.Enabled() || c.SSHGateway.Port() != 0 || c.SSHGateway.MaxConnsPerTunnel != 256 {
+		t.Fatalf("default gateway: %+v", c.SSHGateway)
+	}
+	c, err = Load(write(t, "version: 1\ndomain: a.example\ndata_dir: /tmp/x\nssh_gateway:\n  listen: ':2222'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.SSHGateway.Enabled() || c.SSHGateway.Port() != 2222 || c.SSHGateway.MaxConnsPerTunnel != 256 {
+		t.Fatalf("gateway with only listen set: %+v", c.SSHGateway)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	_, err := Load(write(t, "version: 1\ndomain: a.example\ndomian: typo\n"))
 	if err == nil || !strings.Contains(err.Error(), "domian") {
@@ -50,6 +67,9 @@ func TestValidate(t *testing.T) {
 		"bad listen":     "version: 1\ndomain: a.example\nlisten: '443'\n",
 		"bad scheme":     "version: 1\ndomain: a.example\npublic_scheme: ftp\n",
 		"zero max tunls": "version: 1\ndomain: a.example\nmax_tunnels_per_client: 0\n",
+		"ssh no port":    "version: 1\ndomain: a.example\nssh_gateway:\n  listen: '2222'\n",
+		"ssh named port": "version: 1\ndomain: a.example\nssh_gateway:\n  listen: ':ssh'\n",
+		"ssh negative":   "version: 1\ndomain: a.example\nssh_gateway:\n  max_conns_per_tunnel: -1\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -132,18 +132,46 @@ type tunnelRequest struct {
 	addr       string // "host:port", already normalized
 	remotePort int
 	sshUser    string // non-empty for `porthole ssh`: print the ssh command line
+	private    bool   // ssh only: the gateway requires a porthole token
+	publicPort bool   // ssh only: a public TCP port instead of the gateway (v0.1 behaviour)
 }
 
 func (r tunnelRequest) spec() client.TunnelSpec {
 	kind := proto.KindTCP
-	if r.typ == localapi.TypeHTTP {
+	switch {
+	case r.typ == localapi.TypeHTTP:
 		kind = proto.KindHTTP
+	case r.typ == localapi.TypeSSH && !r.publicPort:
+		kind = proto.KindSSH
 	}
-	return client.TunnelSpec{Kind: kind, Name: r.name, LocalAddr: r.addr, RemotePort: r.remotePort}
+	return client.TunnelSpec{Kind: kind, Name: r.name, LocalAddr: r.addr, RemotePort: r.remotePort, Private: r.private}
 }
 
 func (r tunnelRequest) apiRequest() localapi.AddTunnelRequest {
-	return localapi.AddTunnelRequest{Type: r.typ, Name: r.name, Addr: r.addr, RemotePort: r.remotePort}
+	return localapi.AddTunnelRequest{
+		Type: r.typ, Name: r.name, Addr: r.addr, RemotePort: r.remotePort, Private: r.private, PublicPort: r.publicPort,
+	}
+}
+
+// canFallback reports whether a server that refuses the ssh kind may be retried with a public TCP port: only the
+// default `porthole ssh`, never a --private one (it must not become public) or an explicit --public-port.
+func (r tunnelRequest) canFallback() bool {
+	return r.typ == localapi.TypeSSH && !r.private && !r.publicPort
+}
+
+// sshHint carries what printEvent needs to print the ssh command of an ssh tunnel.
+type sshHint struct {
+	user   string
+	client string // client name; learned from the connected event or the daemon status
+}
+
+func (h *sshHint) enabled() bool { return h != nil && h.user != "" }
+
+func (r tunnelRequest) hint() *sshHint {
+	if r.sshUser == "" {
+		return nil
+	}
+	return &sshHint{user: r.sshUser}
 }
 
 func (a *app) newHTTPCmd() *cobra.Command {
@@ -209,11 +237,16 @@ func (a *app) newSSHCmd() *cobra.Command {
 	var cf connFlags
 	var rf routeFlags
 	var name, userName string
-	var localPort int
+	var localPort, remotePort int
+	var private, publicPort bool
 	cmd := &cobra.Command{
 		Use:   "ssh",
 		Short: "Expose the local ssh server",
-		Long: "Expose the local ssh server (a TCP tunnel to 127.0.0.1:22) and print the ssh command to reach it.\n\n" +
+		Long: "Expose the local ssh server and print the ssh command to reach it.\n\n" +
+			"By default the server's SSH gateway is the jump host: no public port is opened, and others connect with\n" +
+			"`ssh -J <gateway> <user>@<client>`. --private makes the gateway ask for a porthole token first.\n" +
+			"--public-port keeps the older mode: a public TCP port of the server (`ssh -p <port> <user>@<server>`).\n" +
+			"If the server has no SSH gateway, a plain `porthole ssh` falls back to a public port with a warning.\n\n" +
 			"If a porthole daemon is running the tunnel is added to it and removed again when this command ends.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -224,10 +257,21 @@ func (a *app) newSSHCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if cmd.Flags().Changed("remote-port") {
+				if _, err := parsePort(fmt.Sprint(remotePort)); err != nil {
+					return fmt.Errorf("--remote-port: %w", err)
+				}
+				if !publicPort {
+					return errors.New("--remote-port needs --public-port: through the gateway the tunnel has no public port")
+				}
+			}
 			if userName == "" {
 				userName = a.d.currentUser()
 			}
-			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeSSH, name: name, addr: target, sshUser: userName})
+			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{
+				typ: localapi.TypeSSH, name: name, addr: target, sshUser: userName,
+				remotePort: remotePort, private: private, publicPort: publicPort,
+			})
 		},
 	}
 	cf.add(cmd)
@@ -235,6 +279,10 @@ func (a *app) newSSHCmd() *cobra.Command {
 	cmd.Flags().IntVar(&localPort, "local-port", 22, "local ssh port")
 	cmd.Flags().StringVar(&userName, "user", "", "user name for the printed ssh command (default: current user)")
 	cmd.Flags().StringVar(&name, "name", "ssh", "tunnel name")
+	cmd.Flags().BoolVar(&private, "private", false, "require a porthole token at the SSH gateway; never falls back to a public port")
+	cmd.Flags().BoolVar(&publicPort, "public-port", false, "open a public TCP port instead of using the SSH gateway")
+	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "with --public-port: request this public port")
+	cmd.MarkFlagsMutuallyExclusive("private", "public-port")
 	return cmd
 }
 
@@ -253,6 +301,20 @@ func (a *app) runTunnel(cmd *cobra.Command, cf *connFlags, rf *routeFlags, tr tu
 	ctx, stop := signalContext(cmd)
 	defer stop()
 
+	err := a.runTunnelOnce(ctx, cmd, cf, rf, tr)
+	var perr *proto.Error
+	if err != nil && tr.canFallback() && errors.As(err, &perr) && perr.Code == proto.CodeInvalidRequest {
+		// An old server answers invalid_request to the unknown kind "ssh", a new one without the gateway says so.
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the server does not offer the SSH gateway (%s); "+
+			"falling back to a public TCP port. Use --public-port to choose this on purpose.\n", perr.Message)
+		tr.publicPort = true
+		return a.runTunnelOnce(ctx, cmd, cf, rf, tr)
+	}
+	return err
+}
+
+// runTunnelOnce routes one tunnel request, see runTunnel.
+func (a *app) runTunnelOnce(ctx context.Context, cmd *cobra.Command, cf *connFlags, rf *routeFlags, tr tunnelRequest) error {
 	if rf.noDaemon {
 		return a.runStandalone(ctx, cmd, cf, tr)
 	}
@@ -301,13 +363,14 @@ func (a *app) runStandalone(ctx context.Context, cmd *cobra.Command, cf *connFla
 		return err
 	}
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	hint := tr.hint()
 	err = a.d.run(ctx, client.Options{
 		ServerURL: server,
 		Token:     token,
 		Tunnels:   []client.TunnelSpec{tr.spec()},
 		Version:   a.version,
 		Logger:    a.logger(cmd),
-		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, tr.sshUser) },
+		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, hint) },
 
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})
@@ -318,14 +381,24 @@ func (a *app) runStandalone(ctx context.Context, cmd *cobra.Command, cf *connFla
 }
 
 // printEvent renders a client event for the terminal. Status goes to out, trouble to errOut.
-func printEvent(out, errOut io.Writer, e client.Event, sshUser string) {
+func printEvent(out, errOut io.Writer, e client.Event, hint *sshHint) {
 	switch e := e.(type) {
 	case client.Connected:
 		fmt.Fprintf(out, "connected as %s\n", e.ClientName)
+		if hint != nil {
+			hint.client = e.ClientName
+		}
 	case client.TunnelReady:
+		if e.SSHJump != "" {
+			fmt.Fprintf(out, "ssh tunnel %s via %s -> %s\n", e.Name, e.SSHJump, e.Spec.LocalAddr)
+			if hint.enabled() {
+				printSSHJump(out, hint, e)
+			}
+			return
+		}
 		fmt.Fprintf(out, "%s -> %s\n", e.PublicURL, e.Spec.LocalAddr)
-		if sshUser != "" {
-			if cmdline, ok := sshCommand(e.PublicURL, sshUser); ok {
+		if hint.enabled() {
+			if cmdline, ok := sshCommand(e.PublicURL, hint.user); ok {
 				fmt.Fprintf(out, "  %s\n", cmdline)
 			}
 		}
@@ -342,6 +415,28 @@ func printEvent(out, errOut io.Writer, e client.Event, sshUser string) {
 			return
 		}
 		fmt.Fprintf(errOut, "reconnecting in %ds: %v\n", secs, e.Err)
+	}
+}
+
+// sshTarget is the host name the gateway resolves to the tunnel: the client name for the default tunnel "ssh",
+// otherwise "<tunnel>-<client>" (ADR 0003).
+func sshTarget(tunnelName, clientName string) string {
+	if clientName == "" {
+		clientName = "<client>"
+	}
+	if tunnelName == "ssh" || tunnelName == "" {
+		return clientName
+	}
+	return tunnelName + "-" + clientName
+}
+
+// printSSHJump prints the ready-to-use `ssh -J` command and the ~/.ssh/config equivalent.
+func printSSHJump(out io.Writer, h *sshHint, e client.TunnelReady) {
+	target := sshTarget(e.Name, h.client)
+	fmt.Fprintf(out, "  ssh -J %s %s@%s\n", e.SSHJump, h.user, target)
+	fmt.Fprintf(out, "  or once in ~/.ssh/config:  Host %s  /  ProxyJump %s\n", target, e.SSHJump)
+	if e.Spec.Private {
+		fmt.Fprintln(out, "  private tunnel: the gateway asks for a porthole token as the password before the usual ssh prompt")
 	}
 }
 

@@ -18,6 +18,8 @@ func TestRoundTrip(t *testing.T) {
 		&Hello{ProtocolVersion: Version, Token: "ph_abc_def", ClientVersion: "0.1.0", OS: "linux/amd64"},
 		&HelloOK{SessionID: "s1", ClientName: "home", HeartbeatIntervalMS: 15000},
 		&Register{ReqID: 7, Kind: KindTCP, Name: "ssh", RemotePort: 20022},
+		&Register{ReqID: 8, Kind: KindSSH, Name: "nas", Private: true},
+		&Registered{ReqID: 8, TunnelID: "t2", Kind: KindSSH, Name: "nas", Private: true, SSHJump: "tun.example.com:2222"},
 		&Registered{ReqID: 7, TunnelID: "t1", Kind: KindHTTP, Name: "web", PublicURL: "https://web-home.example.com"},
 		&Unregister{TunnelID: "t1"},
 		&TunnelClosed{TunnelID: "t1", Reason: "token revoked"},

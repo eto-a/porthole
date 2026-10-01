@@ -198,10 +198,14 @@ func (a *app) runStart(cmd *cobra.Command, cf *connFlags, tunnelsFlag string, na
 		Logger:    a.logger(cmd),
 		OnEvent: func(e client.Event) {
 			if r, ok := e.(client.TunnelReady); ok { // several tunnels: say which is which
+				if r.SSHJump != "" {
+					fmt.Fprintf(out, "%s: ssh via %s -> %s\n", r.Name, r.SSHJump, r.Spec.LocalAddr)
+					return
+				}
 				fmt.Fprintf(out, "%s: %s -> %s\n", r.Name, r.PublicURL, r.Spec.LocalAddr)
 				return
 			}
-			printEvent(out, errOut, e, "")
+			printEvent(out, errOut, e, nil)
 		},
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})
