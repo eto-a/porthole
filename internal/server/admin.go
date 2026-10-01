@@ -32,6 +32,8 @@ func (s *Server) newAdminAPI() (*adminapi.API, error) {
 		Now:          s.now,
 		Logger:       s.log,
 		ServerURL:    s.cfg.PublicURL(),
+
+		MaxTunnelsPerClient: s.cfg.MaxTunnelsPerClient,
 	})
 }
 
@@ -117,7 +119,10 @@ func (s *Server) StartAdminSocket(ln net.Listener) error {
 // adminBackend implements adminapi.Backend over the registry. It takes Server.mu like the rest of the registry.
 type adminBackend struct{ s *Server }
 
-var _ adminapi.Backend = adminBackend{}
+var (
+	_ adminapi.Backend       = adminBackend{}
+	_ adminapi.SessionCloser = adminBackend{}
+)
 
 func (b adminBackend) Status(context.Context) (adminapi.Status, error) {
 	s := b.s
@@ -164,6 +169,24 @@ func (b adminBackend) Disconnect(_ context.Context, name string) error {
 	c.log.Info("session disconnected by an administrator")
 	c.kill("disconnected by an administrator", nil)
 	return nil
+}
+
+// TokenRevoked implements adminapi.SessionCloser: every session of the token ends with a fatal token_revoked, now
+// instead of at the next revalidation.
+func (b adminBackend) TokenRevoked(_ context.Context, tokenID string) {
+	s := b.s
+	var hit []*session
+	s.mu.Lock()
+	for _, c := range s.sessions {
+		if c.tokenID == tokenID {
+			hit = append(hit, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range hit {
+		c.log.Info("session closed: its token was revoked")
+		c.kill("token revoked", &proto.Error{Code: proto.CodeTokenRevoked, Message: "token revoked", Fatal: true})
+	}
 }
 
 func (b adminBackend) Tunnels(context.Context) ([]adminapi.Tunnel, error) {

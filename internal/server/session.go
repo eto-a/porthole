@@ -149,6 +149,12 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 		g.Release() // authenticated: the pre-authentication byte budget no longer applies
 	}
 
+	// A token for the admin API or the SSH gateway only is no client: it would show up in the client list and be a
+	// target for remote tunnel requests without ever being able to open a tunnel.
+	if !hasTunnelScope(tok) {
+		return nil, reject(&proto.Error{Code: proto.CodeForbidden, Message: "token has no tunnel scope: it cannot open a client session"})
+	}
+
 	touchCtx, touchCancel := context.WithTimeout(ctx, storeTimeout)
 	if err := s.store.TouchToken(touchCtx, tok.ID, s.now()); err != nil {
 		s.log.Warn("touch token failed", "token_id", tok.ID, "err", err)
@@ -192,6 +198,10 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 	}
 	sess.log.Info("session started", "remote", ts.RemoteAddr().String(), "client_version", hello.ClientVersion, "os", hello.OS)
 	return sess, nil
+}
+
+func hasTunnelScope(tok *store.Token) bool {
+	return tok.HasScope(auth.ScopeTunnelHTTP) || tok.HasScope(auth.ScopeTunnelTCP) || tok.HasScope(auth.ScopeTunnelUDP)
 }
 
 // authenticate checks a hello token. fromClient reports whether a failure is the client's fault (counts against

@@ -72,12 +72,13 @@ func NewHTTPHandler(ops Ops, opts Options, h HTTPOptions) (http.Handler, error) 
 		MaxRequestBodyBytes:        maxRequestBytes,
 	})
 	// The SDK's middleware copies the token's scopes and id into the context of each tool call.
-	verify := func(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
+	verify := func(ctx context.Context, _ string, r *http.Request) (*auth.TokenInfo, error) {
 		tok, _ := ctx.Value(tokenKey{}).(*store.Token)
 		if tok == nil {
 			return nil, auth.ErrInvalidToken
 		}
-		ti := &auth.TokenInfo{Scopes: tok.Scopes, UserID: tok.ID}
+		// name and ip reach the tool calls: join links may grant connect:<name>, and the audit log records the address.
+		ti := &auth.TokenInfo{Scopes: tok.Scopes, UserID: tok.ID, Extra: map[string]any{"name": tok.Name, "ip": h.ClientIP(r)}}
 		if tok.ExpiresAt != nil {
 			ti.Expiration = *tok.ExpiresAt
 		}

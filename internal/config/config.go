@@ -103,6 +103,9 @@ type Config struct {
 
 	// Limits bounds what a single peer can hold open (connections, requests, unauthenticated sessions).
 	Limits Limits `yaml:"limits"`
+
+	// Audit configures the admin audit log kept in the database.
+	Audit Audit `yaml:"audit"`
 }
 
 // Limits are abuse limits. For every field 0 selects the built-in default and a negative value turns the limit off.
@@ -126,6 +129,15 @@ type Limits struct {
 	// yet, overall (default 256) and per source IP (default 8).
 	MaxPendingHandshakes      int `yaml:"max_pending_handshakes"`
 	MaxPendingHandshakesPerIP int `yaml:"max_pending_handshakes_per_ip"`
+}
+
+// DefaultAuditMaxRows is how many audit rows are kept by default.
+const DefaultAuditMaxRows = 100_000
+
+// Audit configures the retention of the admin audit log.
+type Audit struct {
+	// MaxRows is the number of newest audit rows kept; older rows are deleted. 0 means DefaultAuditMaxRows.
+	MaxRows int `yaml:"max_rows"`
 }
 
 // DefaultTrafficMax is the default size of each traffic journal.
@@ -266,6 +278,7 @@ func Default() *Config {
 		DataDir:             "/var/lib/porthole",
 		MaxTunnelsPerClient: 10,
 		ShutdownGrace:       10 * time.Second,
+		Audit:               Audit{MaxRows: DefaultAuditMaxRows},
 		Traffic:             Traffic{MaxRequests: DefaultTrafficMax, MaxConns: DefaultTrafficMax, AllowInspect: true, MaxDetailBytes: DefaultMaxDetailBytes},
 	}
 }
@@ -322,6 +335,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_MAX_TUNNELS_PER_CLIENT": &c.MaxTunnelsPerClient,
 		"PORTHOLED_TRAFFIC_MAX_REQUESTS":   &c.Traffic.MaxRequests,
 		"PORTHOLED_TRAFFIC_MAX_CONNS":      &c.Traffic.MaxConns,
+		"PORTHOLED_AUDIT_MAX_ROWS":         &c.Audit.MaxRows,
 	}
 	for k, p := range ints {
 		if v, ok := lookup(k); ok {
@@ -430,6 +444,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ShutdownGrace < 0 {
 		errs = append(errs, errors.New("shutdown_grace: must not be negative"))
+	}
+	if c.Audit.MaxRows < 0 {
+		errs = append(errs, errors.New("audit.max_rows: must not be negative"))
 	}
 	if c.Traffic.MaxRequests < 0 {
 		errs = append(errs, errors.New("traffic.max_requests: must not be negative"))

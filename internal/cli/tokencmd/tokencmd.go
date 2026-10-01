@@ -7,10 +7,12 @@ package tokencmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"os/user"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +27,9 @@ import (
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/store"
 )
+
+// ActorCLI is the audit actor of changes made with `portholed token`, which works on the database directly.
+const ActorCLI = "cli"
 
 const (
 	// opTimeout bounds one command's database work.
@@ -66,6 +71,7 @@ func (e *env) open(cmd *cobra.Command) (*config.Config, *store.SQLite, context.C
 		cancel()
 		return nil, nil, nil, nil, fmt.Errorf("open database: %w", err)
 	}
+	st.SetAuditMaxRows(cfg.Audit.MaxRows)
 	return cfg, st, ctx, cancel, nil
 }
 
@@ -202,6 +208,10 @@ func (e *env) createCmd() *cobra.Command {
 				return fmt.Errorf("create token: %w", err)
 			}
 
+			e.audit(cmd, st, "token.create", tok.ID, map[string]any{
+				"name": name, "scopes": sc, "max_tunnels": maxTunnels, "remote_control": !noRemote, "expires_at": utcPtr(rec.ExpiresAt),
+			})
+
 			out := cmd.OutOrStdout()
 			if jsonout.Enabled(cmd) {
 				return jsonout.Write(out, createdJSON{
@@ -275,6 +285,7 @@ type tokenJSON struct {
 	ExpiresAt     *time.Time `json:"expires_at"`
 	RevokedAt     *time.Time `json:"revoked_at"`
 	LastUsedAt    *time.Time `json:"last_used_at"`
+	CreatedBy     string     `json:"created_by,omitempty"` // admin token id or "socket" for tokens made by a join link
 	Status        string     `json:"status"`
 }
 
@@ -364,6 +375,7 @@ func writeJSON(w io.Writer, toks []*store.Token, now time.Time) error {
 			ExpiresAt:     utcPtr(t.ExpiresAt),
 			RevokedAt:     utcPtr(t.RevokedAt),
 			LastUsedAt:    utcPtr(t.LastUsedAt),
+			CreatedBy:     t.CreatedBy,
 			Status:        status(t, now),
 		})
 	}
@@ -376,22 +388,29 @@ func writeTable(w io.Writer, toks []*store.Token, now time.Time) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tSECRET\tSCOPES\tREMOTE\tCREATED\tEXPIRES\tLAST USED\tSTATUS")
+	fmt.Fprintln(tw, "ID\tNAME\tSECRET\tSCOPES\tREMOTE\tCREATED\tCREATED BY\tEXPIRES\tLAST USED\tSTATUS")
 	for _, t := range toks {
 		created := t.CreatedAt
-		fmt.Fprintf(tw, "%s\t%s\t…%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		by := t.CreatedBy
+		if by == "" {
+			by = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t…%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			t.ID, t.Name, t.Last4, strings.Join(t.Scopes, ","), yesNo(t.RemoteControl),
-			formatTime(&created), formatTime(t.ExpiresAt), formatTime(t.LastUsedAt), status(t, now))
+			formatTime(&created), by, formatTime(t.ExpiresAt), formatTime(t.LastUsedAt), status(t, now))
 	}
 	return tw.Flush()
 }
 
 func (e *env) revokeCmd() *cobra.Command {
-	return &cobra.Command{
+	var cascade bool
+	cmd := &cobra.Command{
 		Use:   "revoke <id|name>",
 		Short: "Revoke a token",
 		Long: "Revoke a token by id or by name. Live sessions using it are closed by the server within " +
-			liveSessionGrace + ".",
+			liveSessionGrace + ". Join links the token created and nobody has used yet are revoked with it.\n\n" +
+			"With --cascade the tokens that were created from join links of this token (and so on, transitively) are\n" +
+			"revoked too. To close their sessions at once, revoke through the admin API or the MCP tool instead.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, st, ctx, cancel, err := e.open(cmd)
@@ -406,9 +425,15 @@ func (e *env) revokeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := st.RevokeToken(ctx, target.ID, e.now()); err != nil {
+			revoked := []string{target.ID}
+			if cascade {
+				if revoked, err = st.RevokeTokenCascade(ctx, target.ID, e.now()); err != nil {
+					return fmt.Errorf("revoke token: %w", err)
+				}
+			} else if err := st.RevokeToken(ctx, target.ID, e.now()); err != nil {
 				return fmt.Errorf("revoke token: %w", err)
 			}
+			e.audit(cmd, st, "token.revoke", target.ID, map[string]any{"name": target.Name, "cascade": cascade, "revoked": revoked})
 			out := cmd.OutOrStdout()
 			if jsonout.Enabled(cmd) {
 				return jsonout.Write(out, revokedJSON{
@@ -417,12 +442,36 @@ func (e *env) revokeCmd() *cobra.Command {
 			}
 			if target.RevokedAt != nil {
 				fmt.Fprintf(out, "Token %q (id %s) was already revoked.\n", target.Name, target.ID)
-				return nil
+			} else {
+				fmt.Fprintf(out, "Revoked token %q (id %s). Live sessions will be closed by the server within %s.\n",
+					target.Name, target.ID, liveSessionGrace)
 			}
-			fmt.Fprintf(out, "Revoked token %q (id %s). Live sessions will be closed by the server within %s.\n",
-				target.Name, target.ID, liveSessionGrace)
+			if len(revoked) > 1 {
+				fmt.Fprintf(out, "Also revoked %d token(s) created from its join links: %s\n", len(revoked)-1, strings.Join(revoked[1:], ", "))
+			}
 			return nil
 		},
+	}
+	cmd.Flags().BoolVar(&cascade, "cascade", false, "also revoke the tokens created from this token's join links, transitively")
+	return cmd
+}
+
+// audit records a direct database change in the audit log, like the admin API does for the same action. The actor is
+// "cli"; the operating system user goes into the args. A failed write is reported, but does not undo the change.
+func (e *env) audit(cmd *cobra.Command, st *store.SQLite, action, target string, args map[string]any) {
+	if u, err := user.Current(); err == nil {
+		args["os_user"] = u.Username
+	}
+	b, _ := json.Marshal(args)
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), opTimeout)
+	defer cancel()
+	entry := &store.AuditEntry{At: e.now(), Actor: ActorCLI, Action: action, Target: target, Args: string(b), Result: "ok"}
+	if err := st.AppendAudit(ctx, entry); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the audit log could not be written: %v\n", err)
 	}
 }
 

@@ -20,12 +20,19 @@ import (
 )
 
 type fakeBackend struct {
-	mu           sync.Mutex
-	disconnected []string
-	closed       []string
-	filter       traffic.RequestFilter // the last filter Requests or RequestAggregates saw
-	replayed     []uint64
-	opened       []RemoteOpen
+	mu            sync.Mutex
+	disconnected  []string
+	closed        []string
+	filter        traffic.RequestFilter // the last filter Requests or RequestAggregates saw
+	replayed      []uint64
+	opened        []RemoteOpen
+	revokedTokens []string
+}
+
+func (f *fakeBackend) TokenRevoked(_ context.Context, id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revokedTokens = append(f.revokedTokens, id)
 }
 
 func (*fakeBackend) Status(context.Context) (Status, error) {
@@ -107,6 +114,22 @@ func (f *fakeStore) ListAudit(_ context.Context, limit int) ([]store.AuditEntry,
 		out = out[len(out)-limit:]
 	}
 	return out, nil
+}
+
+func (f *fakeStore) ListAuditBefore(_ context.Context, before int64, limit int) ([]store.AuditEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.AuditEntry
+	for i := len(f.audit) - 1; i >= 0 && len(out) < limit; i-- {
+		if before <= 0 || f.audit[i].ID < before {
+			out = append(out, f.audit[i])
+		}
+	}
+	return out, nil
+}
+
+func auditFixture(i int) store.AuditEntry {
+	return store.AuditEntry{ID: int64(i + 1), Actor: "socket", Action: "a", Result: "ok"}
 }
 
 type env struct {

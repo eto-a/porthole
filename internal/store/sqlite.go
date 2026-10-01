@@ -41,7 +41,8 @@ const (
 // SQLite is a Store backed by a SQLite database in WAL mode. It is safe for concurrent use and
 // for use by several processes on the same file.
 type SQLite struct {
-	db *sql.DB
+	db    *sql.DB
+	audit auditState
 }
 
 var _ Store = (*SQLite)(nil)
@@ -282,7 +283,7 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.SecretHash, t.Last4, strings.Join(t.Scopes, ","), t.MaxTunnels,
-		t.CreatedAt.UnixMilli(), msOrNull(t.ExpiresAt), msOrNull(t.RevokedAt), msOrNull(t.LastUsedAt), t.RemoteControl)
+		t.CreatedAt.UnixMilli(), msOrNull(t.ExpiresAt), msOrNull(t.RevokedAt), msOrNull(t.LastUsedAt), t.RemoteControl, t.CreatedBy)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("token name %q: %w", t.Name, ErrNameTaken)
@@ -292,7 +293,7 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 	return nil
 }
 
-const tokenColumns = `id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control`
+const tokenColumns = `id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control, created_by`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -304,7 +305,7 @@ func scanToken(sc scanner) (*Token, error) {
 		expires, revoked, lu sql.NullInt64
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.SecretHash, &t.Last4, &scopes, &t.MaxTunnels,
-		&created, &expires, &revoked, &lu, &t.RemoteControl); err != nil {
+		&created, &expires, &revoked, &lu, &t.RemoteControl, &t.CreatedBy); err != nil {
 		return nil, err
 	}
 	if scopes != "" {
@@ -350,54 +351,105 @@ func (s *SQLite) ListTokens(ctx context.Context) ([]*Token, error) {
 	return out, nil
 }
 
-// RevokeToken implements Store. The id is tried first, then the name among active tokens.
+// RevokeToken implements Store. The id is tried first, then the name among active tokens. The join codes the
+// token created and nobody has redeemed yet are revoked with it: a revoked creator must not leave working links.
 func (s *SQLite) RevokeToken(ctx context.Context, idOrName string, at time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: revoke token: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	ms := at.UnixMilli()
-	var (
-		name    string
-		revoked sql.NullInt64
-	)
-	err = tx.QueryRowContext(ctx, `SELECT name, revoked_at FROM tokens WHERE id = ?`, idOrName).Scan(&name, &revoked)
-	switch {
-	case err == nil:
-		// An already revoked id changes nothing: its name may belong to a newer token by now.
-		if !revoked.Valid {
-			if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ?`, ms, idOrName); err != nil {
-				return fmt.Errorf("store: revoke token: %w", err)
-			}
-			if err := deleteReservations(ctx, tx, name); err != nil {
-				return err
-			}
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		res, err := tx.ExecContext(ctx,
-			`UPDATE tokens SET revoked_at = ? WHERE name = ? AND revoked_at IS NULL`, ms, idOrName)
-		if err != nil {
-			return fmt.Errorf("store: revoke token: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("store: revoke token: %w", err)
-		}
-		if n == 0 {
-			return fmt.Errorf("token %q: %w", idOrName, ErrNotFound)
-		}
-		if err := deleteReservations(ctx, tx, idOrName); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("store: revoke token: %w", err)
+	if _, err := revokeOne(ctx, tx, idOrName, at); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: revoke token: %w", err)
 	}
 	return nil
+}
+
+// RevokeTokenCascade is RevokeToken that also revokes, transitively, every token whose join link the revoked token
+// (or one of those tokens) created. It returns the id of the target (first) and of every token it revoked below it.
+func (s *SQLite) RevokeTokenCascade(ctx context.Context, idOrName string, at time.Time) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: revoke token: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	root, err := revokeOne(ctx, tx, idOrName, at)
+	if err != nil {
+		return nil, err
+	}
+	var revoked []string
+	queue := []string{root}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM tokens WHERE created_by = ? AND revoked_at IS NULL`, id)
+		if err != nil {
+			return nil, fmt.Errorf("store: revoke token: %w", err)
+		}
+		var kids []string
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("store: revoke token: %w", err)
+			}
+			kids = append(kids, k)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("store: revoke token: %w", err)
+		}
+		_ = rows.Close()
+		for _, k := range kids {
+			if _, err := revokeOne(ctx, tx, k, at); err != nil {
+				return nil, err
+			}
+			revoked = append(revoked, k)
+			queue = append(queue, k)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: revoke token: %w", err)
+	}
+	return append([]string{root}, revoked...), nil
+}
+
+// revokeOne revokes the token idOrName inside tx and returns its id. An already revoked id changes nothing: its name
+// may belong to a newer token by now.
+func revokeOne(ctx context.Context, tx *sql.Tx, idOrName string, at time.Time) (string, error) {
+	var (
+		id, name string
+		revoked  sql.NullInt64
+	)
+	err := tx.QueryRowContext(ctx, `SELECT id, name, revoked_at FROM tokens WHERE id = ?`, idOrName).Scan(&id, &name, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `SELECT id, name, revoked_at FROM tokens WHERE name = ? AND revoked_at IS NULL`, idOrName).
+			Scan(&id, &name, &revoked)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("token %q: %w", idOrName, ErrNotFound)
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: revoke token: %w", err)
+	}
+	if revoked.Valid {
+		return id, nil
+	}
+	ms := at.UnixMilli()
+	if _, err := tx.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ?`, ms, id); err != nil {
+		return "", fmt.Errorf("store: revoke token: %w", err)
+	}
+	if err := deleteReservations(ctx, tx, name); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE join_codes SET revoked_at = ? WHERE created_by = ? AND used_at IS NULL AND revoked_at IS NULL`, ms, id); err != nil {
+		return "", fmt.Errorf("store: revoke token: %w", err)
+	}
+	return id, nil
 }
 
 func deleteReservations(ctx context.Context, tx *sql.Tx, client string) error {

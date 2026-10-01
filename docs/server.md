@@ -139,6 +139,7 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `traffic.max_requests`, `traffic.max_conns` | `PORTHOLED_TRAFFIC_MAX_REQUESTS`, `PORTHOLED_TRAFFIC_MAX_CONNS` | `10000` each | Size of the in-memory request log and connection log; `0` turns a log off. Lost on restart (see [Request log and inspection](#request-log-and-inspection)) |
 | `traffic.allow_inspect` | `PORTHOLED_TRAFFIC_ALLOW_INSPECT` | `true` | Let clients ask for body inspection of an HTTP tunnel (`porthole http --inspect`); with `false` such a tunnel is refused |
 | `traffic.max_detail_bytes` | `PORTHOLED_TRAFFIC_MAX_DETAIL_BYTES` | `67108864` (64 MiB) | Memory for stored headers and bodies of inspected requests; when exceeded the oldest details are dropped (the log entries stay). `0` stores no details |
+| `audit.max_rows` | `PORTHOLED_AUDIT_MAX_ROWS` | `100000` | Newest rows of the admin audit log kept in the database; older rows are deleted (see [Audit log](#audit-log)) |
 | `shutdown_grace` | - | `10s` | How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut |
 | `tls.acme.max_new_names_per_day` | - | `30` | Host names without a stored certificate that the server requests per 24 hours, all clients together; `-1` turns the cap off (see [Certificate budget](#certificate-budget)) |
 | `tls.acme.max_new_names_per_client_per_hour` | - | `10` | The same cap for the tunnels of one client per hour; `-1` turns it off |
@@ -209,9 +210,27 @@ $ portholed join revoke 3kq9w2m1z8xa
 
 The same operations are in the admin API with a token that has the scope `admin:tokens`:
 `POST /_porthole/admin/v1/join` (`client_name`, `scopes`, `ttl`, `max_tunnels`, `token_expires_in`, `remote_control`),
-`GET /_porthole/admin/v1/join` and `POST /_porthole/admin/v1/join/{id}/revoke`. A token can hand out the tunnel and
-`connect:` scopes and, besides those, only scopes it holds itself. The link uses `server_url` from the configuration, or
-`<public_scheme>://<domain>[:<public_port>]` when it is not set.
+`GET /_porthole/admin/v1/join` and `POST /_porthole/admin/v1/join/{id}/revoke`. The link uses `server_url` from the
+configuration, or `<public_scheme>://<domain>[:<public_port>]` when it is not set.
+
+A link made with a bearer token (admin API or MCP) is limited by what that token may do itself; only the local admin
+socket (`portholed join create`) is exempt:
+
+- no `admin:*` scope can be granted, not even one the token holds: it could mint itself a permanent copy that outlives
+  its revocation;
+- `connect:<client>` only if the token holds that scope or is that client;
+- `max_tunnels` at most `max_tunnels_per_client` (a larger value is refused);
+- neither the link nor the minted token outlives the creating token: `token_expires_in` is capped at the creator's
+  expiry (the response shows `token_expires_at`), and a token that expires within the minimum link lifetime cannot
+  create links at all. A creator without expiry may mint tokens without expiry.
+
+Revoking a token also revokes the join links it created and nobody has used yet. Tokens made from a link remember their
+creator (`created_by`, shown by `portholed token list`); `portholed token revoke --cascade <id>` revokes those tokens
+too, transitively.
+
+The join page `/j/<code>` carries the secret in the URL path, so it ends up in the access logs of a reverse proxy
+(nginx, Caddy `log`); anyone who can read those logs can redeem the link within its lifetime (15 minutes by default).
+Keep link lifetimes short and exclude `/j/` from proxy access logs, or hand out only the `porthole join` command.
 
 ## Tokens
 
@@ -232,8 +251,22 @@ More options (without the `sudo -u porthole` prefix):
 ```console
 $ portholed token create --name office-nas --expires 30d --scopes tunnel:http,tunnel:tcp --max-tunnels 5
 $ portholed token list            # --all includes revoked tokens, --json prints a JSON array
-$ portholed token revoke home     # by id or name; takes effect on live sessions
+$ portholed token revoke home     # by id or name; takes effect on live sessions (see below)
+$ portholed token revoke --cascade agent   # also the tokens made from the join links of "agent"
 ```
+
+`token create` and `token revoke` work on the database directly and are written to the audit log with the actor `cli`
+(and the operating system user in the arguments). A revoke through the admin API or the MCP tool closes the token's live
+sessions at once; the CLI runs in another process, so the server notices within 30 seconds. A token that has only
+`admin:*` and `connect:*` scopes and no `tunnel:*` scope cannot open a client session (the handshake is refused with
+`forbidden`): it is for the admin API or the SSH gateway.
+
+### Audit log
+
+The admin audit log lives in the database. `audit.max_rows` (`PORTHOLED_AUDIT_MAX_ROWS`, default `100000`) keeps only
+the newest rows. Of a flood of refused (`denied`) calls from one token only the first per minute is stored; the next row
+says in `args.suppressed` how many were dropped. Page through it with `GET /_porthole/admin/v1/audit?limit=100&before=<id>`
+(entries with an id below `before`, newest first). MCP calls over HTTP record the caller's address as `remote`.
 
 | Flag of `token create` | Meaning |
 |---|---|
@@ -450,8 +483,13 @@ connections are recorded as metadata only. Nothing is written to disk.
 A tunnel started with `porthole http --inspect` (or `inspect: true` in `tunnels.yaml`) also keeps request and response
 **headers and bodies**, up to 64 KiB of each body, so an operator or an agent can see what a webhook sent and replay
 it. Bodies carry credentials and personal data, so this is off by default and chosen per tunnel; set
-`traffic.allow_inspect: false` to forbid it on this server. `Authorization`, `Proxy-Authorization`, `Cookie` and
-`Set-Cookie` are always stored as `REDACTED`. `traffic.max_detail_bytes` bounds the memory of all stored details; the
+`traffic.allow_inspect: false` to forbid it on this server. `Cookie`, `Set-Cookie` and every header whose name contains
+`token`, `secret`, `api-key`, `apikey`, `auth`, `session` or `signature` (case-insensitive: `Authorization`,
+`X-Api-Key`, `X-Auth-Token`, `X-Csrf-Token`, `X-Amz-Security-Token`, `X-Hub-Signature-256`, ...) are always stored as
+`REDACTED`, and a replay does not send them. In the logged query string the values of parameters whose name contains
+`token`, `key`, `password`, `passwd`, `secret`, `auth`, `signature`, `session` or `credential`, starts with `x-amz-`, or
+is exactly `code`, `sig`, `sid`, `jwt`, `otp` or `ticket` are masked. Secrets in the path (`/reset/<token>`) and in
+bodies are not found: bodies are stored as they are. `traffic.max_detail_bytes` bounds the memory of all stored details; the
 details of the oldest requests are dropped first.
 
 The admin API (unix socket, or a bearer token over the public listener) serves the logs under

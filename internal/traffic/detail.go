@@ -64,8 +64,8 @@ func (b *Body) UnmarshalJSON(p []byte) error {
 	return nil
 }
 
-// Detail is what an inspected request keeps besides the metadata of Request (ADR 0005). Authorization,
-// Proxy-Authorization, Cookie and Set-Cookie are always stored as Redacted.
+// Detail is what an inspected request keeps besides the metadata of Request (ADR 0005). Cookie, Set-Cookie and every
+// header whose name suggests a credential (see isRedactedHeader) are always stored as Redacted.
 type Detail struct {
 	RequestHeaders  http.Header `json:"request_headers"`
 	RequestBody     Body        `json:"request_body"`
@@ -80,10 +80,19 @@ type Detail struct {
 }
 
 // redactedHeaders are stored as Redacted whatever their value.
-var redactedHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"}
+var redactedHeaders = []string{"Cookie", "Set-Cookie"}
 
-// RedactHeaders returns a copy of h in which the values of Authorization, Proxy-Authorization, Cookie and
-// Set-Cookie are replaced by Redacted. A nil h gives nil.
+// redactedHeaderParts: a header whose name contains one of these (case-insensitive) is stored as Redacted. That covers
+// Authorization, Proxy-Authorization, X-Api-Key, X-Auth-Token, X-Access-Token, X-Amz-Security-Token, X-Csrf-Token,
+// X-Goog-Api-Key, X-Hub-Signature-256, webhook secrets and custom headers alike. Credentials in header names we cannot
+// guess, or in bodies and paths, are not found: inspected bodies are stored as they are.
+var redactedHeaderParts = []string{"token", "secret", "api-key", "apikey", "auth", "session", "signature"}
+
+// notRedactedHeaders are challenges and the like whose names match a part but which carry no credential.
+var notRedactedHeaders = []string{"WWW-Authenticate", "Proxy-Authenticate"}
+
+// RedactHeaders returns a copy of h in which the values of credential headers (see Detail) are replaced by
+// Redacted. A nil h gives nil.
 func RedactHeaders(h http.Header) http.Header {
 	if h == nil {
 		return nil
@@ -102,6 +111,17 @@ func RedactHeaders(h http.Header) http.Header {
 func isRedactedHeader(name string) bool {
 	for _, r := range redactedHeaders {
 		if strings.EqualFold(name, r) {
+			return true
+		}
+	}
+	for _, r := range notRedactedHeaders {
+		if strings.EqualFold(name, r) {
+			return false
+		}
+	}
+	lower := strings.ToLower(name)
+	for _, p := range redactedHeaderParts {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}
