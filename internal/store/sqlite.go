@@ -279,7 +279,15 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 			return fmt.Errorf("store: invalid scope %q", sc)
 		}
 	}
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: create token: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := checkNameNotClaimed(ctx, tx, t.Name); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tokens (id, name, secret_hash, last4, scopes, max_tunnels, created_at, expires_at, revoked_at, last_used_at, remote_control)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.SecretHash, t.Last4, strings.Join(t.Scopes, ","), t.MaxTunnels,
@@ -288,6 +296,9 @@ func (s *SQLite) CreateToken(ctx context.Context, t *Token) error {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("token name %q: %w", t.Name, ErrNameTaken)
 		}
+		return fmt.Errorf("store: create token: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: create token: %w", err)
 	}
 	return nil
@@ -455,6 +466,10 @@ func revokeOne(ctx context.Context, tx *sql.Tx, idOrName string, at time.Time) (
 func deleteReservations(ctx context.Context, tx *sql.Tx, client string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM port_reservations WHERE client = ?`, client); err != nil {
 		return fmt.Errorf("store: delete port reservations: %w", err)
+	}
+	// The client's permanent labels go with its token: its name is free again, and so are the names it held.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM label_claims WHERE client = ?`, client); err != nil {
+		return fmt.Errorf("store: delete label claims: %w", err)
 	}
 	return nil
 }

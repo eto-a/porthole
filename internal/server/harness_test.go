@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,17 @@ type fakeStore struct {
 	live  map[string]bool                   // reservations whose tunnel has not been released
 
 	audit []store.AuditEntry
+
+	claims map[string]store.LabelClaim // by label
+	// delay makes the port and label calls slow, like a busy disk (nanoseconds, 0 = none).
+	delay atomic.Int64
+}
+
+// slow sleeps for the configured delay; it runs outside f.mu.
+func (f *fakeStore) slow() {
+	if d := time.Duration(f.delay.Load()); d > 0 {
+		time.Sleep(d)
+	}
 }
 
 func newFakeStore() *fakeStore {
@@ -52,6 +64,7 @@ func newFakeStore() *fakeStore {
 		touched: map[string]time.Time{},
 		ports:   map[string]*store.PortReservation{},
 		live:    map[string]bool{},
+		claims:  map[string]store.LabelClaim{},
 	}
 }
 
@@ -89,6 +102,11 @@ func (f *fakeStore) RevokeToken(_ context.Context, idOrName string, at time.Time
 	for _, t := range f.tokens {
 		if t.ID == idOrName || t.Name == idOrName {
 			t.RevokedAt = &at
+			for l, c := range f.claims {
+				if c.Client == t.Name {
+					delete(f.claims, l)
+				}
+			}
 			return nil
 		}
 	}
@@ -103,6 +121,7 @@ func (f *fakeStore) TouchToken(_ context.Context, id string, at time.Time) error
 }
 
 func (f *fakeStore) HoldPort(_ context.Context, client, tunnel string, port int, _ time.Time, _ time.Duration) error {
+	f.slow()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ports[client+"/"+tunnel] = &store.PortReservation{Client: client, Tunnel: tunnel, Port: port}
@@ -111,6 +130,7 @@ func (f *fakeStore) HoldPort(_ context.Context, client, tunnel string, port int,
 }
 
 func (f *fakeStore) ReleasePort(_ context.Context, client, tunnel string, at time.Time) error {
+	f.slow()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r := f.ports[client+"/"+tunnel]; r != nil {
@@ -235,17 +255,39 @@ type harness struct {
 	hi    int
 }
 
-// freePortRange returns a small port range whose first port was free a moment ago.
+// Test port windows lie below every OS's ephemeral range (Linux 32768+, Windows and BSD 49152+), so outgoing
+// connections of other programs, which the OS numbers from that range, cannot take a port of a window between
+// the check and the use.
+const (
+	portWindowLo   = 20000
+	portWindowHi   = 29999
+	portWindowSize = 20
+)
+
+// freePortRange returns a window of 20 TCP ports below the ephemeral range of the OS, every one of which could be
+// bound a moment ago. The window is chosen at random, so that test processes running side by side (go test runs
+// packages in parallel) rarely overlap.
 func freePortRange(t *testing.T) (lo, hi int) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 200 {
+		lo = portWindowLo + rand.IntN(portWindowHi-portWindowLo-portWindowSize+2)
+		if windowFree(lo, lo+portWindowSize-1) {
+			return lo, lo + portWindowSize - 1
+		}
 	}
-	p := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	lo = min(p, 65535-19)
-	return lo, lo + 19
+	t.Fatal("no free window of test ports")
+	return 0, 0
+}
+
+func windowFree(lo, hi int) bool {
+	for p := lo; p <= hi; p++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
+	}
+	return true
 }
 
 func quietLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
@@ -634,4 +676,44 @@ func (f *fakeStore) RedeemJoinCode(context.Context, string, string, time.Time) (
 func (f *fakeStore) ListJoinCodes(context.Context) ([]*store.JoinCode, error) { return nil, nil }
 func (f *fakeStore) RevokeJoinCode(context.Context, string, time.Time) error {
 	return store.ErrNotFound
+}
+
+func (f *fakeStore) ClaimLabels(_ context.Context, client, tunnel string, labels []string, at time.Time) ([]string, error) {
+	f.slow()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, l := range labels {
+		if c, ok := f.claims[l]; ok && (c.Client != client || c.Tunnel != tunnel) {
+			return nil, store.ErrLabelClaimed
+		}
+	}
+	var created []string
+	for _, l := range labels {
+		if _, ok := f.claims[l]; !ok {
+			f.claims[l] = store.LabelClaim{Label: l, Client: client, Tunnel: tunnel, ClaimedAt: at}
+			created = append(created, l)
+		}
+	}
+	return created, nil
+}
+
+func (f *fakeStore) UnclaimLabels(_ context.Context, client, tunnel string, labels []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, l := range labels {
+		if c, ok := f.claims[l]; ok && c.Client == client && c.Tunnel == tunnel {
+			delete(f.claims, l)
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) ReleaseLabel(_ context.Context, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.claims[label]; !ok {
+		return store.ErrNotFound
+	}
+	delete(f.claims, label)
+	return nil
 }

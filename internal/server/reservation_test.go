@@ -124,8 +124,8 @@ func TestUnregisterPersistsRelease(t *testing.T) {
 	})
 }
 
-// portFree reports whether port can be bound now. The test range lies among ephemeral ports, so between the two
-// servers another process may take a released port; the server then rightly picks a different one.
+// portFree reports whether port can be bound now. Between the two servers another program may still take a
+// released port; the server then rightly picks a different one.
 func portFree(port int) bool {
 	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {

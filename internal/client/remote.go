@@ -164,6 +164,14 @@ func (m *Manager) openTunnel(ctx context.Context, req *proto.OpenRequest) *proto
 		return openFailure(req.ReqID, proto.CodeInvalidRequest, "%v", err)
 	}
 
+	// Whatever ends the wait other than success (refusal, timeout, the session going away) leaves no tunnel behind:
+	// the operator gets an error, so a registered or pending tunnel would be an orphan that returns on reconnect.
+	opened := false
+	defer func() {
+		if !opened {
+			_ = m.Remove(spec.Name)
+		}
+	}()
 	timer := time.NewTimer(m.t.registerTimeout)
 	defer timer.Stop()
 	tick := time.NewTicker(remotePollInterval)
@@ -177,11 +185,11 @@ func (m *Manager) openTunnel(ctx context.Context, req *proto.OpenRequest) *proto
 			}
 			switch ts.Status {
 			case StatusReady:
+				opened = true
 				return &proto.OpenResult{ReqID: req.ReqID, OK: true, Tunnel: &proto.OpenedTunnel{
 					Name: spec.Name, Kind: spec.Kind, PublicURL: ts.PublicURL, SSHJump: ts.SSHJump,
 				}}
 			case StatusFailed:
-				_ = m.Remove(spec.Name)
 				code := proto.CodeInternal
 				var pe *proto.Error
 				if errors.As(ts.Err, &pe) {
@@ -195,7 +203,6 @@ func (m *Manager) openTunnel(ctx context.Context, req *proto.OpenRequest) *proto
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
-			_ = m.Remove(spec.Name)
 			return openFailure(req.ReqID, proto.CodeTimeout, "the server did not confirm the tunnel in time")
 		case <-tick.C:
 		}

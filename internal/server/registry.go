@@ -45,23 +45,73 @@ func (s *Server) loadReservations() {
 	s.log.Info("port reservations loaded", "loaded", len(s.reserved), "stored", len(rs))
 }
 
-// holdPort persists the port of a live tunnel. Called with Server.mu held: the store is local SQLite and the call is
-// bounded by storeTimeout. A failure is only logged, because the reservation is not a condition for the tunnel.
+// holdPort queues the persistence of the port of a live tunnel. Called with Server.mu held: it only queues, the
+// write itself runs on the persister after the lock is gone (see persister). A failure is only logged, because the
+// reservation is not a condition for the tunnel.
 func (s *Server) holdPort(client, tunnel string, port int) {
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	now := s.now()
+	s.persist.add(func(ctx context.Context) {
+		if err := s.store.HoldPort(ctx, client, tunnel, port, now, reservationTTL); err != nil {
+			s.log.Warn("cannot persist port reservation", "client", client, "tunnel", tunnel, "port", port, "err", err)
+		}
+	})
+}
+
+// releasePort queues the start of the persisted reservation period of a closed tunnel. Same rules as holdPort.
+func (s *Server) releasePort(client, tunnel string, at time.Time) {
+	s.persist.add(func(ctx context.Context) {
+		if err := s.store.ReleasePort(ctx, client, tunnel, at); err != nil {
+			s.log.Warn("cannot persist port release", "client", client, "tunnel", tunnel, "err", err)
+		}
+	})
+}
+
+// claimedLabels returns the addresses of a new tunnel that are claimed for good by the pair (client, name): the
+// hostname label of an HTTP tunnel, the gateway address of an ssh tunnel and, for the ssh tunnel named "ssh", the
+// bare client name. TCP tunnels have none.
+func claimedLabels(client, kind, name, label string) []string {
+	switch kind {
+	case proto.KindHTTP:
+		return []string{label}
+	case proto.KindSSH:
+		return sshAddrs(client, name)
+	}
+	return nil
+}
+
+// claimLabels makes labels belong to (client, name) in the store before the tunnel is registered, outside
+// Server.mu. It returns the labels this call claimed for the first time, so that a registration that then fails can
+// take them back. A label that belongs to another pair is name_taken.
+func (s *Server) claimLabels(ctx context.Context, c *session, name string, labels []string) ([]string, *proto.Error) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	if err := s.store.HoldPort(ctx, client, tunnel, port, s.now(), reservationTTL); err != nil {
-		s.log.Warn("cannot persist port reservation", "client", client, "tunnel", tunnel, "port", port, "err", err)
+	created, err := s.store.ClaimLabels(ctx, c.name, name, labels, s.now())
+	switch {
+	case err == nil:
+		return created, nil
+	case errors.Is(err, store.ErrLabelClaimed):
+		c.log.Warn("tunnel name refused: the label is claimed by another client", "name", name, "labels", labels)
+		return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "this name is reserved for another client's tunnel; " +
+			"pick another tunnel name (the server operator can free it with `portholed admin release-label`)"}
+	default:
+		c.log.Error("cannot claim tunnel labels", "name", name, "labels", labels, "err", err)
+		return nil, &proto.Error{Code: proto.CodeInternal, Message: "internal error"}
 	}
 }
 
-// releasePort starts the persisted reservation period of a closed tunnel. Same rules as holdPort.
-func (s *Server) releasePort(client, tunnel string, at time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-	defer cancel()
-	if err := s.store.ReleasePort(ctx, client, tunnel, at); err != nil {
-		s.log.Warn("cannot persist port release", "client", client, "tunnel", tunnel, "err", err)
+// unclaimLabels takes back labels claimed for a registration that failed afterwards.
+func (s *Server) unclaimLabels(client, tunnel string, labels []string) {
+	if len(labels) == 0 {
+		return
 	}
+	s.persist.add(func(ctx context.Context) {
+		if err := s.store.UnclaimLabels(ctx, client, tunnel, labels); err != nil {
+			s.log.Warn("cannot take back label claims", "client", client, "tunnel", tunnel, "err", err)
+		}
+	})
 }
 
 // tunnel is a registered HTTP or TCP tunnel.
@@ -315,7 +365,7 @@ func (s *Server) publicURL(t *tunnel) string {
 	return s.cfg.PublicScheme + "://" + host
 }
 
-// createTunnel validates uniqueness and limits and, under the registry lock, allocates and starts the tunnel.
+// createTunnel claims the tunnel's labels for good, then validates uniqueness and limits and registers the tunnel.
 func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit int) (*tunnel, *proto.Error) {
 	t := &tunnel{
 		id:      randHex(8),
@@ -333,6 +383,22 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		}
 	}
 
+	// The permanent claim comes first and is taken outside the registry lock: it is a store write.
+	claimed, perr := s.claimLabels(c.ctx, c, name, claimedLabels(c.name, m.Kind, name, t.label))
+	if perr != nil {
+		return nil, perr
+	}
+	t, perr = s.addTunnel(c, m, t, limit)
+	if perr != nil {
+		s.unclaimLabels(c.name, name, claimed)
+		return nil, perr
+	}
+	return t, nil
+}
+
+// addTunnel checks uniqueness and limits and, under the registry lock, allocates and starts t.
+func (s *Server) addTunnel(c *session, m *proto.Register, t *tunnel, limit int) (*tunnel, *proto.Error) {
+	name := t.name
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || c.dead {

@@ -298,21 +298,27 @@ func TestTCPPortAllocation(t *testing.T) {
 			t.Errorf("port %d: got %+v, want port_unavailable", p, e)
 		}
 	}
-	// A specific free port inside the range works.
+	// A specific free port inside the range works. Which port is free can change at any moment, so try them in turn
+	// and take the first that the server grants; port_unavailable only means that somebody else got there first.
 	want := 0
 	for p := h.lo; p <= h.hi && want == 0; p++ {
-		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p)); err == nil && p != port {
-			_ = ln.Close()
+		if p == port {
+			continue
+		}
+		switch m := c.register(proto.KindTCP, "pinned", p).(type) {
+		case *proto.Registered:
+			if got := publicPort(t, m.PublicURL); got != p {
+				t.Errorf("requested %d, got %d", p, got)
+			}
 			want = p
-		} else if err == nil {
-			_ = ln.Close()
+		case *proto.Error:
+			if m.Code != proto.CodePortUnavailable {
+				t.Fatalf("port %d: %+v", p, m)
+			}
 		}
 	}
 	if want == 0 {
 		t.Skip("no second free port in the range")
-	}
-	if got := publicPort(t, c.mustRegister(proto.KindTCP, "pinned", want).PublicURL); got != want {
-		t.Errorf("requested %d, got %d", want, got)
 	}
 
 	// After unregister the same name gets the same port back, even if another port is just as free.
@@ -388,12 +394,19 @@ func TestNameTaken(t *testing.T) {
 	if e := ca.registerErr(proto.KindHTTP, "b", 0); e.Code != proto.CodeNameTaken {
 		t.Errorf("same session: got %+v, want name_taken", e)
 	}
-	// A different name is fine, and once the owner lets go the label is free for others.
+	// A different name is fine. Closing the tunnel does not give the label away (it is claimed for good); the
+	// operator's release does.
 	a.mustRegister(proto.KindHTTP, "other", 0)
 	if err := ca.write(&proto.Unregister{TunnelID: first.TunnelID}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "unregister", func() bool { return h.srv.tunnelCount() == 1 })
+	if e := a.registerErr(proto.KindHTTP, "b-c", 0); e.Code != proto.CodeNameTaken {
+		t.Errorf("after unregister: got %+v, want name_taken", e)
+	}
+	if err := h.st.ReleaseLabel(context.Background(), "b-c-a"); err != nil {
+		t.Fatal(err)
+	}
 	a.mustRegister(proto.KindHTTP, "b-c", 0)
 }
 
