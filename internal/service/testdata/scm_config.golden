@@ -1,0 +1,13 @@
+name: porthole
+display name: porthole tunnel client
+description: porthole tunnel client daemon: keeps tunnels to a portholed server up and serves the local API.
+command line: "C:\Program Files\porthole\porthole.exe" daemon --config C:\ProgramData\porthole\config.yaml --tunnels C:\ProgramData\porthole\tunnels.yaml --allow porthole-users
+account: LocalSystem
+start type: automatic, delayed
+error control: normal
+recovery 1: restart after 1s
+recovery 2: restart after 5s
+recovery 3: restart after 30s
+recovery reset period: 24h0m0s
+recovery on non-crash failures: true
+event log source: porthole (error, warning, information)

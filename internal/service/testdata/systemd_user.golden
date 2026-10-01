@@ -1,0 +1,48 @@
+# systemd user unit for the porthole client daemon, an example for a laptop or a workstation where you do not want a
+# system-wide service (no root, no extra user). Use the system unit, deploy/porthole.service, on servers.
+#
+# Install and start:
+#   mkdir -p ~/.config/systemd/user ~/.config/porthole
+#   cp porthole.user.service ~/.config/systemd/user/porthole.service
+#   porthole login https://tun.example.com ph_...        # writes ~/.config/porthole/config.yaml
+#   cp tunnels.example.yaml ~/.config/porthole/tunnels.yaml   # and edit it
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now porthole
+#   loginctl enable-linger "$USER"      # optional: keep it running without a login session
+#
+# The unit finds the binary by name in systemd's default search path (/usr/local/bin, /usr/bin, ...); for
+# ~/.local/bin use `systemctl --user edit porthole` and set ExecStart= to the full path. Reload after editing the
+# tunnels file: `systemctl --user reload porthole`. `porthole http 3000` finds the socket below on its own.
+
+[Unit]
+Description=porthole tunnel client daemon (user)
+Documentation=https://github.com/eto-a/porthole
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/home/me/.local/bin/porthole daemon --config "/home/me/my configs/config.yaml" --socket /run/user/1000/porthole/porthole.sock
+ExecReload=/home/me/.local/bin/porthole reload --socket /run/user/1000/porthole/porthole.sock
+Restart=on-failure
+RestartSec=2s
+# Exit code 78 (EX_CONFIG): the configuration is unusable; restarting would not help.
+RestartPreventExitStatus=78
+TimeoutStopSec=30s
+UMask=0077
+
+# %t is $XDG_RUNTIME_DIR (/run/user/<uid>); the directory is private to you.
+RuntimeDirectory=porthole
+RuntimeDirectoryMode=0700
+
+# Only options that work in a user instance without extra privileges (seccomp based); the file system ones need a
+# user namespace and are left out.
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target
