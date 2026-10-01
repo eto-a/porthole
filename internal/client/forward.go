@@ -16,59 +16,59 @@ import (
 
 // acceptLoop accepts data streams opened by the server until the session ends. Each stream is served in its own
 // goroutine, tracked by wg; at most maxStreams are served at once, extra streams are closed immediately.
-func (r *runner) acceptLoop(ctx context.Context, sess transport.Session, table *tunnelTable, wg *sync.WaitGroup) {
-	sem := make(chan struct{}, r.t.maxStreams)
+func (m *Manager) acceptLoop(ctx context.Context, sess transport.Session, table *tunnelTable, wg *sync.WaitGroup) {
+	sem := make(chan struct{}, m.t.maxStreams)
 	for {
 		c, err := sess.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
-				r.log.Debug("accept loop stopped", "err", err)
+				m.log.Debug("accept loop stopped", "err", err)
 			}
 			return
 		}
 		select {
 		case sem <- struct{}{}:
 		default:
-			r.log.Warn("too many concurrent streams, rejecting one", "limit", r.t.maxStreams)
+			m.log.Warn("too many concurrent streams, rejecting one", "limit", m.t.maxStreams)
 			_ = c.Close()
 			continue
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			r.handleStream(ctx, c, table)
+			m.handleStream(ctx, c, table)
 		})
 	}
 }
 
 // handleStream serves one data stream: read the header, dial the local target, copy both ways.
-func (r *runner) handleStream(ctx context.Context, c net.Conn, table *tunnelTable) {
+func (m *Manager) handleStream(ctx context.Context, c net.Conn, table *tunnelTable) {
 	defer c.Close()
 
-	_ = c.SetReadDeadline(time.Now().Add(r.t.headerTimeout))
+	_ = c.SetReadDeadline(time.Now().Add(m.t.headerTimeout))
 	hdr, err := proto.ReadAs[*proto.StreamHeader](c)
 	if err != nil {
-		r.log.Warn("bad stream header", "err", err)
+		m.log.Warn("bad stream header", "err", err)
 		return
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
 	e, ok := table.lookup(hdr.TunnelID)
 	if !ok {
-		r.log.Warn("stream for unknown tunnel", "tunnel_id", hdr.TunnelID)
+		m.log.Warn("stream for unknown tunnel", "tunnel_id", hdr.TunnelID)
 		return
 	}
 
-	d := net.Dialer{Timeout: r.t.localDialTimeout}
+	d := net.Dialer{Timeout: m.t.localDialTimeout}
 	local, err := d.DialContext(ctx, "tcp", e.local)
 	if err != nil {
-		r.log.Warn("cannot reach local target", "tunnel", e.name, "local", e.local, "err", err)
+		m.log.Warn("cannot reach local target", "tunnel", e.name, "local", e.local, "err", err)
 		return
 	}
 	defer local.Close()
 
-	r.log.Debug("stream open", "tunnel", e.name, "visitor", hdr.RemoteAddr)
+	m.log.Debug("stream open", "tunnel", e.name, "visitor", hdr.RemoteAddr)
 	pipe(ctx, c, local)
-	r.log.Debug("stream closed", "tunnel", e.name, "visitor", hdr.RemoteAddr)
+	m.log.Debug("stream closed", "tunnel", e.name, "visitor", hdr.RemoteAddr)
 }
 
 // pipe copies between stream and local in both directions with half-close semantics: when one side reaches EOF

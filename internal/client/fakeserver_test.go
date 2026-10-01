@@ -6,9 +6,11 @@ package client
 import (
 	"encoding/binary"
 	"errors"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -32,6 +34,8 @@ type fakeServer struct {
 	handler func(*srvConn)
 	// regError, if set, may refuse a registration of the n-th connection (1-based).
 	regError func(n int, reg *proto.Register) *proto.Error
+	// regGate, if set, makes the default handler wait for one token per register message before it answers.
+	regGate chan struct{}
 
 	mu     sync.Mutex
 	conns  []*srvConn
@@ -53,6 +57,10 @@ type srvConn struct {
 	regs    []*proto.Register
 	tunnels map[string]string // tunnel name -> id
 	pongs   chan uint64
+	regCh   chan *proto.Register // every register message, as soon as it is read
+	unregCh chan string          // tunnel id of every unregister message
+	unregs  []string
+	live    map[string]string // tunnel name -> id of tunnels registered and not unregistered
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -75,6 +83,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		c := &srvConn{
 			fs: fs, n: len(fs.conns) + 1, at: time.Now(), sess: sess,
 			tunnels: map[string]string{}, pongs: make(chan uint64, 256),
+			regCh: make(chan *proto.Register, 256), unregCh: make(chan string, 256), live: map[string]string{},
 		}
 		fs.conns = append(fs.conns, c)
 		fs.mu.Unlock()
@@ -189,7 +198,31 @@ func (fs *fakeServer) defaultHandler(c *srvConn) {
 			return
 		}
 		switch m := m.(type) {
+		case *proto.Unregister:
+			c.mu.Lock()
+			c.unregs = append(c.unregs, m.TunnelID)
+			for name, id := range c.live {
+				if id == m.TunnelID {
+					delete(c.live, name)
+				}
+			}
+			c.mu.Unlock()
+			select {
+			case c.unregCh <- m.TunnelID:
+			default:
+			}
 		case *proto.Register:
+			select {
+			case c.regCh <- m:
+			default:
+			}
+			if fs.regGate != nil {
+				select {
+				case <-fs.regGate:
+				case <-c.sess.Done():
+					return
+				}
+			}
 			if fs.regError != nil {
 				if e := fs.regError(c.n, m); e != nil {
 					e.ReqID = m.ReqID
@@ -199,6 +232,12 @@ func (fs *fakeServer) defaultHandler(c *srvConn) {
 				}
 			}
 			c.mu.Lock()
+			if _, taken := c.live[m.Name]; taken {
+				c.mu.Unlock()
+				_ = c.send(&proto.Error{ReqID: m.ReqID, Code: proto.CodeNameTaken, Message: "name " + m.Name + " is taken"})
+				answered++
+				break
+			}
 			c.regs = append(c.regs, m)
 			id := "t" + strconv.Itoa(c.n) + "-" + strconv.Itoa(len(c.regs))
 			name := m.Name
@@ -206,6 +245,7 @@ func (fs *fakeServer) defaultHandler(c *srvConn) {
 				name = "auto-" + strconv.Itoa(len(c.regs))
 			}
 			c.tunnels[name] = id
+			c.live[name] = id
 			c.mu.Unlock()
 			url := "https://" + name + "-home.tun.test"
 			if m.Kind == proto.KindTCP {
@@ -275,4 +315,17 @@ func newToken(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return tok.String()
+}
+
+func (c *srvConn) unregistrations() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.unregs...)
+}
+
+// liveTunnels returns the names of the tunnels that are registered and not unregistered, sorted.
+func (c *srvConn) liveTunnels() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Sorted(maps.Keys(c.live))
 }
