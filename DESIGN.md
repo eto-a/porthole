@@ -185,10 +185,11 @@ wildcard, obtained once rather than per tunnel (boringproxy issues one per domai
 - v0.1: `porthole http|tcp|ssh` runs in the foreground (like ngrok), prints the public URL, reconnects with
   exponential backoff + jitter (base 1 s, max 60 s, honours `retry_after`), and re-registers its tunnels after
   reconnect.
-- v0.2: `porthole daemon` (systemd unit `porthole.service`) holds the session; the CLI talks to it over a unix
-  socket (tailscale `tailscaled` model); tunnels persist across reboots.
-- v0.2: a client config file declares several tunnels at once (`porthole start` reads `tunnels.yaml`), like
-  `ngrok.yml` and frp's `frpc.toml`; the daemon is driven by the same file.
+- v0.2: `porthole daemon` (systemd unit `porthole.service`) holds the session and serves a local HTTP+JSON API on a
+  unix socket (tailscale `tailscaled` model); `porthole http|tcp|ssh` adds an attached tunnel to a running daemon and
+  falls back to the in-process v0.1 behaviour when there is none. Details: [ADR 0002](docs/adr/0002-client-daemon-and-tunnels-file.md).
+- v0.2: `tunnels.yaml` declares several tunnels at once (`porthole start` in the foreground, or the daemon), like
+  `ngrok.yml` and frp's `frpc.toml`; credentials stay in `config.yaml`, so the tunnels file holds no secrets.
 
 ### 3.7 Lifecycle and resource safety
 
