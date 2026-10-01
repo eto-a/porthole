@@ -10,6 +10,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,7 +54,30 @@ type Options struct {
 	// OnEvent, if set, is called for every Event. It is always called from the goroutine that runs Run, so it
 	// needs no locking against other events, but it must not block for long.
 	OnEvent func(Event)
+	// MaxInitialAttempts bounds the connection attempts made before the first session is established in this
+	// process: Run gives up with an *InitialConnectError once that many attempts failed, or at once when the
+	// failure cannot be fixed by retrying (unknown host, TLS certificate verification). Zero or a negative value
+	// means no limit. Once a session has been established (the server accepted the handshake) the limit no longer
+	// applies and Run reconnects forever. DefaultMaxInitialAttempts is the value the porthole CLI uses.
+	MaxInitialAttempts int
 }
+
+// DefaultMaxInitialAttempts is the default for Options.MaxInitialAttempts in the porthole CLI.
+const DefaultMaxInitialAttempts = 5
+
+// InitialConnectError is returned by Run when no session could be established: the attempt limit was reached
+// or the failure is not retryable. It unwraps to the error of the last attempt.
+type InitialConnectError struct {
+	URL      string // WebSocket endpoint that was dialled
+	Attempts int    // number of failed attempts
+	Err      error  // error of the last attempt
+}
+
+func (e *InitialConnectError) Error() string {
+	return fmt.Sprintf("cannot connect to %s (%d failed attempt(s)): %v", e.URL, e.Attempts, e.Err)
+}
+
+func (e *InitialConnectError) Unwrap() error { return e.Err }
 
 // Event is a state change reported through Options.OnEvent. The concrete types are Connected, TunnelReady,
 // TunnelClosed and Disconnected.
@@ -83,6 +107,11 @@ type TunnelClosed struct {
 type Disconnected struct {
 	Err     error
 	RetryIn time.Duration
+	// Attempt is the number of the failed connection attempt (1-based) while no session has been established yet in
+	// this process; it is 0 once one has. MaxAttempts is the limit in effect (Options.MaxInitialAttempts); it is
+	// 0 when there is no limit.
+	Attempt     int
+	MaxAttempts int
 }
 
 func (Connected) isEvent()    {}
@@ -128,8 +157,11 @@ func defaultTuning() tuning {
 //
 // Unrecoverable errors are returned as-is (use errors.As with *proto.Error to inspect them): a non-retryable
 // server error (unauthorized, token_expired, token_revoked, unsupported_version), or a registration refused
-// on the first connection (name_taken, forbidden, invalid_request, ...). Everything else, including losing the
-// connection, is retried with exponential backoff and full jitter.
+// on the first connection (name_taken, forbidden, invalid_request, ...). Before the first session has been
+// established, Run also gives up with an *InitialConnectError after Options.MaxInitialAttempts failed attempts, or
+// at once on a failure that retrying cannot fix (unknown host, TLS certificate verification). Everything else,
+// including losing the connection of an established session, is retried with exponential backoff and full
+// jitter.
 func Run(ctx context.Context, opts Options) error {
 	return run(ctx, opts, defaultTuning())
 }
@@ -152,6 +184,7 @@ type runner struct {
 	// Owned by the goroutine that runs loop.
 	reqID      int
 	registered bool // all tunnels were registered at least once
+	everUp     bool // the server accepted the handshake at least once
 }
 
 func newRunner(opts Options, t tuning, needTunnels bool) (*runner, error) {
@@ -192,6 +225,7 @@ func (e *permanentError) Unwrap() error { return e.err }
 
 func (r *runner) loop(ctx context.Context) error {
 	attempt := 0
+	initialFailures := 0
 	for {
 		var at attemptInfo
 		err := r.session(ctx, &at)
@@ -200,6 +234,9 @@ func (r *runner) loop(ctx context.Context) error {
 		}
 		if err == nil {
 			err = errors.New("session ended")
+		}
+		if !at.connectedAt.IsZero() {
+			r.everUp = true
 		}
 		var pe *permanentError
 		if errors.As(err, &pe) {
@@ -214,6 +251,16 @@ func (r *runner) loop(ctx context.Context) error {
 			retryAfter = time.Duration(max(perr.RetryAfterMS, 0)) * time.Millisecond
 		}
 
+		initialAttempt := 0
+		if !r.everUp {
+			initialFailures++
+			initialAttempt = initialFailures
+			limit := r.opts.MaxInitialAttempts
+			if isPermanentDialError(err) || (limit > 0 && initialFailures >= limit) {
+				return &InitialConnectError{URL: r.url, Attempts: initialFailures, Err: err}
+			}
+		}
+
 		if !at.connectedAt.IsZero() && time.Since(at.connectedAt) >= r.t.stableAfter {
 			attempt = 0
 		}
@@ -222,11 +269,34 @@ func (r *runner) loop(ctx context.Context) error {
 		delay = max(delay, min(retryAfter, r.t.maxRetryAfter))
 
 		r.log.Info("disconnected", "err", err, "retry_in", delay)
-		r.emit(Disconnected{Err: err, RetryIn: delay})
+		ev := Disconnected{Err: err, RetryIn: delay}
+		if initialAttempt > 0 {
+			ev.Attempt, ev.MaxAttempts = initialAttempt, max(r.opts.MaxInitialAttempts, 0)
+		}
+		r.emit(ev)
 		if !sleep(ctx, delay) {
 			return nil
 		}
 	}
+}
+
+// isPermanentDialError reports whether err means that retrying the same URL cannot help: the host name does not
+// exist, or the server certificate is not trusted or does not match the host.
+func isPermanentDialError(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) && dns.IsNotFound && !dns.IsTemporary {
+		return true
+	}
+	return IsTLSVerifyError(err)
+}
+
+// IsTLSVerifyError reports whether err is a failure to verify the server certificate.
+func IsTLSVerifyError(err error) bool {
+	var cve *tls.CertificateVerificationError
+	var unknownAuth x509.UnknownAuthorityError
+	var hostErr x509.HostnameError
+	var certErr x509.CertificateInvalidError
+	return errors.As(err, &cve) || errors.As(err, &unknownAuth) || errors.As(err, &hostErr) || errors.As(err, &certErr)
 }
 
 // backoffDelay returns a random delay in [0, min(max, base*2^attempt)) ("full jitter").

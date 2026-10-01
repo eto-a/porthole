@@ -258,6 +258,9 @@ $ porthole ssh                        # TCP tunnel to localhost:22
 ```
 
 Commands run in the foreground, print the public address, and reconnect automatically if the connection drops.
+If the server cannot be reached at all when the command starts (wrong URL, server down), it gives up after 5
+attempts, or at once on an unknown host name or an untrusted certificate; change the limit with
+`--max-initial-attempts N` (`0` retries forever). Once connected, the command keeps reconnecting.
 
 CLI summary:
 
