@@ -10,6 +10,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/eto-a/porthole/internal/traffic"
 )
 
 const (
@@ -42,6 +44,9 @@ func (t *tunnel) acceptLoop() {
 
 		if !t.acquire() {
 			c.log.Warn("tcp tunnel at its connection limit, dropping connection", "tunnel", t.id, "limit", cap(t.sem))
+			entry := t.connEntry(traffic.KindTCP, conn.RemoteAddr().String())
+			entry.Outcome = traffic.OutcomeLimit
+			c.srv.recordConn(entry, c.srv.now())
 			_ = conn.Close()
 			continue
 		}
@@ -56,10 +61,15 @@ func (t *tunnel) acceptLoop() {
 func (t *tunnel) handleConn(conn net.Conn) {
 	c := t.sess
 	remote := conn.RemoteAddr().String()
+	s := c.srv
+	start := s.now()
+	entry := t.connEntry(traffic.KindTCP, remote)
 	stream, err := t.openStream(remote)
 	if err != nil {
 		c.log.Debug("open stream for tcp visitor failed", "tunnel", t.id, "remote", remote, "err", err)
 		_ = conn.Close()
+		entry.Outcome = traffic.OutcomeRefused
+		s.recordConn(entry, start)
 		return
 	}
 	// Closing the tunnel (unregister, session end) must tear down in-flight connections too.
@@ -68,20 +78,30 @@ func (t *tunnel) handleConn(conn net.Conn) {
 		_ = stream.Close()
 	})
 	defer stop()
-	pipe(conn, stream)
+	entry.BytesIn, entry.BytesOut = pipe(conn, stream)
+	entry.Outcome = traffic.OutcomeOK
+	s.recordConn(entry, start)
+}
+
+// connEntry starts the journal entry of a connection to t from the visitor address remote.
+func (t *tunnel) connEntry(kind, remote string) traffic.Conn {
+	return traffic.Conn{TunnelID: t.id, Tunnel: t.name, Client: t.sess.name, Kind: kind, VisitorIP: ipOf(remote)}
 }
 
 // pipe copies a<->b. A clean EOF in one direction half-closes the other side so request/response protocols that
 // shut down their write side still receive the answer; any error closes both sides. Both are closed on return.
-func pipe(a, b net.Conn) {
+// It returns the number of bytes copied from a to b and from b to a.
+func pipe(a, b net.Conn) (aToB, bToA int64) {
 	defer func() {
 		_ = a.Close()
 		_ = b.Close()
 	}()
 	var wg sync.WaitGroup
-	cp := func(dst, src net.Conn) {
+	cp := func(dst, src net.Conn, n *int64) {
 		defer wg.Done()
-		if _, err := io.Copy(dst, src); err != nil {
+		var err error
+		*n, err = io.Copy(dst, src)
+		if err != nil {
 			_ = a.Close()
 			_ = b.Close()
 			return
@@ -89,9 +109,10 @@ func pipe(a, b net.Conn) {
 		halfClose(dst)
 	}
 	wg.Add(2)
-	go cp(a, b)
-	go cp(b, a)
+	go cp(a, b, &bToA)
+	go cp(b, a, &aToB)
 	wg.Wait()
+	return aToB, bToA
 }
 
 // halfClose shuts down the write side of c. For TCP that is CloseWrite; yamux streams implement Close as a

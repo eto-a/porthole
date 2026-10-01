@@ -50,6 +50,42 @@ func TestSSHGateway(t *testing.T) {
 	}
 }
 
+func TestTraffic(t *testing.T) {
+	const base = "version: 1\ndomain: a.example\ndata_dir: /tmp/x\n"
+	c, err := Load(write(t, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Traffic.MaxRequests != 10000 || c.Traffic.MaxConns != 10000 {
+		t.Fatalf("default traffic: %+v", c.Traffic)
+	}
+	c, err = Load(write(t, base+"traffic:\n  max_requests: 0\n  max_conns: 50\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Traffic.MaxRequests != 0 || c.Traffic.MaxConns != 50 {
+		t.Fatalf("file traffic: %+v", c.Traffic)
+	}
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_REQUESTS", "7")
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_CONNS", "0")
+	c, err = Load(write(t, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Traffic.MaxRequests != 7 || c.Traffic.MaxConns != 0 {
+		t.Fatalf("env traffic: %+v", c.Traffic)
+	}
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_REQUESTS", "-1")
+	if _, err := Load(write(t, base)); err == nil || !strings.Contains(err.Error(), "traffic.max_requests") {
+		t.Fatalf("negative max_requests: %v", err)
+	}
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_REQUESTS", "1")
+	t.Setenv("PORTHOLED_TRAFFIC_MAX_CONNS", "-1")
+	if _, err := Load(write(t, base)); err == nil || !strings.Contains(err.Error(), "traffic.max_conns") {
+		t.Fatalf("negative max_conns: %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	_, err := Load(write(t, "version: 1\ndomain: a.example\ndomian: typo\n"))
 	if err == nil || !strings.Contains(err.Error(), "domian") {
