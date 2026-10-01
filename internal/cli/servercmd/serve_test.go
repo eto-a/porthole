@@ -25,7 +25,14 @@ func (*nopStore) GetToken(context.Context, string) (*store.Token, error) {
 func (*nopStore) ListTokens(context.Context) ([]*store.Token, error)   { return nil, nil }
 func (*nopStore) RevokeToken(context.Context, string, time.Time) error { return nil }
 func (*nopStore) TouchToken(context.Context, string, time.Time) error  { return nil }
-func (s *nopStore) Close() error                                       { s.closed = true; return nil }
+func (*nopStore) HoldPort(context.Context, string, string, int, time.Time, time.Duration) error {
+	return nil
+}
+func (*nopStore) ReleasePort(context.Context, string, string, time.Time) error { return nil }
+func (*nopStore) LoadPortReservations(context.Context, time.Time, time.Duration) ([]store.PortReservation, error) {
+	return nil, nil
+}
+func (s *nopStore) Close() error { s.closed = true; return nil }
 
 func testConfig() (*config.Config, error) {
 	c := config.Default()

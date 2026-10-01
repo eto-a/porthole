@@ -39,10 +39,18 @@ type fakeStore struct {
 	tokens  map[string]*store.Token
 	touched map[string]time.Time
 	failGet atomic.Bool
+
+	ports map[string]*store.PortReservation // by "client/tunnel"
+	live  map[string]bool                   // reservations whose tunnel has not been released
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{tokens: map[string]*store.Token{}, touched: map[string]time.Time{}}
+	return &fakeStore{
+		tokens:  map[string]*store.Token{},
+		touched: map[string]time.Time{},
+		ports:   map[string]*store.PortReservation{},
+		live:    map[string]bool{},
+	}
 }
 
 func clone(t *store.Token) *store.Token {
@@ -90,6 +98,42 @@ func (f *fakeStore) TouchToken(_ context.Context, id string, at time.Time) error
 	defer f.mu.Unlock()
 	f.touched[id] = at
 	return nil
+}
+
+func (f *fakeStore) HoldPort(_ context.Context, client, tunnel string, port int, _ time.Time, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ports[client+"/"+tunnel] = &store.PortReservation{Client: client, Tunnel: tunnel, Port: port}
+	f.live[client+"/"+tunnel] = true
+	return nil
+}
+
+func (f *fakeStore) ReleasePort(_ context.Context, client, tunnel string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r := f.ports[client+"/"+tunnel]; r != nil {
+		r.ReleasedAt = at
+		delete(f.live, client+"/"+tunnel)
+	}
+	return nil
+}
+
+func (f *fakeStore) LoadPortReservations(_ context.Context, now time.Time, ttl time.Duration) ([]store.PortReservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.PortReservation
+	for k, r := range f.ports {
+		if f.live[k] {
+			r.ReleasedAt = now
+			delete(f.live, k)
+		}
+		if !r.ReleasedAt.Add(ttl).After(now) {
+			delete(f.ports, k)
+			continue
+		}
+		out = append(out, *r)
+	}
+	return out, nil
 }
 
 func (f *fakeStore) Close() error { return nil }

@@ -503,8 +503,8 @@ func TestReopenKeepsDataAndMigrations(t *testing.T) {
 			t.Errorf("token lost after reopen: %v", err)
 		}
 		var n int
-		if err := s2.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
-			t.Errorf("schema_migrations rows = %d, %v; want 1", n, err)
+		if err := s2.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != len(testMigrations(t)) {
+			t.Errorf("schema_migrations rows = %d, %v; want one per migration", n, err)
 		}
 		_ = s2.Close()
 	}
@@ -534,8 +534,8 @@ func TestConcurrentFirstOpen(t *testing.T) {
 	}
 	if errs[0] == nil {
 		var cnt int
-		if err := stores[0].db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&cnt); err != nil || cnt != 1 {
-			t.Errorf("schema_migrations rows = %d, %v; want 1", cnt, err)
+		if err := stores[0].db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&cnt); err != nil || cnt != len(testMigrations(t)) {
+			t.Errorf("schema_migrations rows = %d, %v; want one per migration", cnt, err)
 		}
 	}
 }
@@ -566,6 +566,15 @@ func TestOpenErrors(t *testing.T) {
 	if _, err := Open(ctx, filepath.Join(f, "sub", "db")); err == nil {
 		t.Error("path under a regular file: want error")
 	}
+}
+
+func testMigrations(t *testing.T) []migration {
+	t.Helper()
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ms
 }
 
 func TestLoadMigrations(t *testing.T) {
