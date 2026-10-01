@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -91,11 +93,12 @@ type CheckResult struct {
 // Check dials the server and performs the handshake only, then disconnects. It uses Options.ServerURL, Token,
 // Version, Logger and TLSConfig; Tunnels are ignored.
 func Check(ctx context.Context, opts Options) (CheckResult, error) {
-	r, err := newRunner(opts, defaultTuning(), false)
+	opts.Tunnels = nil
+	m, err := newManager(opts, defaultTuning(), false)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	sess, _, ok, err := r.handshake(ctx)
+	sess, _, ok, err := m.handshake(ctx)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -105,17 +108,17 @@ func Check(ctx context.Context, opts Options) (CheckResult, error) {
 
 // handshake dials the server, opens the control stream and exchanges hello/hello_ok. The returned session is
 // closed automatically when ctx ends; on error it is closed before returning.
-func (r *runner) handshake(ctx context.Context) (transport.Session, net.Conn, *proto.HelloOK, error) {
-	dctx, cancel := context.WithTimeout(ctx, r.t.dialTimeout)
+func (m *Manager) handshake(ctx context.Context) (transport.Session, net.Conn, *proto.HelloOK, error) {
+	dctx, cancel := context.WithTimeout(ctx, m.t.dialTimeout)
 	defer cancel()
-	r.log.Debug("dialing", "url", r.url)
-	sess, err := transport.DialWebSocket(dctx, r.url, transport.DialOptions{TLSConfig: r.opts.TLSConfig})
+	m.log.Debug("dialing", "url", m.url)
+	sess, err := transport.DialWebSocket(dctx, m.url, transport.DialOptions{TLSConfig: m.opts.TLSConfig})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	context.AfterFunc(ctx, func() { _ = sess.Close() })
 
-	ok, ctl, err := r.hello(sess)
+	ok, ctl, err := m.hello(sess)
 	if err != nil {
 		_ = sess.Close()
 		return nil, nil, nil, fmt.Errorf("handshake: %w", err)
@@ -123,16 +126,16 @@ func (r *runner) handshake(ctx context.Context) (transport.Session, net.Conn, *p
 	return sess, ctl, ok, nil
 }
 
-func (r *runner) hello(sess transport.Session) (*proto.HelloOK, net.Conn, error) {
+func (m *Manager) hello(sess transport.Session) (*proto.HelloOK, net.Conn, error) {
 	ctl, err := sess.Open()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open control stream: %w", err)
 	}
-	_ = ctl.SetDeadline(time.Now().Add(r.t.handshakeTimeout))
+	_ = ctl.SetDeadline(time.Now().Add(m.t.handshakeTimeout))
 	err = proto.WriteMessage(ctl, &proto.Hello{
 		ProtocolVersion: proto.Version,
-		Token:           r.opts.Token,
-		ClientVersion:   r.opts.Version,
+		Token:           m.opts.Token,
+		ClientVersion:   m.opts.Version,
 		OS:              runtime.GOOS + "/" + runtime.GOARCH,
 	})
 	if err != nil {
@@ -147,10 +150,10 @@ func (r *runner) hello(sess transport.Session) (*proto.HelloOK, net.Conn, error)
 }
 
 // session runs one connection from dial to teardown. It returns a non-nil error whenever ctx is still alive.
-func (r *runner) session(ctx context.Context, at *attemptInfo) error {
+func (m *Manager) session(ctx context.Context, at *attemptInfo) error {
 	cctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	sess, ctlStream, hok, err := r.handshake(cctx)
+	sess, ctlStream, hok, err := m.handshake(cctx)
 	if err != nil {
 		cancel()
 		return err
@@ -159,146 +162,304 @@ func (r *runner) session(ctx context.Context, at *attemptInfo) error {
 		cancel()
 		_ = sess.Close()
 		wg.Wait()
+		m.onSessionEnded()
 	}()
 
 	at.connectedAt = time.Now()
-	r.log.Info("connected", "client", hok.ClientName, "server_version", hok.ServerVersion, "session", hok.SessionID)
-	r.emit(Connected{ClientName: hok.ClientName})
+	m.log.Info("connected", "client", hok.ClientName, "server_version", hok.ServerVersion, "session", hok.SessionID)
+	m.onConnected(hok.ClientName)
+	m.flush()
 
 	hbInterval := time.Duration(hok.HeartbeatIntervalMS) * time.Millisecond
 	if hbInterval <= 0 {
 		hbInterval = proto.DefaultHBMilli * time.Millisecond
 	}
-	hbTimeout := hbInterval * time.Duration(r.t.heartbeatMisses)
+	hbTimeout := hbInterval * time.Duration(m.t.heartbeatMisses)
 
-	ctl := &ctlConn{c: ctlStream, timeout: r.t.writeTimeout}
+	ctl := &ctlConn{c: ctlStream, timeout: m.t.writeTimeout}
 	msgs := make(chan proto.Message, 16)
 	var readErr error
-	wg.Go(func() { r.readControl(cctx, ctlStream, msgs, &readErr) })
+	wg.Go(func() { m.readControl(cctx, ctlStream, msgs, &readErr) })
 
-	table := newTunnelTable()
-	pending := make(map[int]TunnelSpec, len(r.specs))
-	for _, sp := range r.specs {
-		r.reqID++
-		pending[r.reqID] = sp
-		err := ctl.send(&proto.Register{ReqID: r.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort})
-		if err != nil {
-			return fmt.Errorf("register %q: %w", sp.Name, err)
-		}
-	}
+	w := newWire(m, ctl)
+	wg.Go(func() { m.acceptLoop(cctx, sess, w.table, &wg) })
 
 	hb := time.NewTimer(hbTimeout)
 	defer hb.Stop()
-	regTimer := time.NewTimer(r.t.registerTimeout)
+	regTimer := time.NewTimer(m.t.registerTimeout)
+	regTimer.Stop()
 	defer regTimer.Stop()
-	regC := regTimer.C
-	accepting := false
+	var regC <-chan time.Time // non-nil while registrations are in flight
+	settled := false          // strict mode: every registration of this session has been answered
 
+	if err := w.reconcile(); err != nil {
+		return err
+	}
 	for {
+		// Arm the registration timer when a first request goes out, disarm it when the last reply is in.
+		switch {
+		case len(w.byReq) == 0:
+			regTimer.Stop()
+			regC = nil
+		case regC == nil:
+			regTimer.Reset(m.t.registerTimeout)
+			regC = regTimer.C
+		}
+		m.flush()
+
 		select {
 		case <-cctx.Done():
 			return cctx.Err()
 		case <-regC:
-			return fmt.Errorf("timed out waiting for %d tunnel registration(s)", len(pending))
+			return fmt.Errorf("timed out waiting for %d tunnel registration(s)", len(w.byReq))
 		case <-hb.C:
 			return fmt.Errorf("no ping from server for %s", hbTimeout)
-		case m, ok := <-msgs:
+		case <-m.kick:
+			if err := w.reconcile(); err != nil {
+				return err
+			}
+		case msg, ok := <-msgs:
 			if !ok {
 				return fmt.Errorf("control stream closed: %w", readErr)
 			}
-			switch m := m.(type) {
+			switch msg := msg.(type) {
 			case *proto.Ping:
-				if err := ctl.send(&proto.Pong{Seq: m.Seq}); err != nil {
+				if err := ctl.send(&proto.Pong{Seq: msg.Seq}); err != nil {
 					return fmt.Errorf("send pong: %w", err)
 				}
 				hb.Reset(hbTimeout)
 			case *proto.Registered:
-				sp, found := pending[m.ReqID]
-				if !found {
-					r.log.Warn("registered reply for unknown request", "req_id", m.ReqID)
-					break
+				if err := w.onRegistered(msg); err != nil {
+					return err
 				}
-				delete(pending, m.ReqID)
-				if m.TunnelID == "" {
-					return errors.New("server returned a tunnel without an id")
-				}
-				table.add(m.TunnelID, tunnelEntry{name: m.Name, local: sp.LocalAddr})
-				r.log.Info("tunnel ready", "name", m.Name, "url", m.PublicURL, "local", sp.LocalAddr)
-				r.emit(TunnelReady{Spec: sp, Name: m.Name, PublicURL: m.PublicURL})
 			case *proto.Error:
-				if sp, found := pending[m.ReqID]; found && m.ReqID != 0 {
-					delete(pending, m.ReqID)
-					if err := r.registrationFailed(sp, m); err != nil {
-						return err
-					}
+				handled, err := w.onError(msg)
+				if err != nil {
+					return err
+				}
+				if handled {
 					break
 				}
-				if m.Fatal || !m.Retryable() {
-					return fmt.Errorf("server error: %w", m)
+				if msg.Fatal || !msg.Retryable() {
+					return fmt.Errorf("server error: %w", msg)
 				}
-				r.log.Warn("server error", "err", m)
+				m.log.Warn("server error", "err", msg)
 			case *proto.TunnelClosed:
-				e, found := table.remove(m.TunnelID)
-				if !found {
-					r.log.Warn("tunnel_closed for unknown tunnel", "tunnel_id", m.TunnelID)
-					break
-				}
-				r.log.Info("tunnel closed by server", "name", e.name, "reason", m.Reason)
-				r.emit(TunnelClosed{Name: e.name, Reason: m.Reason})
-				if accepting && table.len() == 0 {
+				w.onTunnelClosed(msg)
+				if m.strict && settled && w.table.len() == 0 {
 					return errAllTunnelsClosed
 				}
 			default:
-				r.log.Debug("ignoring control message", "type", m.MsgType())
+				m.log.Debug("ignoring control message", "type", msg.MsgType())
 			}
 		}
 
-		if !accepting && len(pending) == 0 {
-			regC = nil
-			r.registered = true
-			if table.len() == 0 {
+		if m.strict && !settled && len(w.byReq) == 0 {
+			settled = true
+			m.regDone = true
+			if w.table.len() == 0 {
 				return errNoTunnels
 			}
-			accepting = true
-			wg.Go(func() { r.acceptLoop(cctx, sess, table, &wg) })
 		}
 	}
 }
 
-// registrationFailed decides what a refused registration means. A nil result means "carry on without this tunnel".
-func (r *runner) registrationFailed(sp TunnelSpec, e *proto.Error) error {
-	r.log.Warn("registration refused", "name", sp.Name, "code", e.Code, "message", e.Message)
-	if !e.Retryable() {
-		return fmt.Errorf("register tunnel %q: %w", sp.Name, e)
+// wireTunnel is the session-side view of one tunnel: a registration in flight or a registered tunnel.
+type wireTunnel struct {
+	rec   *tunnelRec // the desired record this registration was made for
+	spec  TunnelSpec
+	reqID int
+	id    string // server-assigned, empty while the registration is in flight
+	// stale marks an in-flight registration whose record was removed or replaced meanwhile. When its reply arrives
+	// the tunnel is unregistered again.
+	stale bool
+}
+
+// wire is the part of a session that follows the desired tunnel set. It is only used by the goroutine running
+// session, so it needs no locking; Manager.mu guards the desired set and the per-tunnel status it publishes.
+type wire struct {
+	m      *Manager
+	ctl    *ctlConn
+	table  *tunnelTable
+	byName map[string]*wireTunnel
+	byReq  map[int]*wireTunnel
+}
+
+func newWire(m *Manager, ctl *ctlConn) *wire {
+	return &wire{
+		m: m, ctl: ctl, table: newTunnelTable(),
+		byName: make(map[string]*wireTunnel),
+		byReq:  make(map[int]*wireTunnel),
 	}
-	if !r.registered {
-		wrapped := fmt.Errorf("register tunnel %q: %w", sp.Name, e)
+}
+
+// reconcile brings the server in line with the desired set: tunnels that are registered or in flight but no longer
+// desired are unregistered (in-flight ones as soon as their reply arrives), and pending tunnels without a
+// registration are registered, in the order they were added. A name whose old registration is still in flight is
+// skipped until that reply has been handled, which calls reconcile again.
+func (w *wire) reconcile() error {
+	m := w.m
+	var unregister []string
+	var register []*wireTunnel
+
+	m.mu.Lock()
+	for _, name := range slices.Sorted(maps.Keys(w.byName)) {
+		wt := w.byName[name]
+		if m.desired[name] == wt.rec {
+			continue
+		}
+		if wt.id == "" {
+			wt.stale = true
+			continue
+		}
+		unregister = append(unregister, wt.id)
+		w.table.remove(wt.id) // new streams for it are rejected from now on; running ones finish
+		delete(w.byName, name)
+	}
+	var todo []*tunnelRec
+	for name, rec := range m.desired {
+		if _, busy := w.byName[name]; !busy && rec.status == StatusPending {
+			todo = append(todo, rec)
+		}
+	}
+	slices.SortFunc(todo, func(a, b *tunnelRec) int { return a.seq - b.seq })
+	for _, rec := range todo {
+		m.reqID++
+		wt := &wireTunnel{rec: rec, spec: rec.spec, reqID: m.reqID}
+		w.byName[rec.spec.Name] = wt
+		w.byReq[wt.reqID] = wt
+		register = append(register, wt)
+	}
+	m.mu.Unlock()
+
+	for _, id := range unregister {
+		m.log.Info("unregistering tunnel", "tunnel_id", id)
+		if err := w.ctl.send(&proto.Unregister{TunnelID: id}); err != nil {
+			return fmt.Errorf("unregister: %w", err)
+		}
+	}
+	for _, wt := range register {
+		sp := wt.spec
+		err := w.ctl.send(&proto.Register{ReqID: wt.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort})
+		if err != nil {
+			return fmt.Errorf("register %q: %w", sp.Name, err)
+		}
+	}
+	return nil
+}
+
+// forget drops the wire entry wt if it is still the one registered under its name.
+func (w *wire) forget(wt *wireTunnel) {
+	if w.byName[wt.spec.Name] == wt {
+		delete(w.byName, wt.spec.Name)
+	}
+}
+
+func (w *wire) onRegistered(msg *proto.Registered) error {
+	m := w.m
+	wt, found := w.byReq[msg.ReqID]
+	if !found {
+		m.log.Warn("registered reply for unknown request", "req_id", msg.ReqID)
+		return nil
+	}
+	delete(w.byReq, msg.ReqID)
+	if msg.TunnelID == "" {
+		return errors.New("server returned a tunnel without an id")
+	}
+	// The record may have been removed or replaced after the request went out without reconcile having noticed yet
+	// (Remove and the reply race), so the desired set is consulted here, in the same critical section that
+	// publishes the new state.
+	m.mu.Lock()
+	current := m.desired[wt.spec.Name] == wt.rec
+	if current && !wt.stale {
+		wt.rec.status, wt.rec.url, wt.rec.err = StatusReady, msg.PublicURL, nil
+		m.postLocked(TunnelReady{Spec: wt.spec, Name: msg.Name, PublicURL: msg.PublicURL})
+	}
+	m.mu.Unlock()
+	if !current || wt.stale {
+		w.forget(wt)
+		m.log.Info("unregistering a tunnel that changed while it was being registered", "name", wt.spec.Name)
+		if err := w.ctl.send(&proto.Unregister{TunnelID: msg.TunnelID}); err != nil {
+			return fmt.Errorf("unregister: %w", err)
+		}
+		return w.reconcile()
+	}
+	wt.id = msg.TunnelID
+	w.table.add(msg.TunnelID, tunnelEntry{name: wt.spec.Name, local: wt.spec.LocalAddr})
+	m.log.Info("tunnel ready", "name", msg.Name, "url", msg.PublicURL, "local", wt.spec.LocalAddr)
+	return nil
+}
+
+// onError handles an error message that answers a registration. handled is false if it does not (the caller then
+// treats it as a session-level error). A non-nil error ends the session.
+func (w *wire) onError(e *proto.Error) (handled bool, err error) {
+	m := w.m
+	wt, found := w.byReq[e.ReqID]
+	if !found || e.ReqID == 0 {
+		return false, nil
+	}
+	delete(w.byReq, e.ReqID)
+	w.forget(wt)
+	sp := wt.spec
+	m.log.Warn("registration refused", "name", sp.Name, "code", e.Code, "message", e.Message)
+	werr := fmt.Errorf("register tunnel %q: %w", sp.Name, e)
+	if !e.Retryable() {
+		return true, werr // token problems and the like: the whole session is lost
+	}
+	if m.strict && !m.regDone {
 		switch e.Code {
 		case proto.CodeInternal, proto.CodeShuttingDown:
-			return wrapped // transient: reconnect
+			return true, werr // transient: reconnect
 		}
-		return &permanentError{err: wrapped}
+		return true, &permanentError{err: werr}
 	}
-	r.emit(TunnelClosed{Name: sp.Name, Reason: e.Error()})
-	return nil
+	m.mu.Lock()
+	if m.desired[sp.Name] == wt.rec && !wt.stale { // otherwise nobody wants this tunnel any more
+		wt.rec.status, wt.rec.url, wt.rec.err = StatusFailed, "", werr
+		m.postLocked(TunnelClosed{Name: sp.Name, Reason: e.Error()})
+	}
+	m.mu.Unlock()
+	return true, w.reconcile() // the name is free again: a replacement may be waiting for it
+}
+
+func (w *wire) onTunnelClosed(msg *proto.TunnelClosed) {
+	m := w.m
+	e, found := w.table.remove(msg.TunnelID)
+	if !found {
+		m.log.Warn("tunnel_closed for unknown tunnel", "tunnel_id", msg.TunnelID)
+		return
+	}
+	m.log.Info("tunnel closed by server", "name", e.name, "reason", msg.Reason)
+	wt := w.byName[e.name]
+	if wt == nil || wt.id != msg.TunnelID {
+		return
+	}
+	w.forget(wt)
+	m.mu.Lock()
+	if m.desired[e.name] == wt.rec {
+		wt.rec.status, wt.rec.url = StatusFailed, ""
+		wt.rec.err = fmt.Errorf("closed by the server: %s", msg.Reason)
+		m.postLocked(TunnelClosed{Name: e.name, Reason: msg.Reason})
+	}
+	m.mu.Unlock()
 }
 
 // readControl reads the control stream until it fails. It closes out when it stops; the reason is stored in *res
 // (valid after out is closed).
-func (r *runner) readControl(ctx context.Context, c net.Conn, out chan<- proto.Message, res *error) {
+func (m *Manager) readControl(ctx context.Context, c net.Conn, out chan<- proto.Message, res *error) {
 	defer close(out)
 	for {
-		m, err := proto.ReadMessage(c)
+		msg, err := proto.ReadMessage(c)
 		if err != nil {
 			if errors.Is(err, proto.ErrUnknownType) {
-				r.log.Warn("ignoring unknown control message", "err", err)
+				m.log.Warn("ignoring unknown control message", "err", err)
 				continue
 			}
 			*res = err
 			return
 		}
 		select {
-		case out <- m:
+		case out <- msg:
 		case <-ctx.Done():
 			*res = ctx.Err()
 			return
