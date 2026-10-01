@@ -24,6 +24,7 @@ import (
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/store"
+	"github.com/eto-a/porthole/internal/traffic"
 	"github.com/eto-a/porthole/internal/transport"
 )
 
@@ -80,6 +81,7 @@ type Server struct {
 	hsTimeout      time.Duration
 	sshIdle        time.Duration // gateway connections without channels are closed after this
 	limiter        *failLimiter
+	traffic        *traffic.Log
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,6 +126,7 @@ func New(opts Options) (*Server, error) {
 		hsTimeout:  opts.HandshakeTimeout,
 		sshIdle:    opts.SSHIdleTimeout,
 		limiter:    newFailLimiter(),
+		traffic:    traffic.NewLog(opts.Config.Traffic.MaxRequests, opts.Config.Traffic.MaxConns),
 		sessions:   make(map[string]*session),
 		labels:     make(map[string]*tunnel),
 		ports:      make(map[int]*tunnel),
@@ -371,8 +374,11 @@ func (s *Server) serveTunnel(w http.ResponseWriter, r *http.Request, label strin
 
 	switch {
 	case t != nil:
-		t.handler.ServeHTTP(w, r)
+		s.serveRecorded(t, w, r)
 	case offline:
+		if reqs := s.traffic.Requests(); reqs.Enabled() {
+			reqs.Add(s.requestEntry(r, s.now(), http.StatusBadGateway, 0, 0, 0, nil))
+		}
 		http.Error(w, "tunnel client is offline", http.StatusBadGateway)
 	default:
 		http.NotFound(w, r)

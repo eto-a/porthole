@@ -74,6 +74,21 @@ type Config struct {
 
 	// ShutdownGrace bounds graceful shutdown.
 	ShutdownGrace time.Duration `yaml:"shutdown_grace"`
+
+	// Traffic sizes the in-memory request and connection journals (ADR 0005).
+	Traffic Traffic `yaml:"traffic"`
+}
+
+// DefaultTrafficMax is the default size of each traffic journal.
+const DefaultTrafficMax = 10000
+
+// Traffic configures the in-memory ring buffers of the traffic journal. They are lost on restart.
+type Traffic struct {
+	// MaxRequests is the number of HTTP requests kept; 0 turns the request log off.
+	MaxRequests int `yaml:"max_requests"`
+
+	// MaxConns is the number of TCP and SSH connections kept; 0 turns the connection log off.
+	MaxConns int `yaml:"max_conns"`
 }
 
 // TLS modes (ADR 0004).
@@ -182,6 +197,7 @@ func Default() *Config {
 		DataDir:             "/var/lib/porthole",
 		MaxTunnelsPerClient: 10,
 		ShutdownGrace:       10 * time.Second,
+		Traffic:             Traffic{MaxRequests: DefaultTrafficMax, MaxConns: DefaultTrafficMax},
 	}
 }
 
@@ -233,6 +249,8 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 	ints := map[string]*int{
 		"PORTHOLED_PUBLIC_PORT":            &c.PublicPort,
 		"PORTHOLED_MAX_TUNNELS_PER_CLIENT": &c.MaxTunnelsPerClient,
+		"PORTHOLED_TRAFFIC_MAX_REQUESTS":   &c.Traffic.MaxRequests,
+		"PORTHOLED_TRAFFIC_MAX_CONNS":      &c.Traffic.MaxConns,
 	}
 	for k, p := range ints {
 		if v, ok := lookup(k); ok {
@@ -301,6 +319,12 @@ func (c *Config) Validate() error {
 	}
 	if c.ShutdownGrace < 0 {
 		errs = append(errs, errors.New("shutdown_grace: must not be negative"))
+	}
+	if c.Traffic.MaxRequests < 0 {
+		errs = append(errs, errors.New("traffic.max_requests: must not be negative"))
+	}
+	if c.Traffic.MaxConns < 0 {
+		errs = append(errs, errors.New("traffic.max_conns: must not be negative"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("config: %w", err)

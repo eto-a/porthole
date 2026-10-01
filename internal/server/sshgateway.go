@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/eto-a/porthole/internal/store"
+	"github.com/eto-a/porthole/internal/traffic"
 )
 
 // SSH gateway (ADR 0003): a listener that accepts only direct-tcpip channels and splices each of them into a data
@@ -189,6 +190,9 @@ func (s *Server) sshAcceptLoop(ln net.Listener, gw *sshGateway) {
 		case gw.conn <- struct{}{}:
 		default:
 			s.log.Warn("ssh gateway at its connection limit, dropping connection", "limit", sshMaxConns)
+			s.recordConn(traffic.Conn{
+				Kind: traffic.KindSSH, VisitorIP: ipOf(conn.RemoteAddr().String()), Outcome: traffic.OutcomeLimit,
+			}, s.now())
 			_ = conn.Close()
 			continue
 		}
@@ -219,12 +223,14 @@ func (s *Server) sshPasswordAuth(md ssh.ConnMetadata, password []byte) (*ssh.Per
 	ip := ipOf(md.RemoteAddr().String())
 	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
 		s.log.Warn("ssh gateway login refused: too many failed attempts", "ip", ip, "wait", wait)
+		s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeLimit}, s.now())
 		return nil, errors.New("too many failed attempts")
 	}
 	tok, perr, fromClient := s.authenticate(s.ctx, string(password))
 	if perr != nil {
 		if fromClient {
 			s.limiter.fail(ip, s.now())
+			s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeAuthFailed}, s.now())
 			s.log.Warn("ssh gateway login failed", "ip", ip, "code", perr.Code)
 		}
 		return nil, errors.New("invalid token")
@@ -277,6 +283,7 @@ func (s *Server) serveSSHConn(gw *sshGateway, conn net.Conn) {
 	ip := ipOf(conn.RemoteAddr().String())
 	if wait, blocked := s.limiter.blocked(ip, s.now()); blocked {
 		s.log.Warn("ssh gateway connection refused: too many failed attempts", "ip", ip, "wait", wait)
+		s.recordConn(traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ip, Outcome: traffic.OutcomeLimit}, s.now())
 		return
 	}
 	stop := context.AfterFunc(s.ctx, func() { _ = conn.Close() })
@@ -312,21 +319,29 @@ func (s *Server) serveSSHConn(gw *sshGateway, conn net.Conn) {
 
 // sshChannel handles one direct-tcpip channel. Every refusal, whatever the reason, is the same reply.
 func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGuard) {
-	deny := func() { _ = nc.Reject(ssh.ConnectionFailed, "connect failed") }
+	start := s.now()
+	entry := traffic.Conn{Kind: traffic.KindSSH, VisitorIP: ipOf(sc.RemoteAddr().String())}
+	deny := func(outcome string) {
+		_ = nc.Reject(ssh.ConnectionFailed, "connect failed")
+		entry.Outcome = outcome
+		s.recordConn(entry, start)
+	}
 	var p directTCPIP
 	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil {
-		deny()
+		deny(traffic.OutcomeRefused)
 		return
 	}
+	entry.Tunnel = p.Host // the requested target; replaced by the tunnel's own name once it is reached
 	t, ok := s.lookupSSH(p.Host)
 	if !ok || (t.private && !s.sshMayConnect(sc, t)) {
 		s.log.Debug("ssh gateway channel refused", "ip", ipOf(sc.RemoteAddr().String()), "target", p.Host)
-		deny()
+		deny(traffic.OutcomeRefused)
 		return
 	}
+	entry.TunnelID, entry.Tunnel, entry.Client = t.id, t.name, t.sess.name
 	if !t.acquire() {
 		t.sess.log.Warn("ssh tunnel at its channel limit", "tunnel", t.id, "limit", cap(t.sem))
-		deny()
+		deny(traffic.OutcomeLimit)
 		return
 	}
 	defer t.release()
@@ -338,7 +353,7 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 	stream, err := t.openStream(remote)
 	if err != nil {
 		t.sess.log.Debug("open stream for ssh channel failed", "tunnel", t.id, "remote", remote, "err", err)
-		deny()
+		deny(traffic.OutcomeRefused)
 		return
 	}
 	ch, chReqs, err := nc.Accept()
@@ -356,7 +371,9 @@ func (s *Server) sshChannel(sc *ssh.ServerConn, nc ssh.NewChannel, idle *idleGua
 		_ = stream.Close()
 	})
 	defer stop()
-	pipe(conn, stream)
+	entry.BytesIn, entry.BytesOut = pipe(conn, stream)
+	entry.Outcome = traffic.OutcomeOK
+	s.recordConn(entry, start)
 }
 
 // sshMayConnect reports whether the password session of sc may reach the private tunnel t: its token, re-read from
