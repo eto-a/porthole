@@ -66,9 +66,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Attest build provenance of archives and packages
+        id: attest-archives
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/checksums.txt # archives, deb and rpm packages
+      - name: Publish the provenance next to the release assets
+        # The attestation bundle (a Sigstore bundle with the in-toto SLSA provenance statement) is also attached to the
+        # release under a *.intoto.jsonl name. OpenSSF Scorecard (Signed-Releases) looks for that suffix in the release
+        # assets; `gh attestation verify` keeps working without it.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          BUNDLE: ${{ steps.attest-archives.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" dist/provenance.intoto.jsonl
+          gh release upload "$TAG" dist/provenance.intoto.jsonl --clobber
       - name: Attest build provenance of container images
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
