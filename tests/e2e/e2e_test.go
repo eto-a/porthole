@@ -218,14 +218,16 @@ func setup(t *testing.T, extraConfig ...string) (*env, string) {
 domain: localhost
 listen: "127.0.0.1:%d"
 public_scheme: http
-tls:
-  mode: off
 public_port: %d
 tcp_port_range: "%d-%d"
 tcp_bind_host: 127.0.0.1
 data_dir: %q
 shutdown_grace: 2s
 `, e.port, e.port, lo, lo+50, filepath.ToSlash(e.dataDir))
+	// Plain HTTP. Releases before tls.mode (ADR 0004) reject the key but serve plain HTTP without certificates.
+	if os.Getenv(envServerBin) == "" {
+		cfg += "tls:\n  mode: off\n"
+	}
 	cfg += strings.Join(extraConfig, "")
 	e.cfgPath = filepath.Join(dir, "portholed.yaml")
 	if err := os.WriteFile(e.cfgPath, []byte(cfg), 0o600); err != nil {
