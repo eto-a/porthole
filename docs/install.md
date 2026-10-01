@@ -126,7 +126,7 @@ Packages for Scoop and winget are coming (the release generates their manifests,
 
 1. Download `porthole_<version>_windows_amd64.zip` (or `_arm64`) from [Releases](https://github.com/eto-a/porthole/releases) and extract `porthole.exe` to a directory of your choice, for example `C:\Program Files\porthole`. Add it to `PATH`. Browsers may show SmartScreen for an unsigned exe; see [Troubleshooting](troubleshooting.md#windows-smartscreen-and-macos-gatekeeper).
 2. Enrol the machine: `porthole join <link>`.
-3. To keep tunnels up across reboots, run `porthole service install` in an **Administrator** terminal (available from v0.4). It registers the Windows service `porthole`; see [Run the client as a service](client.md#windows). If you do not want a system service, run `porthole daemon` from Task Scheduler instead (recipe in the same section).
+3. To keep tunnels up across reboots, run `porthole service install` in an **Administrator** terminal (available from v0.4). It registers the Windows service `porthole`; see [Run the client as a service](client.md#porthole-service-linux-macos-windows). If you do not want a system service, run `porthole daemon` from Task Scheduler instead (recipe in the same section).
 
 ### macOS
 
@@ -143,7 +143,7 @@ The binary is not notarized yet, so Gatekeeper blocks a file downloaded in a bro
 $ xattr -d com.apple.quarantine /usr/local/bin/porthole
 ```
 
-`curl` and the install script do not set the attribute, so they are not affected. To keep tunnels up across reboots (available from v0.4): `porthole service install --user` registers a LaunchAgent that runs while you are logged in; `sudo porthole service install` registers a system LaunchDaemon. See [Run the client as a service](client.md#macos).
+`curl` and the install script do not set the attribute, so they are not affected. To keep tunnels up across reboots (available from v0.4): `porthole service install --user` registers a LaunchAgent that runs while you are logged in; `sudo porthole service install` registers a system LaunchDaemon. See [Run the client as a service](client.md#porthole-service-linux-macos-windows).
 
 ## Verifying a download
 

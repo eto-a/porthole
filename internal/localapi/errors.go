@@ -32,6 +32,11 @@ func IsUnavailable(err error) bool {
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
 		return true
 	}
+	// A socket path longer than the platform limit (104 bytes on macOS, 108 on Linux) fails with EINVAL before any
+	// daemon is reached, so nobody can be listening there either.
+	if errors.Is(err, syscall.EINVAL) {
+		return true
+	}
 	// On Windows an AF_UNIX dial to a path that does not exist fails with WSAEHOSTUNREACH ("A socket operation was
 	// attempted to an unreachable host"), not with ENOENT; for a path whose directory does not exist it is WSAENETDOWN
 	// ("dead network"), WSAENETUNREACH or "invalid argument" (a deeper missing path). None of them can come from a
