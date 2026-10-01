@@ -329,6 +329,8 @@ func TestLoginHint(t *testing.T) {
 	}{
 		{"https default", func(*config.Config) {}, "porthole login https://tun.example.com ph_"},
 		{"http with port", func(c *config.Config) { c.PublicScheme = "http"; c.PublicPort = 8080 }, "porthole login http://tun.example.com:8080 ph_"},
+		{"server_url wins", func(c *config.Config) { c.PublicScheme = "http"; c.ServerURL = "https://tun.example.com" }, "porthole login https://tun.example.com ph_"},
+		{"server_url trailing slash", func(c *config.Config) { c.ServerURL = "https://ctl.example.com:8443/" }, "porthole login https://ctl.example.com:8443 ph_"},
 		{"no domain", func(c *config.Config) { c.Domain = "" }, "porthole login https://<domain> ph_"},
 	}
 	for _, tc := range tests {

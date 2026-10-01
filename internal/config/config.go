@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,6 +38,12 @@ type Config struct {
 	// PublicScheme is the scheme used in public HTTP tunnel URLs ("https" or "http").
 	// Defaults to "https"; set "http" only for local development.
 	PublicScheme string `yaml:"public_scheme"`
+
+	// ServerURL is the address clients connect to ("porthole login <server_url> <token>"), for example
+	// "https://tun.example.com". Optional: when empty it is derived from PublicScheme, Domain and PublicPort.
+	// Needed when the control endpoint is reached differently from the tunnel hosts, for example over HTTPS
+	// behind a TLS proxy while tunnels are plain HTTP. Absolute http(s) URL without path, query or fragment.
+	ServerURL string `yaml:"server_url"`
 
 	// PublicPort is appended to public HTTP URLs when non-zero (e.g. 8080 in development).
 	PublicPort int `yaml:"public_port"`
@@ -146,6 +153,7 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_TLS_CERT_FILE":  &c.TLS.CertFile,
 		"PORTHOLED_TLS_KEY_FILE":   &c.TLS.KeyFile,
 		"PORTHOLED_PUBLIC_SCHEME":  &c.PublicScheme,
+		"PORTHOLED_SERVER_URL":     &c.ServerURL,
 		"PORTHOLED_TCP_PORT_RANGE": &c.TCPPortRange,
 		"PORTHOLED_TCP_BIND_HOST":  &c.TCPBindHost,
 		"PORTHOLED_DATA_DIR":       &c.DataDir,
@@ -199,6 +207,9 @@ func (c *Config) Validate() error {
 	if c.PublicScheme != "https" && c.PublicScheme != "http" {
 		errs = append(errs, fmt.Errorf("public_scheme: %q, want https or http", c.PublicScheme))
 	}
+	if err := validateServerURL(c.ServerURL); err != nil {
+		errs = append(errs, err)
+	}
 	if c.PublicPort < 0 || c.PublicPort > 65535 {
 		errs = append(errs, fmt.Errorf("public_port: %d out of range", c.PublicPort))
 	}
@@ -229,6 +240,29 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// validateServerURL accepts an empty value or an absolute http(s) URL with a host and nothing after it
+// (a single trailing slash is allowed).
+func validateServerURL(s string) error {
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("server_url: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("server_url: %q, want an absolute http:// or https:// URL", s)
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil || u.Opaque != "" {
+		return fmt.Errorf("server_url: %q must not have a path, query, fragment or user info", s)
+	}
+	return nil
+}
+
+// ClientURL returns the address clients should connect to: ServerURL without a trailing slash, or "" when
+// ServerURL is not set.
+func (c *Config) ClientURL() string { return strings.TrimSuffix(c.ServerURL, "/") }
 
 // PortRange parses TCPPortRange.
 func (c *Config) PortRange() (lo, hi int, err error) {

@@ -34,6 +34,13 @@ tls:
 # public_scheme: https
 # public_port: 0
 
+# Address clients connect to: it is what `portholed token create` prints in `porthole login <server_url> <token>`.
+# Optional; when empty it is derived from public_scheme, domain and public_port. Set it when the control endpoint
+# is reached differently from the tunnel hosts, for example the proxy serves it over HTTPS while the tunnels are
+# plain HTTP (public_scheme: http). Absolute http(s) URL without a path; a trailing slash is ignored.
+# Env: PORTHOLED_SERVER_URL
+# server_url: https://tun.example.com
+
 # Inclusive range of public ports handed out to TCP (and SSH) tunnels. Open it in your firewall.
 # Default "20000-29999". Env: PORTHOLED_TCP_PORT_RANGE
 tcp_port_range: "20000-29999"

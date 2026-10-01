@@ -237,6 +237,12 @@ tcp_port_range: "20000-29999"
 data_dir: /var/lib/porthole
 ```
 
+Optional `server_url` (env `PORTHOLED_SERVER_URL`) is the address clients connect to, as printed in the
+`porthole login <server_url> <token>` hint (compare `ROOT_URL` in Gitea, `SiteURL` in Mattermost). When empty it is
+derived from `public_scheme`, `domain` and `public_port`. It matters when the control endpoint is served over HTTPS
+by a proxy while tunnel hosts are plain HTTP. Validation: absolute `http`/`https` URL, no path, query or fragment
+(a trailing `/` is dropped).
+
 ### 3.10 Observability
 
 `log/slog` (JSON on the server, text on the CLI); tokens are never logged (only `id`). `/healthz` on the main
