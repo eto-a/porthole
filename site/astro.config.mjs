@@ -58,7 +58,7 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Get started',
-          items: [...page('overview', 'Overview'), ...page('quickstart', 'Quick start'), ...page('install', 'Install')],
+          items: [...page('overview', 'Overview'), ...page('agent-install', 'Install with your agent'), ...page('quickstart', 'Quick start'), ...page('install', 'Install')],
         },
         {
           label: 'Guides',
@@ -94,7 +94,7 @@ export default defineConfig({
             'porthole is a self-hosted, open-source (Apache-2.0) alternative to ngrok, written in Go. You run one server (`portholed`) on a machine with a public IP address and a domain, and a client (`porthole`) on any machine behind NAT. It exposes localhost over HTTPS, TCP services on a reserved port and SSH by name (`ssh -J`), and it has built-in MCP servers so an AI agent (Claude Code or any MCP client) can open tunnels, inspect traffic and enrol machines. Status: alpha.',
           details:
             'Use the "For AI assistants" page for step-by-step instructions to follow when a user asks to expose a service or reach a machine behind NAT. All commands are taken from the documentation; examples use the domain `tun.example.com` and the client name `home`.',
-          promote: ['docs/for-ai-assistants', 'docs/quickstart', 'docs/agents', 'docs/faq', 'docs/install'],
+          promote: ['docs/agent-install', 'docs/for-ai-assistants', 'docs/quickstart', 'docs/agents', 'docs/faq', 'docs/install'],
           demote: ['docs/adr/**', 'docs/protocol'],
           optionalLinks: [
             { label: 'Source code and releases', url: repoUrl, description: 'GitHub repository, issues and signed releases' },

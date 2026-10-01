@@ -5,6 +5,8 @@ import { base, repoUrl, version } from '../../site.config.mjs';
 
 const doc = (p: string) => `${base}/docs/${p}`;
 const install = 'curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh';
+const agentPrompt =
+  "Set up porthole for me: follow https://raw.githubusercontent.com/eto-a/porthole/main/docs/agent-install.md — ask me only what you can't find out yourself.";
 
 /**
  * Terminal lines. Kinds: c command (copied), k continuation of a command (copied), o output, m comment,
@@ -160,21 +162,19 @@ const why = [
   { h: 'Signed releases and SBOMs', t: 'Signed with cosign, with build provenance attestations and SBOMs you can verify.', href: doc('install/#verifying-a-download') },
 ];
 
-const compare = {
-  head: ['', 'porthole', 'ngrok', 'frp', 'cloudflared', 'sish'],
-  rows: [
-    ['You run the server', 'yes', 'no, hosted service', 'yes', 'no, Cloudflare network', 'yes'],
-    ['On the machine behind NAT', '`porthole`', '`ngrok` agent', '`frpc`', '`cloudflared`', 'plain `ssh -R`'],
-    [
-      'SSH by name with only OpenSSH on the connecting side',
-      'yes (`ssh -J`)',
-      'see its docs',
-      'see its docs',
-      'needs `cloudflared` or WARP on the visitor',
-      'yes (TCP aliases)',
-    ],
-  ],
-};
+const compare = [
+  { h: 'Choose ngrok', t: 'if you want a hosted service and do not want to run a server at all. The server side is ngrok&rsquo;s.' },
+  {
+    h: 'Choose Cloudflare Tunnel',
+    t: 'if your domain is already on Cloudflare and you want its network in front. For SSH, its documentation has the connecting side run `cloudflared` or WARP.',
+  },
+  { h: 'Choose frp', t: 'if you need UDP or many proxy types today, configured in `frps` and `frpc` files. porthole has no UDP yet.' },
+  { h: 'Choose sish', t: 'if the machine behind NAT should run nothing but plain `ssh -R`.' },
+  {
+    h: 'Choose porthole',
+    t: 'if you want to run the server yourself and let an agent manage it over MCP, with automatic HTTPS per tunnel, one-time join links and SSH by name for visitors who have only OpenSSH.',
+  },
+];
 const inline = (s: string) => s.split('`').map((p, i) => (i % 2 ? `<code>${p}</code>` : p)).join('');
 
 const roadmap = [
@@ -237,9 +237,10 @@ const footer = [
             <Icon name="github" size="1.1em" /> GitHub
           </a>
         </div>
-        <div class="cmd">
-          <code>{install}</code>
-          <button type="button" class="copy-btn" data-copy={install} aria-label="Copy the install command">Copy</button>
+        <p class="cmd-label">Paste into Claude Code or another coding agent:</p>
+        <div class="cmd prompt">
+          <code>{agentPrompt}</code>
+          <button type="button" class="copy-btn" data-copy={agentPrompt} aria-label="Copy the install prompt for your agent">Copy</button>
         </div>
         <ul class="facts" aria-label="Facts">
           <li>Apache-2.0</li>
@@ -451,13 +452,15 @@ const footer = [
     <div class="wrap">
       <p class="kicker">Comparison</p>
       <h2 id="cmp-h">Which tunnel is right for you?</h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr>{compare.head.map((h) => <th scope="col">{h}</th>)}</tr></thead>
-          <tbody>
-            {compare.rows.map((r) => <tr>{r.map((c, i) => (i === 0 ? <th scope="row">{c}</th> : <td set:html={inline(c)} />))}</tr>)}
-          </tbody>
-        </table>
+      <div class="cards two compare">
+        {
+          compare.map((c) => (
+            <article class="card">
+              <h3>{c.h}</h3>
+              <p set:html={inline(c.t)} />
+            </article>
+          ))
+        }
       </div>
       <p class="note">
         Statements about other tools come from their public documentation and are simplified; check them before deciding.
@@ -471,6 +474,14 @@ const footer = [
       <p class="kicker">Install</p>
       <h2 id="inst-h">Two programs, two machines</h2>
       <p class="sub">A server you set up once on a VPS, and a client on every machine behind NAT.</p>
+      <article class="card agent-install">
+        <h3>With your agent</h3>
+        <p>Paste this into Claude Code, or any coding agent that can run shell commands. It asks only what it cannot detect (your VPS, your domain, which ports to open), installs the server and the clients, and checks that a tunnel works. <a href={doc('agent-install/')}>What it follows</a>.</p>
+        <div class="cmd prompt">
+          <code>{agentPrompt}</code>
+          <button type="button" class="copy-btn" data-copy={agentPrompt} aria-label="Copy the install prompt for your agent">Copy</button>
+        </div>
+      </article>
       <div class="cards two">
         <article class="card">
           <h3>Server (VPS)</h3>
@@ -796,6 +807,28 @@ const footer = [
   .cmd code::before {
     content: '$ ';
     color: var(--accent-text);
+  }
+  .cmd.prompt code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+  .cmd.prompt code::before {
+    content: none;
+  }
+  .cmd-label {
+    margin: 1.3rem 0 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .cmd-label + .cmd {
+    margin-top: 0.4rem;
+  }
+  .agent-install {
+    margin-bottom: 1.2rem;
+  }
+  .agent-install .cmd {
+    max-width: none;
   }
   .copy-btn {
     flex: none;
@@ -1245,51 +1278,8 @@ const footer = [
     font: 400 12px var(--sl-font-mono);
   }
 
-  .table-wrap {
+  .cards.compare {
     margin-top: 2rem;
-    overflow-x: auto;
-    border: 1px solid var(--line);
-    border-radius: 0.8rem;
-    background: var(--card);
-  }
-  table {
-    width: 100%;
-    min-width: 46rem;
-    border-collapse: collapse;
-    font-size: var(--sl-text-sm);
-  }
-  th,
-  td {
-    padding: 0.85rem 1rem;
-    text-align: left;
-    vertical-align: top;
-    border-bottom: 1px solid var(--line);
-    line-height: 1.5;
-  }
-  thead th {
-    font-size: var(--sl-text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  thead th:nth-child(2) {
-    color: var(--accent-text);
-  }
-  tbody tr:last-child > * {
-    border-bottom: 0;
-  }
-  tbody th {
-    font-weight: 600;
-    color: var(--fg);
-  }
-  td {
-    color: var(--muted);
-  }
-  td:nth-child(2) {
-    color: var(--fg);
-  }
-  td :global(code) {
-    font-size: 0.85em;
   }
 
   .cta-final {
