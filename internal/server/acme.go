@@ -47,6 +47,7 @@ func (s *Server) newACME() (*acmeManager, error) {
 	m.magic = certmagic.New(m.cache, certmagic.Config{
 		Storage:  &certmagic.FileStorage{Path: dir},
 		OnDemand: &certmagic.OnDemandConfig{DecisionFunc: s.allowCertName},
+		OnEvent:  s.onACMEEvent,
 		Logger:   zl,
 	})
 	tmpl := certmagic.ACMEIssuer{
