@@ -31,6 +31,12 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 	return ctx
 }
 
+// WithPeerCred returns a context that carries cred as the peer credentials, as [ConnContext] would store them. It
+// is meant for embedders and tests that call a [Backend] directly.
+func WithPeerCred(ctx context.Context, cred Cred) context.Context {
+	return context.WithValue(ctx, credKey{}, cred)
+}
+
 // PeerCredFromContext returns the credentials stored by [ConnContext].
 func PeerCredFromContext(ctx context.Context) (Cred, bool) {
 	cred, ok := ctx.Value(credKey{}).(Cred)

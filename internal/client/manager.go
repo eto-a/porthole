@@ -181,6 +181,9 @@ func newManager(opts Options, t tuning, strict bool) (*Manager, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	if PlaintextServer(opts.ServerURL) {
+		log.Warn("the server URL is plain http: the token is sent unencrypted", "server", opts.ServerURL)
+	}
 	m := &Manager{
 		url: wsURL, opts: opts, t: t, log: log, strict: strict,
 		kick:    make(chan struct{}, 1),

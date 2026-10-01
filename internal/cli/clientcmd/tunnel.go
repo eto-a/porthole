@@ -81,6 +81,13 @@ func (a *app) resolveCreds(f *connFlags) (credsFrom, error) {
 	return c, nil
 }
 
+// warnPlaintext tells the user on stderr when the token is about to travel over a plain http:// connection.
+func warnPlaintext(cmd *cobra.Command, server string) {
+	if client.PlaintextServer(server) {
+		fmt.Fprintln(cmd.ErrOrStderr(), client.PlaintextWarning(server))
+	}
+}
+
 // credentials resolves server and token: flag, then environment, then config file.
 func (a *app) credentials(f *connFlags) (server, token string, err error) {
 	c, err := a.resolveCreds(f)
@@ -366,6 +373,7 @@ func (a *app) runStandalone(ctx context.Context, cmd *cobra.Command, cf *connFla
 	if err != nil {
 		return err
 	}
+	warnPlaintext(cmd, server)
 	hint := tr.hint()
 	sink := eventSink(cmd, hint, false)
 	err = a.d.run(ctx, client.Options{

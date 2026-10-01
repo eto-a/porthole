@@ -39,13 +39,17 @@ type joinResult struct {
 
 func (a *app) newJoinCmd() *cobra.Command {
 	var server string
+	var force, insecureHTTP bool
 	cmd := &cobra.Command{
 		Use:   "join <link|code>",
 		Short: "Enrol this machine with a one-time join link",
 		Long: "Redeem a one-time join link (https://<server>/j/pj_...) or code (pj_...) that a server operator created,\n" +
 			"and store the server URL and the new token in the client config file (mode 0600), like `porthole login`.\n" +
 			"A join link works once and expires after a short time (15 minutes by default).\n" +
-			"With a bare code, the server comes from --server, $" + envServer + " or the config file.",
+			"With a bare code, the server comes from --server, $" + envServer + " or the config file.\n" +
+			"The link decides which server this machine talks to, so only use links you got from someone you trust.\n" +
+			"Joining refuses to replace credentials of another server in the config file without --force, and refuses\n" +
+			"a plain http:// server (other than localhost) without --insecure-http.",
 		Example: "  porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,6 +67,16 @@ func (a *app) newJoinCmd() *cobra.Command {
 			}
 			base, code, err := parseJoinTarget(args[0], server)
 			if err != nil {
+				return usageErr(err)
+			}
+			current, err := loadConfig(path)
+			if err != nil {
+				if !force {
+					return configErr(fmt.Errorf("%w (use --force to overwrite the file)", err))
+				}
+				current = fileConfig{}
+			}
+			if err := checkJoinTarget(current, base, force, insecureHTTP); err != nil {
 				return usageErr(err)
 			}
 			parent := cmd.Context()
@@ -90,7 +104,32 @@ func (a *app) newJoinCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "server URL, needed when giving a bare code (default: $"+envServer+", then the config file)")
+	cmd.Flags().BoolVar(&force, "force", false, "replace the server and token of an existing config file")
+	cmd.Flags().BoolVar(&insecureHTTP, "insecure-http", false, "allow a plain http:// server (the join code and the token travel unencrypted)")
 	return cmd
+}
+
+// checkJoinTarget refuses a join that would silently switch this machine to another server or send the join code
+// and the new token over plain http. current is the existing config file (zero if none).
+func checkJoinTarget(current fileConfig, base string, force, insecureHTTP bool) error {
+	if client.PlaintextServer(base) && !insecureHTTP {
+		return fmt.Errorf("%s is a plain http:// URL: the join code and the new token would travel unencrypted; "+
+			"use an https:// link, or pass --insecure-http if you really mean it", base)
+	}
+	if force {
+		return nil
+	}
+	old := strings.TrimRight(strings.TrimSpace(current.Server), "/")
+	hasCreds := current.Token != "" || current.TokenFile != ""
+	switch {
+	case old != "" && old != base:
+		return fmt.Errorf("the config file already points to %s; joining %s would replace that server and its token. "+
+			"Check that the link is from someone you trust, then repeat with --force", old, base)
+	case old == "" && hasCreds:
+		return fmt.Errorf("the config file already holds a token (or token_file); joining %s would replace it. "+
+			"Repeat with --force if that is what you want", base)
+	}
+	return nil
 }
 
 // parseJoinTarget splits what the user gave into the server base URL and the join code. A link carries both; a bare

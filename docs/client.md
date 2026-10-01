@@ -23,6 +23,12 @@ command. With a bare code (`pj_...`) the server comes from `--server`, `$PORTHOL
 exits with status 4 (`invalid_code`, `join_code_used`, `join_code_expired`, `join_code_revoked`), a taken name with 5
 (`name_taken`), an unreachable server with 3.
 
+A join link decides which server this machine talks to, so use only links from someone you trust. `join` refuses,
+before it redeems the link (the one-time code is not used up), to replace the server or token of an existing config file
+without `--force`; the message names the old and the new server. Re-joining the server the config already points to
+needs no `--force`. A plain `http://` server (anything but localhost or a loopback address) is refused without
+`--insecure-http`, because the code and the new token would travel unencrypted.
+
 ## Log in
 
 ```console
@@ -34,6 +40,12 @@ $ porthole login https://tun.example.com ph_... --check   # also connects to the
 `--config`). The environment variables `PORTHOLE_SERVER` and `PORTHOLE_TOKEN` and the `--server` and `--token` flags of
 the tunnel commands (with `--no-daemon`) override the stored values. Instead of keeping the token in `config.yaml` you
 can point `token_file` at a file of its own, see [the system service](#linux-system-wide-deb-and-rpm).
+
+On Unix, porthole refuses a `config.yaml` that holds a `token` and can be read by group or others (`chmod 600`), as it
+does for a `token_file`. A `token` on the command line (`porthole login <url> <token>`, `--token`) is visible to other
+users in `ps` and in your shell history; prefer `$PORTHOLE_TOKEN`, a `token_file`, or a join link. A plain `http://`
+server URL (other than localhost) makes porthole print a warning, and the daemon log one: the token is sent
+unencrypted. The client never follows an HTTP redirect when it connects to the server.
 
 ## Expose a service
 
@@ -134,11 +146,23 @@ has the last word: `allow_remote` in the tunnels file lists the local targets th
 version: 1
 allow_remote: [ssh, 3000, "192.168.1.5:80"]   # only these local targets
 # allow_remote: none                          # refuse every remote request
-# (no key)                                    # allow every target
+# allow_remote: any                           # every target (except link-local, see below)
+# (no key)                                    # the default: only this machine (loopback, localhost, ssh)
 ```
 
+- Without the key only services **on this machine** may be exposed: a loopback address (`127.0.0.0/8`, `::1`),
+  `localhost` and `ssh` (`127.0.0.1:22`). Anything else (a LAN host, another machine's name) needs an explicit list or
+  `allow_remote: any`. This protects the network behind the machine from a compromised server or a prompt-injected
+  agent. Before this change a missing key allowed every target.
 - An entry is `ssh` (that is `127.0.0.1:22`), a port (`127.0.0.1:<port>`) or `host:port`. A request matches when its
-  target equals an entry exactly (`localhost:3000` is not `127.0.0.1:3000`).
+  target equals an entry exactly (`localhost:3000` is not `127.0.0.1:3000`). With a list, only the listed targets are
+  allowed (loopback is not added implicitly).
+- Link-local targets (`169.254.0.0/16`, `fe80::/10`: cloud instance metadata services and the like) are refused even
+  under `any`; only an entry that names the exact address (`"169.254.169.254:80"`) allows one.
+- `allow_remote:` with no value (also `null`, `~`, or a key whose list items are all commented out) is a configuration
+  error, not "allow everything": write a list, `none` or `any`, or remove the key.
+- Names are resolved when a visitor connects, not when the request is checked. An entry like `nas.local:80` follows
+  whatever the machine's resolver, mDNS or hosts file returns at that moment; prefer IP addresses in the list.
 - The server cannot widen the list. A refused request is answered with `not_allowed` and logged by the client.
 - `porthole reload` applies a changed `allow_remote` to the running daemon. Tunnels that are already open stay open.
 - A remotely opened tunnel is a runtime tunnel: `porthole tunnels` shows it, `porthole close <name>` removes it, a
@@ -218,11 +242,36 @@ and a per-user socket, so `porthole http 3000` finds it by itself.
 
 The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user socket, then the system socket.
 
+## Security notes
+
+- **The socket is the permission.** Whoever can open the daemon's socket may publish tunnels under this machine's
+  identity. The user socket is mode 0600 in your own directory. The system socket belongs to the group
+  `porthole-client`, so adding a user to that group is a grant comparable to the `docker` group, though narrower. On
+  Linux the daemon reads the peer's uid (`SO_PEERCRED`) and, for a caller that is neither root nor the daemon's own
+  user, (1) applies the `allow_remote` policy to the tunnels it adds (loopback only by default), (2) lets it close only
+  the tunnels it added itself, and (3) refuses `reload`. Listing tunnels and the event stream stay open to every caller.
+  Where the platform gives no peer uid (Windows) all callers are treated alike, as before; on macOS the daemon is
+  normally per-user, with a 0600 socket.
+- **`porthole mcp`** only opens tunnels to services on this machine (loopback, `localhost`); pass
+  `--allow-remote-targets` to allow other hosts (link-local addresses stay refused). `open_tunnel` is annotated as
+  destructive so that MCP hosts ask before calling it; use `--read-only` when the agent reads untrusted content.
+- **The tunnels file** can redirect the token: a `server:` key there overrides the one in `config.yaml`, and the token
+  of `config.yaml` is sent to it. Keep it writable only by you (the package installs it as `0640 root:porthole-client`).
+  Porthole does not check its mode.
+- **Windows:** the socket file has no POSIX mode. The default location (`%LocalAppData%\porthole`) is private to your
+  user; do not point `--socket` into a directory shared with other users such as `C:\ProgramData`, and do not point it
+  at a file that matters (a socket path that does not answer is treated as stale and deleted).
+- **Unix sockets:** the daemon creates the socket and then sets its mode, so a custom `--socket` in a shared directory
+  leaves a short window in which the socket has the umask's permissions. Keep it in a directory only you (or the
+  service user) can enter, as the shipped units do (`UMask=0077`).
+- **Remote opens choose public exposure:** a server-requested ssh tunnel may ask for `private=false` or a fixed remote
+  port; `allow_remote` limits the local target only, not these options.
+
 ## Command reference
 
 | Command | Purpose |
 |---|---|
-| `porthole join <link\|code> [--server]` | Enrol with a one-time join link and store credentials |
+| `porthole join <link\|code> [--server] [--force] [--insecure-http]` | Enrol with a one-time join link and store credentials |
 | `porthole login <url> <token> [--check]` | Store credentials |
 | `porthole http <port\|host:port> [--name] [--inspect]` | Expose a local web service; `--inspect` stores bodies for the inspector |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | Expose a local TCP service |

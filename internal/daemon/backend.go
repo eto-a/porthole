@@ -132,10 +132,19 @@ func errText(err error) string {
 }
 
 // AddTunnel implements [localapi.Backend].
-func (d *Daemon) AddTunnel(_ context.Context, req localapi.AddTunnelRequest) (localapi.Tunnel, error) {
+// A caller whose peer credentials say it is neither root nor the daemon's own user may only publish the targets that
+// the allow_remote policy permits (loopback by default): membership in the socket's group must not turn into "may
+// expose anything this machine can reach".
+func (d *Daemon) AddTunnel(ctx context.Context, req localapi.AddTunnelRequest) (localapi.Tunnel, error) {
 	spec, err := specFromRequest(req)
 	if err != nil {
 		return localapi.Tunnel{}, err
+	}
+	uid, known := peerUID(ctx)
+	if known && !d.trusted(uid) && !d.mgr.RemoteOpen().Permits(spec.LocalAddr) {
+		d.log.Warn("local api: target refused for an unprivileged user", "uid", uid, "local", spec.LocalAddr)
+		return localapi.Tunnel{}, localapi.NewError(localapi.CodeForbidden,
+			"only root and the user of the daemon may publish %s (see allow_remote in %s)", spec.LocalAddr, d.fileName())
 	}
 	lifetime := req.Lifetime
 	if lifetime != localapi.LifetimeAttached && lifetime != localapi.LifetimeRuntime {
@@ -155,10 +164,34 @@ func (d *Daemon) AddTunnel(_ context.Context, req localapi.AddTunnelRequest) (lo
 	if err != nil {
 		return localapi.Tunnel{}, addError(err)
 	}
-	d.meta[spec.Name] = entry{lifetime: lifetime}
+	d.meta[spec.Name] = entry{lifetime: lifetime, uid: uid, owned: known}
 	d.log.Info("tunnel added", "tunnel", spec.Name, "kind", spec.Kind, "local", spec.LocalAddr, "lifetime", lifetime)
 	return d.toTunnel(client.TunnelState{Spec: spec, Status: client.StatusPending}), nil
 }
+
+// peerUID returns the uid of the local API caller; known is false when the platform gives no peer credentials (or
+// the call is not from a socket), and the caller is then treated as trusted: the socket permissions are all there is.
+func peerUID(ctx context.Context) (uid int, known bool) {
+	cred, ok := localapi.PeerCredFromContext(ctx)
+	if !ok || cred.UID < 0 {
+		return 0, false
+	}
+	return cred.UID, true
+}
+
+// hasTunnel reports whether the manager has a tunnel of that name.
+func (d *Daemon) hasTunnel(name string) bool {
+	tunnels := d.mgr.Snapshot().Tunnels
+	for i := range tunnels {
+		if tunnels[i].Spec.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// trusted reports whether uid may do anything through the local API: root and the user the daemon runs as.
+func (d *Daemon) trusted(uid int) bool { return uid == 0 || uid == d.selfUID }
 
 // addError maps a Manager.Add error to an API error.
 func addError(err error) error {
@@ -230,9 +263,16 @@ func specFromRequest(req localapi.AddTunnelRequest) (client.TunnelSpec, error) {
 }
 
 // RemoveTunnel implements [localapi.Backend]. Tunnels of the tunnels file cannot be removed this way.
-func (d *Daemon) RemoveTunnel(_ context.Context, name string) error {
+//
+// An unprivileged caller (see AddTunnel) may only remove the tunnels it added itself.
+func (d *Daemon) RemoveTunnel(ctx context.Context, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if uid, known := peerUID(ctx); known && !d.trusted(uid) {
+		if e := d.meta[name]; e.lifetime != localapi.LifetimeFile && (!e.owned || e.uid != uid) && d.hasTunnel(name) {
+			return localapi.NewError(localapi.CodeForbidden, "tunnel %q belongs to another user", name)
+		}
+	}
 	// A tunnel opened at the server's request (Options.AcceptRemoteOpen) has no entry: it is a runtime tunnel.
 	if d.meta[name].lifetime == localapi.LifetimeFile {
 		return localapi.NewError(localapi.CodeConflict,
@@ -264,7 +304,13 @@ func (d *Daemon) RemoveTunnel(_ context.Context, name string) error {
 // of them, the file wins: the tunnel becomes a file tunnel (it is not re-registered when the specification is the
 // same, and re-registered with the file's specification when it differs). A reload cannot change the server: that
 // needs a restart, and a change is logged as a warning.
-func (d *Daemon) Reload(context.Context) (localapi.ReloadResult, error) {
+//
+// Only root and the user of the daemon may reload: the tunnels file is theirs to manage, and a reload also swaps the
+// allow_remote policy.
+func (d *Daemon) Reload(ctx context.Context) (localapi.ReloadResult, error) {
+	if uid, known := peerUID(ctx); known && !d.trusted(uid) {
+		return localapi.ReloadResult{}, localapi.NewError(localapi.CodeForbidden, "only root and the user of the daemon may reload the tunnels file")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

@@ -198,3 +198,61 @@ func TestNoDaemon(t *testing.T) {
 		t.Fatalf("isError=%v %q", res.IsError, text(res))
 	}
 }
+
+func TestOpenTunnelRefusesNonLoopbackByDefault(t *testing.T) {
+	d := &fakeDaemon{}
+	cs := session(t, Options{Dial: dialer(d)})
+	for _, addr := range []string{"192.168.1.1:80", "10.0.0.5:5432", "169.254.169.254:80", "nas.local:80", "[::ffff:10.0.0.1]:80"} {
+		res := call(t, cs, "open_tunnel", map[string]any{"type": "tcp", "local_addr": addr})
+		if !res.IsError || !strings.Contains(text(res), "--allow-remote-targets") {
+			t.Errorf("%s: IsError=%v text=%q, want a refusal that names --allow-remote-targets", addr, res.IsError, text(res))
+		}
+	}
+	if len(d.added) != 0 {
+		t.Fatalf("the daemon was asked to open %+v", d.added)
+	}
+	// This machine is fine, in all its spellings, and so is ssh without an address.
+	for i, in := range []map[string]any{
+		{"type": "http", "local_addr": "3000"},
+		{"type": "tcp", "local_addr": "127.0.0.1:5432"},
+		{"type": "tcp", "local_addr": "localhost:5433"},
+		{"type": "tcp", "local_addr": "[::1]:5434"},
+		{"type": "ssh", "local_addr": "22"},
+	} {
+		in["name"] = "t" + string(rune('a'+i))
+		if res := call(t, cs, "open_tunnel", in); res.IsError {
+			t.Errorf("%v: %s", in, text(res))
+		}
+	}
+}
+
+func TestOpenTunnelAllowRemoteTargets(t *testing.T) {
+	d := &fakeDaemon{}
+	cs := session(t, Options{Dial: dialer(d), AllowRemoteTargets: true})
+	if res := call(t, cs, "open_tunnel", map[string]any{"type": "tcp", "local_addr": "192.168.1.1:80", "name": "lan"}); res.IsError {
+		t.Errorf("lan with --allow-remote-targets: %s", text(res))
+	}
+	// Link-local (cloud metadata) stays refused.
+	res := call(t, cs, "open_tunnel", map[string]any{"type": "tcp", "local_addr": "169.254.169.254:80", "name": "imds"})
+	if !res.IsError {
+		t.Error("link-local target accepted")
+	}
+}
+
+func TestOpenTunnelIsAnnotatedDestructive(t *testing.T) {
+	cs := session(t, Options{Dial: dialer(&fakeDaemon{})})
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "open_tunnel" {
+			continue
+		}
+		if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint {
+			t.Errorf("open_tunnel annotations %+v, want destructiveHint=true", tool.Annotations)
+		}
+		return
+	}
+	t.Fatal("no open_tunnel tool")
+}

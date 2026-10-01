@@ -11,6 +11,14 @@
 
 version: 1
 
+# Which local targets the server (or an agent through it) may ask this machine to expose with a remote request:
+#   (no key)   the default: only this machine (127.0.0.1, ::1, localhost, ssh), never your LAN
+#   [ssh, 3000, "192.168.1.5:80"]   exactly these targets
+#   none       refuse every remote request
+#   any        every target (except link-local addresses such as 169.254.169.254)
+# An empty `allow_remote:` is an error. Name an IP address rather than a host name: names are resolved at every connection.
+# allow_remote: none
+
 # Optional: the server to connect to; overrides `server` in config.yaml (the token still comes from config.yaml).
 # server: https://tun.example.com
 

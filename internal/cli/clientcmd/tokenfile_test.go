@@ -160,3 +160,38 @@ func TestLoginDropsTokenFile(t *testing.T) {
 		t.Fatalf("config %+v, %v", c, err)
 	}
 }
+
+func TestLoadConfigRefusesReadableInlineToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX modes")
+	}
+	dir := t.TempDir()
+	tok := testToken(t)
+	write := func(name, content string, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil { // WriteFile is subject to the umask
+			t.Fatal(err)
+		}
+		return p
+	}
+	withTok := "server: https://tun.example.com\ntoken: " + tok + "\n"
+
+	if _, err := loadConfig(write("a.yaml", withTok, 0o644)); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Errorf("0644 with a token: %v, want a refusal that says chmod 600", err)
+	} else if strings.Contains(err.Error(), tok) {
+		t.Errorf("the error leaks the token: %v", err)
+	}
+	if _, err := loadConfig(write("b.yaml", withTok, 0o640)); err == nil {
+		t.Error("0640 with a token was accepted")
+	}
+	if c, err := loadConfig(write("c.yaml", withTok, 0o600)); err != nil || c.Token != tok {
+		t.Errorf("0600 with a token: %+v, %v", c, err)
+	}
+	// Without a token in the file the mode does not matter (the server URL is not a secret).
+	if _, err := loadConfig(write("d.yaml", "server: https://tun.example.com\ntoken_file: tok\n", 0o644)); err != nil {
+		t.Errorf("0644 without a token: %v", err)
+	}
+}
