@@ -55,9 +55,7 @@ func (s *Server) ReplayRequest(ctx context.Context, id uint64) (traffic.Request,
 		return traffic.Request{}, fmt.Errorf("%w: the request target was not recorded", ErrReplayRefused)
 	}
 
-	s.mu.Lock()
-	t := s.labels[orig.Label]
-	s.mu.Unlock()
+	t := s.replayTarget(&orig)
 	switch {
 	case t == nil:
 		return traffic.Request{}, fmt.Errorf("%w: the tunnel is offline", ErrReplayRefused)
@@ -93,6 +91,27 @@ func (s *Server) ReplayRequest(ctx context.Context, id uint64) (traffic.Request,
 		return traffic.Request{}, fmt.Errorf("%w: the replayed request left the traffic log before it could be read", ErrReplayRefused)
 	}
 	return out, nil
+}
+
+// replayTarget finds the live tunnel a recorded request goes back to: the tunnel it was recorded on, or, if its client
+// reconnected meanwhile (new tunnel id), the tunnel with the same label that belongs to the same client and has the
+// same name. A label alone is not enough: labels are name + "-" + client, so another client can hold the same one,
+// and the stored request (body, credential headers kept by the inspector) must not be sent to it.
+func (s *Server) replayTarget(orig *traffic.Request) *tunnel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if orig.TunnelID != "" {
+		for _, c := range s.sessions {
+			if t := c.tunnels[orig.TunnelID]; t != nil {
+				return t
+			}
+		}
+	}
+	t := s.labels[orig.Label]
+	if t == nil || t.sess == nil || t.sess.name != orig.Client || (orig.Tunnel != "" && t.name != orig.Tunnel) {
+		return nil
+	}
+	return t
 }
 
 func droppedOnReplay(name string) bool {

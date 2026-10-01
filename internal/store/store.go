@@ -40,6 +40,8 @@ type Token struct {
 	// RemoteControl says that the machine accepts tunnels opened remotely by an operator (ADR 0005). Tokens made by a
 	// join link get it from the link; `portholed token create` sets it unless given --no-remote-control.
 	RemoteControl bool
+	// CreatedBy is the id of the admin token whose join link made this token, "socket" for the admin socket, or empty.
+	CreatedBy string
 }
 
 // PortReservation is a public TCP port remembered for the tunnel (Client, Tunnel).

@@ -255,6 +255,8 @@ func TestMigrationFrom0003(t *testing.T) {
 	for _, q := range []string{
 		`DROP TABLE join_codes`,
 		`ALTER TABLE tokens DROP COLUMN remote_control`,
+		`DROP INDEX tokens_created_by`,
+		`ALTER TABLE tokens DROP COLUMN created_by`,
 		`DELETE FROM schema_migrations WHERE version >= 4`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

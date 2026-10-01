@@ -103,10 +103,14 @@ type RequestQuery struct {
 type RequestsResult struct {
 	Requests   []Request   `json:"requests"`
 	Aggregates *Aggregates `json:"aggregates,omitempty"`
+	// Notice says that the requests hold visitor-written text (see UntrustedNotice).
+	Notice string `json:"untrusted_notice"`
 }
 
 // Request is one proxied HTTP request from the request log.
 type Request struct {
+	// Notice is set by get_request: the fields below are visitor-written (see UntrustedNotice).
+	Notice    string    `json:"untrusted_notice,omitempty"`
 	ID        uint64    `json:"id"`
 	Time      time.Time `json:"time"`
 	TunnelID  string    `json:"tunnel_id,omitempty"`

@@ -7,48 +7,84 @@ package adminapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"time"
 )
 
 // SocketSupported reports whether this platform serves the admin unix socket.
 const SocketSupported = true
 
-// umaskMu serialises the process-wide umask change in ListenUnix.
-var umaskMu sync.Mutex
-
 // ListenUnix creates the admin socket at path with mode 0600, replacing a stale socket file left by a crashed
 // process. It refuses to replace a live socket or a file that is not a socket.
 //
-// The umask is tightened around listen(2) so the socket never exists with wider permissions (the same approach as
-// Docker's go-connections, Apache-2.0: idea only, no code copied); the explicit chmod covers odd filesystems.
+// The socket is bound inside a private staging directory (mode 0700, created next to path), chmod-ed to 0600 and
+// only then renamed to path. So it is unreachable for other users until its mode is final, and the process-wide
+// umask is never touched: a umask change would race with every file or directory that another goroutine (the SSH
+// gateway, the ACME cache, the log) creates meanwhile. Docker's go-connections tightens the umask instead; that is
+// safe only before any other goroutine runs (idea only, no code copied).
 func ListenUnix(ctx context.Context, path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("adminapi: create socket directory: %w", err)
 	}
 	if err := clearStale(ctx, path); err != nil {
 		return nil, err
 	}
-	umaskMu.Lock()
-	old := syscall.Umask(0o177)
+	var rnd [4]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return nil, fmt.Errorf("adminapi: %w", err)
+	}
+	// A short name: unix socket paths are capped at 104 bytes on macOS and 108 on Linux.
+	stage := filepath.Join(dir, ".ph"+hex.EncodeToString(rnd[:]))
+	if err := os.Mkdir(stage, 0o700); err != nil {
+		return nil, fmt.Errorf("adminapi: create staging directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stage) }()
+	tmp := filepath.Join(stage, "s")
 	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "unix", path)
-	syscall.Umask(old)
-	umaskMu.Unlock()
+	ln, err := lc.Listen(ctx, "unix", tmp)
 	if err != nil {
 		return nil, fmt.Errorf("adminapi: listen on %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	ul := ln.(*net.UnixListener)
+	ul.SetUnlinkOnClose(false) // it would unlink the staging name; the wrapper removes the final one
+	fail := func(format string, err error) (net.Listener, error) {
 		_ = ln.Close()
-		return nil, fmt.Errorf("adminapi: chmod %s: %w", path, err)
+		return nil, fmt.Errorf(format, path, err)
 	}
-	return ln, nil
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return fail("adminapi: chmod %s: %w", err)
+	}
+	if fi, err := os.Lstat(tmp); err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm() != 0o600 {
+		if err == nil {
+			err = fmt.Errorf("mode is %v, want a socket with 0600", fi.Mode())
+		}
+		return fail("adminapi: socket %s: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fail("adminapi: move socket to %s: %w", err)
+	}
+	return &socketListener{UnixListener: ul, path: path}, nil
+}
+
+// socketListener removes the socket file when it is closed, as net.UnixListener does for a socket it created itself.
+type socketListener struct {
+	*net.UnixListener
+	path string
+}
+
+func (l *socketListener) Close() error {
+	err := l.UnixListener.Close()
+	if fi, serr := os.Lstat(l.path); serr == nil && fi.Mode()&os.ModeSocket != 0 {
+		_ = os.Remove(l.path)
+	}
+	return err
 }
 
 func clearStale(ctx context.Context, path string) error {
