@@ -37,6 +37,49 @@ var (
 	repoRootRe = "../.."
 )
 
+// Environment variables for the protocol compatibility run (CI job "compat", see DESIGN.md section 6). Each side
+// is built from the working tree unless its variable points at a prebuilt binary, for example one taken from the
+// previous release. With both unset the behaviour is unchanged.
+const (
+	envServerBin = "PORTHOLE_E2E_SERVER_BIN" // portholed to run instead of building ./cmd/portholed
+	envClientBin = "PORTHOLE_E2E_CLIENT_BIN" // porthole to run instead of building ./cmd/porthole
+	envCompat    = "PORTHOLE_E2E_COMPAT"     // "1": client and server may be different versions
+)
+
+// skipInCompat skips a test that needs a feature the other side may lack. Call it first in any test that covers
+// behaviour added after the baseline release; the compat job sets PORTHOLE_E2E_COMPAT=1.
+func skipInCompat(t *testing.T, why string) { //nolint:unused // no scenario needs it yet; it is the hook for the first one that does
+	t.Helper()
+	if os.Getenv(envCompat) == "1" {
+		t.Skipf("skipped in cross-version mode: %s", why)
+	}
+}
+
+// resolveBin returns the binary named by envVar if it is set (it must exist), otherwise builds pkg into dir.
+func resolveBin(dir, envVar, name, pkg string) (string, error) {
+	if p := os.Getenv(envVar); p != "" {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", envVar, err)
+		}
+		if _, err := os.Stat(abs); err != nil { //nolint:gosec // the path comes from the developer's or CI's own environment
+			return "", fmt.Errorf("%s: %w", envVar, err)
+		}
+		return abs, nil
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	out := filepath.Join(dir, name)
+	cmd := exec.Command("go", "build", "-o", out, pkg)
+	cmd.Dir = repoRootRe
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("build %s: %w", pkg, err)
+	}
+	return out, nil
+}
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "porthole-e2e-bin")
 	if err != nil {
@@ -44,21 +87,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binDir = dir
-	exe := ""
-	if runtime.GOOS == "windows" {
-		exe = ".exe"
+	if portholed, err = resolveBin(binDir, envServerBin, "portholed", "./cmd/portholed"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	portholed = filepath.Join(binDir, "portholed"+exe)
-	porthole = filepath.Join(binDir, "porthole"+exe)
-	for out, pkg := range map[string]string{portholed: "./cmd/portholed", porthole: "./cmd/porthole"} {
-		cmd := exec.Command("go", "build", "-o", out, pkg)
-		cmd.Dir = repoRootRe
-		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintln(os.Stderr, "build", pkg, err)
-			os.Exit(1)
-		}
+	if porthole, err = resolveBin(binDir, envClientBin, "porthole", "./cmd/porthole"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stderr, "e2e binaries: server %s, client %s\n", portholed, porthole)
 	code := m.Run()
 	_ = os.RemoveAll(binDir)
 	os.Exit(code)
