@@ -183,7 +183,15 @@ func TestACMEModeRefusesUnknownName(t *testing.T) {
 			t.Fatalf("handshake for %q succeeded", name)
 		}
 	}
-	if out := logs.String(); !strings.Contains(out, "certificate refused") || !strings.Contains(out, "unknown."+testDomain) {
-		t.Errorf("refusal not logged with the host name:\n%s", out)
+	// The server logs the refusal on its side of the handshake, which may finish after the client saw the error.
+	logged := func() bool {
+		out := logs.String()
+		return strings.Contains(out, "certificate refused") && strings.Contains(out, "unknown."+testDomain)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !logged() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !logged() {
+		t.Errorf("refusal not logged with the host name:\n%s", logs.String())
 	}
 }

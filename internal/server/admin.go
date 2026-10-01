@@ -77,6 +77,12 @@ func (s *Server) startAdminSocket(ctx context.Context) error {
 	}
 	ln, err := adminapi.ListenUnix(ctx, path)
 	if err != nil {
+		if s.cfg.AdminSocket == "" {
+			// The default socket is a convenience; a path the platform cannot bind (macOS caps unix socket paths
+			// at 104 bytes) must not keep the server down. An explicitly configured socket is still required.
+			s.log.Warn("admin socket unavailable; the bearer endpoint is still served", "path", path, "err", err)
+			return nil
+		}
 		return fmt.Errorf("server: %w", err)
 	}
 	return s.StartAdminSocket(ln)
