@@ -4,6 +4,7 @@
 package clientcmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -18,6 +19,7 @@ import (
 	"github.com/eto-a/porthole/internal/clientconfig"
 	"github.com/eto-a/porthole/internal/daemon"
 	"github.com/eto-a/porthole/internal/localapi"
+	"github.com/eto-a/porthole/internal/service"
 )
 
 const (
@@ -55,66 +57,140 @@ func (a *app) daemonSocket() (string, error) {
 
 func (a *app) newDaemonCmd() *cobra.Command {
 	var tunnelsFlag string
+	var allow []string
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the client daemon: keep the tunnels of the tunnels file up",
 		Long: "Run the porthole client daemon. It holds one session to the server, keeps the tunnels defined in the tunnels " +
-			"file registered (reconnecting forever), and serves a local API on a unix socket that `porthole status`, " +
-			"`reload`, `close` and the tunnel commands use. `porthole reload` and SIGHUP re-read the tunnels file.\n\n" +
+			"file registered (reconnecting forever), and serves a local API on a unix socket (a named pipe on Windows) that " +
+			"`porthole status`, `reload`, `close` and the tunnel commands use. `porthole reload` and SIGHUP (on Windows " +
+			"`sc control porthole paramchange`) re-read the tunnels file.\n\n" +
 			"The server and token come from the config file (see `porthole login`), $" + envServer + " and $" + envToken + ". " +
-			"A broken configuration makes the daemon exit with status " + fmt.Sprint(ExitConfig) + ".",
+			"A broken configuration makes the daemon exit with status " + fmt.Sprint(ExitConfig) + ".\n\n" +
+			"Started by the Windows service control manager it runs as the service (see `porthole service`) and logs to " +
+			"%ProgramData%\\porthole\\logs\\porthole.log.",
 		Example: "  porthole daemon\n" +
 			"  porthole daemon --config /etc/porthole/config.yaml --tunnels /etc/porthole/tunnels.yaml \\\n" +
 			"      --socket /run/porthole/porthole.sock",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { return a.runDaemonCmd(cmd, tunnelsFlag) },
+		RunE: func(cmd *cobra.Command, _ []string) error { return a.runDaemonCmd(cmd, tunnelsFlag, allow) },
 	}
 	cmd.Flags().StringVar(&tunnelsFlag, "tunnels", "", "tunnels file (default: tunnels.yaml next to the config file)")
+	cmd.Flags().StringArrayVar(&allow, "allow", nil,
+		"user or group admitted to the system named pipe (Windows only, with the system socket); repeatable")
 	return cmd
 }
 
-func (a *app) runDaemonCmd(cmd *cobra.Command, tunnelsFlag string) error {
-	cfgErr := configErr
-
+// daemonOptions resolves everything `porthole daemon` needs. Its errors are already configuration errors (exit 78).
+func (a *app) daemonOptions(tunnelsFlag string, allow []string, logger *slog.Logger) (daemon.Options, error) {
 	tunnels, err := a.tunnelsPath(tunnelsFlag)
 	if err != nil {
-		return cfgErr(err)
+		return daemon.Options{}, configErr(err)
 	}
 	socket, err := a.daemonSocket()
 	if err != nil {
-		return cfgErr(err)
+		return daemon.Options{}, configErr(err)
 	}
 	creds, err := a.resolveCreds(&connFlags{})
 	if err != nil {
-		return cfgErr(err)
+		return daemon.Options{}, configErr(err)
 	}
 	if creds.token == "" {
-		return cfgErr(fmt.Errorf("no token configured: run `porthole login <server-url> <token>`, or set %s", envToken))
+		return daemon.Options{}, configErr(fmt.Errorf("no token configured: run `porthole login <server-url> <token>`, or set %s", envToken))
 	}
 	mode := userSocketMode
 	if socket == localapi.SystemSocketPath {
 		mode = systemSocketMode
 	}
-
-	ctx, stop := signalContext(cmd)
-	defer stop()
-	err = a.d.runDaemon(ctx, daemon.Options{
+	return daemon.Options{
 		ServerURL:    creds.server,
 		ConfigServer: creds.configServer,
 		Token:        creds.token,
 		TunnelsPath:  tunnels,
 		SocketPath:   socket,
 		SocketMode:   mode,
+		SocketAllow:  allow,
 		Version:      a.version,
-		Logger:       a.daemonLogger(cmd),
+		Logger:       logger,
+	}, nil
+}
+
+func (a *app) runDaemonCmd(cmd *cobra.Command, tunnelsFlag string, allow []string) error {
+	if a.d.isService != nil {
+		inService, err := a.d.isService()
+		if err != nil {
+			return err
+		}
+		if inService {
+			return a.runDaemonService(tunnelsFlag, allow)
+		}
+	}
+	opts, err := a.daemonOptions(tunnelsFlag, allow, a.daemonLogger(cmd))
+	if err != nil {
+		return err
+	}
+	ctx, stop := signalContext(cmd)
+	defer stop()
+	return daemonResult(a.d.runDaemon(ctx, opts))
+}
+
+// runDaemonService runs the daemon inside the Windows service control manager: the log goes to a file, the service
+// is Running once the daemon reports READY, ParamChange reloads the tunnels file and Stop cancels the context. A
+// configuration error is detected inside the service, so that the manager sees a service that failed to start (with
+// the reason in the log and the event log) instead of one that never answered.
+func (a *app) runDaemonService(tunnelsFlag string, allow []string) error {
+	if a.d.runService == nil {
+		return errors.New("running as a service is not available in this build")
+	}
+	logger, closeLog := a.serviceLogger()
+	defer closeLog()
+	return a.d.runService(service.DefaultName, func(ctx context.Context, ready func(), reload <-chan struct{}) error {
+		opts, err := a.daemonOptions(tunnelsFlag, allow, logger)
+		if err != nil {
+			logger.Error("invalid configuration", "err", err)
+			return err
+		}
+		opts.Reload = reload
+		opts.Notify = func(state string) (bool, error) {
+			if state == localapi.NotifyReady {
+				ready()
+			}
+			return true, nil
+		}
+		err = daemonResult(a.d.runDaemon(ctx, opts))
+		if err != nil {
+			logger.Error("daemon failed", "err", err)
+		}
+		return err
 	})
+}
+
+// serviceLogger logs to %ProgramData%\porthole\logs\porthole.log (10 MiB, one .1 copy), or to stderr if the file
+// cannot be opened (the service then has no console, but nothing else is lost).
+func (a *app) serviceLogger() (*slog.Logger, func()) {
+	level := slog.LevelInfo
+	if a.verbose {
+		level = slog.LevelDebug
+	}
+	hopts := &slog.HandlerOptions{Level: level}
+	f, err := openRotatingFile(serviceLogPath(a.d.getenv), maxLogSize)
+	if err != nil {
+		l := slog.New(slog.NewTextHandler(os.Stderr, hopts))
+		l.Warn("cannot open the service log file, logging to stderr", "err", err)
+		return l, func() {}
+	}
+	return slog.New(slog.NewTextHandler(f, hopts)), func() { _ = f.Close() }
+}
+
+// daemonResult maps the result of the daemon to the command's error: a configuration problem exits with status 78.
+func daemonResult(err error) error {
 	if err == nil {
 		return nil
 	}
 	err = explain(err)
 	var ce *daemon.ConfigError
 	if errors.As(err, &ce) {
-		return cfgErr(err)
+		return configErr(err)
 	}
 	return err
 }

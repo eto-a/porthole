@@ -56,6 +56,9 @@ func UserSocketPath() string {
 	if p := platformUserSocketPath(); p != "" {
 		return p
 	}
+	if runtime.GOOS == "windows" {
+		return "" // never a .sock file: AF_UNIX is not an endpoint of ours there (ADR 0006), and a missing one dials badly
+	}
 	return userSocketPath(runtime.GOOS, os.Getenv, os.UserCacheDir)
 }
 

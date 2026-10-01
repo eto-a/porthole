@@ -17,6 +17,10 @@ const (
 	wsaEACCES       = 10013
 	wsaEADDRINUSE   = 10048
 	wsaECONNREFUSED = 10061
+	wsaEINVAL       = 10022
+	wsaENETDOWN     = 10050
+	wsaENETUNREACH  = 10051
+	wsaEHOSTUNREACH = 10065
 )
 
 // IsUnavailable reports whether err means that no daemon is listening on the socket: the socket file does not exist
@@ -28,7 +32,19 @@ func IsUnavailable(err error) bool {
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
 		return true
 	}
-	return runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(wsaECONNREFUSED))
+	// On Windows an AF_UNIX dial to a path that does not exist fails with WSAEHOSTUNREACH ("A socket operation was
+	// attempted to an unreachable host"), not with ENOENT; for a path whose directory does not exist it is WSAENETDOWN
+	// ("dead network"), WSAENETUNREACH or "invalid argument" (a deeper missing path). None of them can come from a
+	// daemon that answers, so they mean "nobody there".
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	for _, n := range []syscall.Errno{wsaECONNREFUSED, wsaEHOSTUNREACH, wsaENETUNREACH, wsaENETDOWN, wsaEINVAL, syscall.EINVAL} {
+		if errors.Is(err, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsPermissionDenied reports whether err means that the socket exists but the caller may not use it (EACCES, or

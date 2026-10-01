@@ -66,6 +66,13 @@ type Options struct {
 	TLSConfig *tls.Config
 	// Notify sends a service manager notification (sd_notify). Nil means [localapi.Notify].
 	Notify func(state string) (sent bool, err error)
+	// SocketAllow lists the principals (user or group names, or SIDs) admitted to the system named pipe on Windows,
+	// in addition to SYSTEM and Administrators. It is an error for any other Windows endpoint; unix sockets ignore
+	// it (their access control is the mode and the directory).
+	SocketAllow []string
+	// Reload, when not nil, reloads the tunnels file for every value received: the Windows service control manager's
+	// ParamChange (the twin of SIGHUP). The daemon never closes it.
+	Reload <-chan struct{}
 }
 
 // ConfigError is a problem that retrying or restarting cannot fix: a broken tunnels file at start, missing
@@ -208,7 +215,7 @@ func loadFile(path string) (file *clientconfig.File, existed bool, err error) {
 // is sent to the service manager. SIGHUP reloads the tunnels file (Unix). On shutdown STOPPING=1 is sent, the API is
 // drained and the session closed.
 func (d *Daemon) Run(ctx context.Context) error {
-	ln, err := localapi.Listen(d.opts.SocketPath, d.opts.SocketMode)
+	ln, err := localapi.ListenAllow(d.opts.SocketPath, d.opts.SocketMode, d.opts.SocketAllow)
 	if err != nil {
 		return fmt.Errorf("local api socket: %w", err)
 	}
