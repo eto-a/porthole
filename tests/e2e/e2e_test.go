@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -114,6 +115,43 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+// tcpWindowSize is the number of ports in the tcp_port_range of a test server (lo..lo+50 inclusive).
+const tcpWindowSize = 51
+
+// tcpPortWindow picks the first port of a window of tcpWindowSize free loopback ports below the ephemeral range of
+// Linux (32768-60999) and Windows (49152-65535), so that outgoing connections of the test do not take them. Every
+// port of the window is bound once before the window is returned; a window with a busy port is dropped and another
+// one is tried.
+func tcpPortWindow(t *testing.T) int {
+	t.Helper()
+	const base, span = 20000, 9000 // windows start in [20000, 29000), end below 29051
+	for range 50 {
+		lo := base + rand.IntN(span)
+		if windowFree(lo) {
+			return lo
+		}
+	}
+	t.Fatal("no free window of TCP ports found in 20000-29050")
+	return 0
+}
+
+func windowFree(lo int) bool {
+	ls := make([]net.Listener, 0, tcpWindowSize)
+	defer func() {
+		for _, l := range ls {
+			_ = l.Close()
+		}
+	}()
+	for p := lo; p < lo+tcpWindowSize; p++ {
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			return false
+		}
+		ls = append(ls, l)
+	}
+	return true
+}
+
 // proc is a running binary whose combined output is captured line by line.
 type proc struct {
 	cmd   *exec.Cmd
@@ -213,7 +251,7 @@ func setup(t *testing.T, extraConfig ...string) (*env, string) {
 	t.Helper()
 	dir := t.TempDir()
 	e := &env{port: freePort(t), clientConf: filepath.Join(dir, "client.yaml"), dataDir: filepath.Join(dir, "data")}
-	lo := 41000 + int(time.Now().UnixNano()%2000)
+	lo := tcpPortWindow(t)
 	cfg := fmt.Sprintf(`version: 1
 domain: localhost
 listen: "127.0.0.1:%d"

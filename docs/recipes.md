@@ -180,7 +180,7 @@ Behind the scenes the agent called `list_clients` and `request_tunnel`; a refusa
 
 ## Several machines
 
-One machine, one token, one name. Create a join link per machine; each machine then has its own tunnel namespace (`<tunnel>-<client>`), so `http-8080-home`, `http-8080-office` and so on never collide:
+One machine, one token, one name. Create a join link per machine; each machine then has its own tunnel namespace (`<tunnel>-<client>`), so `http-8080-home` and `http-8080-office` are different names. Two clients can still compose the same name when their names contain hyphens (client `home` with tunnel `web-a`, client `a-home` with tunnel `web`); the first to register keeps it for good and the second gets `name_taken` (see [Host names](server.md#host-names-are-per-client-tunnel)), so give clients names without hyphens where you can:
 
 ```console
 $ sudo -u porthole portholed join create --name office

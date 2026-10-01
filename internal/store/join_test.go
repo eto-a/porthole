@@ -254,6 +254,7 @@ func TestMigrationFrom0003(t *testing.T) {
 	s, path := openTemp(t)
 	for _, q := range []string{
 		`DROP TABLE join_codes`,
+		`DROP TABLE label_claims`,
 		`ALTER TABLE tokens DROP COLUMN remote_control`,
 		`DROP INDEX tokens_created_by`,
 		`ALTER TABLE tokens DROP COLUMN created_by`,

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,14 @@ func TestOfflineLabelReservedForOwner(t *testing.T) {
 	back.close()
 	waitFor(t, "owner gone again", func() bool { return h.srv.sessionCount() == 1 })
 	h.clock.advance(offlineGrace + time.Second)
+	// The grace period only covers the reconnect; the label itself is claimed for good (label_claims), so the
+	// squatter stays out until the operator releases it.
+	if e := squatter.registerErr(proto.KindHTTP, "a-x", 0); e.Code != proto.CodeNameTaken {
+		t.Fatalf("squatting after the grace period: %+v, want name_taken", e)
+	}
+	if err := h.st.ReleaseLabel(context.Background(), "a-x-b"); err != nil {
+		t.Fatal(err)
+	}
 	squatter.mustRegister(proto.KindHTTP, "a-x", 0)
 }
 
@@ -392,5 +401,44 @@ func TestHTTPBodyStall(t *testing.T) {
 	}
 	if stalled(t, -1) {
 		t.Error("with the limit off the stalled body should hang (control case)")
+	}
+}
+
+// A connection that one side has half-closed is cut after limits.tcp_half_close_timeout even when the general idle
+// limit is off (limits.tcp_idle_timeout: -1): the two limits are independent.
+func TestTCPHalfCloseTimeoutIndependentOfIdle(t *testing.T) {
+	h := newHarness(t, func(cfg *config.Config, _ *Options) {
+		cfg.Limits.TCPIdleTimeout = -1
+		cfg.Limits.TCPHalfCloseTimeout = 300 * time.Millisecond
+	})
+	c := h.login(h.st.newToken(t, "home"))
+	reg := c.mustRegister(proto.KindTCP, "half", 0)
+	// The service closes its write side at once and then says nothing, but keeps reading.
+	c.serve(func(_ proto.StreamHeader, st net.Conn) {
+		_ = st.Close()
+		_, _ = io.Copy(io.Discard, st)
+	})
+	cn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", publicPort(t, reg.PublicURL)), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cn.Close()
+
+	h.srv.mu.Lock()
+	var tun *tunnel
+	for _, x := range h.srv.ports {
+		tun = x
+	}
+	h.srv.mu.Unlock()
+	if tun == nil {
+		t.Fatal("no tunnel")
+	}
+	waitFor(t, "connection taken", func() bool { return len(tun.sem) == 1 })
+	deadline := time.Now().Add(3 * time.Second)
+	for len(tun.sem) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a half-closed connection outlived tcp_half_close_timeout with the idle limit off")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

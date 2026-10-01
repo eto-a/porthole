@@ -82,6 +82,12 @@ func (s *Server) ReplayRequest(ctx context.Context, id uint64) (traffic.Request,
 		}
 		r.Header[k] = append([]string(nil), vs...)
 	}
+	// A replay takes a request slot like a visitor does: it must not push the tunnel's client beyond the limit.
+	release := t.acquireHTTP()
+	if release == nil {
+		return traffic.Request{}, fmt.Errorf("%w: the tunnel is busy (at its limit of %d simultaneous requests); try again", ErrReplayRefused, cap(t.httpSem))
+	}
+	defer release()
 	newID := s.replayServe(t, r, orig.ID)
 	if newID == 0 {
 		return traffic.Request{}, errors.New("server: the replayed request was not recorded")
@@ -131,7 +137,8 @@ func (s *Server) replayServe(t *tunnel, r *http.Request, of uint64) (id uint64) 
 			panic(v)
 		}
 	}()
-	s.serveLogged(t, &discardWriter{h: make(http.Header)}, r, of, &id)
+	w := &discardWriter{h: make(http.Header)}
+	s.serveLogged(t, w, s.limitBody(w, r), of, &id)
 	return id
 }
 

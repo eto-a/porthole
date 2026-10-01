@@ -96,7 +96,7 @@ func (t *tunnel) handleConn(conn net.Conn) {
 	})
 	defer stop()
 	c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeAccepted)
-	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle)
+	entry.BytesIn, entry.BytesOut = pipeIdle(conn, stream, s.tcpIdle, s.tcpHalfClose)
 	c.srv.metrics.AddBytes(metrics.KindTCP, entry.BytesIn, entry.BytesOut)
 	entry.Outcome = traffic.OutcomeOK
 	s.recordConn(entry, start)
@@ -108,33 +108,38 @@ func (t *tunnel) connEntry(kind, remote string) traffic.Conn {
 }
 
 // pipe copies a<->b without an idle limit; see pipeIdle.
-func pipe(a, b net.Conn) (aToB, bToA int64) { return pipeIdle(a, b, 0) }
+func pipe(a, b net.Conn) (aToB, bToA int64) { return pipeIdle(a, b, 0, 0) }
 
 // pipeIdle copies a<->b. A clean EOF in one direction half-closes the other side so request/response protocols
 // that shut down their write side still receive the answer; any error closes both sides. Both are closed on
 // return. It returns the number of bytes copied from a to b and from b to a.
 //
-// With idle > 0 the pair is closed once no byte has moved in either direction for idle; after one direction has
-// ended, the other gets at most halfClosedIdleTimeout of silence (a peer that half-closed and then went away
-// would otherwise hold the slot forever).
-func pipeIdle(a, b net.Conn, idle time.Duration) (aToB, bToA int64) {
+// With idle > 0 the pair is closed once no byte has moved in either direction for idle. After one direction has
+// ended, the other gets at most halfClosed of silence (when halfClosed > 0): a peer that half-closed and then went
+// away would otherwise hold the slot forever. The two limits are independent: idle = 0 does not lift halfClosed.
+func pipeIdle(a, b net.Conn, idle, halfClosed time.Duration) (aToB, bToA int64) {
 	closeBoth := func() {
 		_ = a.Close()
 		_ = b.Close()
 	}
 	defer closeBoth()
-	var halfClosed atomic.Bool
+	var ended atomic.Bool // one direction is done
 	touch := func() {}
-	if idle > 0 {
-		timer := time.AfterFunc(idle, closeBoth)
+	if idle > 0 || halfClosed > 0 {
+		timer := time.AfterFunc(time.Hour, closeBoth)
 		defer timer.Stop()
 		touch = func() {
 			d := idle
-			if halfClosed.Load() {
-				d = min(d, halfClosedIdleTimeout)
+			if ended.Load() && halfClosed > 0 && (d <= 0 || halfClosed < d) {
+				d = halfClosed
 			}
-			timer.Reset(d)
+			if d > 0 {
+				timer.Reset(d)
+			} else {
+				timer.Stop()
+			}
 		}
+		touch()
 	}
 	var wg sync.WaitGroup
 	cp := func(dst, src net.Conn, n *int64) {
@@ -145,7 +150,7 @@ func pipeIdle(a, b net.Conn, idle time.Duration) (aToB, bToA int64) {
 			closeBoth()
 			return
 		}
-		halfClosed.Store(true)
+		ended.Store(true)
 		touch()
 		halfClose(dst)
 	}

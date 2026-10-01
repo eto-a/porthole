@@ -99,6 +99,11 @@ func (c *SocketClient) CloseTunnel(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/tunnels/"+url.PathEscape(id), nil, &struct{}{})
 }
 
+// ReleaseLabel calls POST labels/{label}/release.
+func (c *SocketClient) ReleaseLabel(ctx context.Context, label string) error {
+	return c.do(ctx, http.MethodPost, "/labels/"+url.PathEscape(label)+"/release", nil, &struct{}{})
+}
+
 // RevokeToken calls POST tokens/{id}/revoke.
 func (c *SocketClient) RevokeToken(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/tokens/"+url.PathEscape(id)+"/revoke", nil, &struct{}{})

@@ -71,6 +71,17 @@ type fakeStore struct {
 	revoked []string
 	audit   []store.AuditEntry
 	joins   []*store.JoinCode
+	labels  map[string]bool // permanent label claims
+}
+
+func (f *fakeStore) ReleaseLabel(_ context.Context, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.labels[label] {
+		return store.ErrNotFound
+	}
+	delete(f.labels, label)
+	return nil
 }
 
 func (f *fakeStore) GetToken(_ context.Context, id string) (*store.Token, error) {
