@@ -31,9 +31,9 @@ services:
   portholed:
     # A fixed version, not :latest: a redeploy must not pull whatever was released last. The :latest tag is not set for
     # pre-releases at all. To update, change the version here after reading the release notes; to pin by content, use
-    # `portholed:0.3.0-alpha.1@sha256:<digest>` (digest from `docker buildx imagetools inspect <image>:<tag>`) and
+    # `portholed:0.3.0-alpha.2@sha256:<digest>` (digest from `docker buildx imagetools inspect <image>:<tag>`) and
     # verify the signature first, see docs/install.md#verifying-a-download.
-    image: ghcr.io/eto-a/porthole/portholed:0.3.0-alpha.1
+    image: ghcr.io/eto-a/porthole/portholed:0.3.0-alpha.2
     restart: unless-stopped
     # Environment-only setup: no configuration file.
     command: ["serve", "--config", ""]

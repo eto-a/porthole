@@ -1,10 +1,18 @@
 # Quick start
 
-porthole is a self-hosted, open-source alternative to ngrok: you run the server, `portholed`, on a VPS with your own
-domain, and the client, `porthole`, on any machine behind NAT. To expose a local port: 1) install `portholed` on the VPS
-and point `tun.example.com` and `*.tun.example.com` at it; 2) run `portholed join create --name home` on the server and
-`porthole join <link>` on your machine; 3) run `porthole http 3000`, which prints a public HTTPS address such as
-`https://http-3000-home.tun.example.com`.
+porthole is a self-hosted, open-source alternative to ngrok: you run the server, `portholed`, on a VPS with your own domain, and the client, `porthole`, on any machine behind NAT. To expose a local port: 1) install `portholed` on the VPS and point `tun.example.com` and `*.tun.example.com` at it; 2) run `portholed join create --name home` on the server and `porthole join <link>` on your machine; 3) run `porthole http 3000`, which prints a public HTTPS address such as `https://http-3000-home.tun.example.com`.
+
+## Let your agent do it
+
+If you use Claude Code or another coding agent that can run shell commands, paste this and answer its questions:
+
+```text
+Set up porthole for me: follow https://raw.githubusercontent.com/eto-a/porthole/main/docs/agent-install.md — ask me only what you can't find out yourself.
+```
+
+It follows [Install with an agent](agent-install.md): it detects what it can, asks you for the rest (your VPS, your domain, which ports to open), runs the steps of this guide and checks that a tunnel works. To do it yourself, read on.
+
+## By hand
 
 This guide shows you how to:
 
@@ -31,8 +39,7 @@ connected as home
 https://http-3000-home.tun.example.com -> 127.0.0.1:3000
 ```
 
-DNS records for `tun.example.com` and `*.tun.example.com` must point at the server first, and ports 80, 443 (and 2222
-for SSH by name) must be open.
+DNS records for `tun.example.com` and `*.tun.example.com` must point at the server first, and ports 80, 443 (and 2222 for SSH by name) must be open.
 
 </details>
 
@@ -47,19 +54,15 @@ porthole has two programs. You set up each on a different machine:
 | Needs | Open ports, a domain | Only an outbound connection to the server on port 443 |
 | Steps | 1 to 4 below | 5 below |
 
-If someone else runs the server for you, skip to [step 5](#5-connect-the-machine-and-open-a-tunnel) and ask them for a
-join link.
+If someone else runs the server for you, skip to [step 5](#5-connect-the-machine-and-open-a-tunnel) and ask them for a join link.
 
 ## Prerequisites
 
 For the server:
 
-- A **Linux VPS with a public IP address**. Debian, Ubuntu, Fedora and RHEL derivatives get a package with a systemd
-  unit; other systems get the binary or a [Docker image](install.md#docker).
-- A **domain with wildcard DNS**: an `A` record for `tun.example.com` and one for `*.tun.example.com`, both pointing at
-  the server. The examples on this page use `tun.example.com`.
-- **Open ports**: `80` and `443` (certificates and all web tunnels), `2222` (the optional SSH gateway) and a TCP port
-  range, `20000-29999` by default, for TCP tunnels.
+- A **Linux VPS with a public IP address**. Debian, Ubuntu, Fedora and RHEL derivatives get a package with a systemd unit; other systems get the binary or a [Docker image](install.md#docker).
+- A **domain with wildcard DNS**: an `A` record for `tun.example.com` and one for `*.tun.example.com`, both pointing at the server. The examples on this page use `tun.example.com`.
+- **Open ports**: `80` and `443` (certificates and all web tunnels), `2222` (the optional SSH gateway) and a TCP port range, `20000-29999` by default, for TCP tunnels.
 - An **email address** (optional): Let's Encrypt can use it to warn you before a certificate expires.
 
 For the client you need nothing but the server's address and a join link.
@@ -70,12 +73,9 @@ For the client you need nothing but the server's address and a join link.
 $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server
 ```
 
-On Debian, Ubuntu, Fedora and RHEL (as root or with `sudo`) this installs the `.deb` or `.rpm`: the `portholed`
-binary, the systemd unit, the `porthole` system user and an example configuration at `/etc/porthole/portholed.yaml`.
-It checks the SHA-256 of the download first. Nothing is started yet.
+On Debian, Ubuntu, Fedora and RHEL (as root or with `sudo`) this installs the `.deb` or `.rpm`: the `portholed` binary, the systemd unit, the `porthole` system user and an example configuration at `/etc/porthole/portholed.yaml`. It checks the SHA-256 of the download first. Nothing is started yet.
 
-> Prefer containers? Use [Docker Compose or Dokploy](deploy.md) instead of this step and the next two. Other install
-> options (archives, packages, verifying a download) are in [Installation](install.md).
+> Prefer containers? Use [Docker Compose or Dokploy](deploy.md) instead of this step and the next two. Other install options (archives, packages, verifying a download) are in [Installation](install.md).
 
 ## 2. Point the domain and set it in the configuration
 
@@ -92,10 +92,7 @@ version: 1
 domain: tun.example.com
 ```
 
-That is all for TLS. The default mode, `acme`, gets a certificate per tunnel host name from Let's Encrypt at the first
-connection to it, and renews it in the background; there is no DNS provider to configure and no renewal job
-([ADR 0004](adr/0004-automatic-https-per-tunnel.md)). Add `tls.acme.email` if you want expiry notices. If you already have a wildcard certificate, or a
-reverse proxy in front, see [TLS](server.md#tls) and [Behind a reverse proxy](server.md#behind-a-reverse-proxy).
+That is all for TLS. The default mode, `acme`, gets a certificate per tunnel host name from Let's Encrypt at the first connection to it, and renews it in the background; there is no DNS provider to configure and no renewal job ([ADR 0004](adr/0004-automatic-https-per-tunnel.md)). Add `tls.acme.email` if you want expiry notices. If you already have a wildcard certificate, or a reverse proxy in front, see [TLS](server.md#tls) and [Behind a reverse proxy](server.md#behind-a-reverse-proxy).
 
 To enable SSH by name, add the gateway to the same file:
 
@@ -113,13 +110,11 @@ $ sudo systemctl enable --now portholed
 $ sudo systemctl status portholed
 ```
 
-The log is JSON on stderr; read it with `journalctl -u portholed`. If the service does not start, look there
-first (a configuration file with an unknown key is rejected).
+The log is JSON on stderr; read it with `journalctl -u portholed`. If the service does not start, look there first (a configuration file with an unknown key is rejected).
 
 ## 4. Create a join link
 
-A join link gives one machine its own permanent token without anyone copying a secret around. It works once and
-expires after 15 minutes:
+A join link gives one machine its own permanent token without anyone copying a secret around. It works once and expires after 15 minutes:
 
 ```console
 $ sudo -u porthole portholed join create --name home
@@ -130,9 +125,7 @@ On the machine, run:
     porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...
 ```
 
-`home` is the client name. It becomes part of the tunnel addresses (`https://<tunnel>-home.tun.example.com`) and the
-name you use for SSH. Use one name per machine. More options (`--ttl`, `--scopes`, `--max-tunnels`) are in
-[Join links](server.md#join-links); for scripted setups there are [tokens](server.md#tokens).
+`home` is the client name. It becomes part of the tunnel addresses (`https://<tunnel>-home.tun.example.com`) and the name you use for SSH. Use one name per machine. More options (`--ttl`, `--scopes`, `--max-tunnels`) are in [Join links](server.md#join-links); for scripted setups there are [tokens](server.md#tokens).
 
 ## 5. Connect the machine and open a tunnel
 
@@ -152,11 +145,7 @@ connected as home
 https://http-3000-home.tun.example.com -> 127.0.0.1:3000
 ```
 
-Open the address in a browser. You see your local service with a valid HTTPS certificate: the first request to a new
-name waits a few seconds while the server obtains the certificate, later ones do not. The command stays in the
-foreground and reconnects by itself when the network drops; press `Ctrl-C` to close the tunnel. The address is stable:
-the default name is `http-<port>`, or choose your own with `--name blog`
-(`https://blog-home.tun.example.com`).
+Open the address in a browser. You see your local service with a valid HTTPS certificate: the first request to a new name waits a few seconds while the server obtains the certificate, later ones do not. The command stays in the foreground and reconnects by itself when the network drops; press `Ctrl-C` to close the tunnel. The address is stable: the default name is `http-<port>`, or choose your own with `--name blog` (`https://blog-home.tun.example.com`).
 
 Something does not work? See [Troubleshooting](troubleshooting.md).
 
