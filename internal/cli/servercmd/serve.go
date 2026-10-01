@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/exitcode"
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/server"
 	"github.com/eto-a/porthole/internal/store"
@@ -33,17 +34,17 @@ func NewServe(
 		Short:         "Run the porthole server",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			level, err := parseLevel(logLevel)
 			if err != nil {
-				return err
+				return exitcode.UsageError(err)
 			}
 			logger := slog.New(slog.NewJSONHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: level}))
 
 			cfg, err := load()
 			if err != nil {
-				return fmt.Errorf("load config: %w", err)
+				return exitcode.ConfigError(fmt.Errorf("load config: %w", err))
 			}
 
 			parent := cmd.Context()

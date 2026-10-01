@@ -150,8 +150,8 @@ func TestDaemonConfigErrorsExit78(t *testing.T) {
 }
 
 func TestExitCode(t *testing.T) {
-	if ExitCode(nil) != 1 || ExitCode(errors.New("x")) != 1 {
-		t.Error("plain errors exit with 1")
+	if ExitCode(nil) != 0 || ExitCode(errors.New("x")) != 1 {
+		t.Error("nil exits with 0, plain errors with 1")
 	}
 	if got := ExitCode(&ExitError{Code: 78, Err: errors.New("x")}); got != 78 {
 		t.Errorf("got %d", got)

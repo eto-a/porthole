@@ -7,7 +7,6 @@ package tokencmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/eto-a/porthole/internal/auth"
+	"github.com/eto-a/porthole/internal/cli/exitcode"
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/store"
 )
@@ -53,7 +54,7 @@ type env struct {
 func (e *env) open(cmd *cobra.Command) (*config.Config, *store.SQLite, context.Context, context.CancelFunc, error) {
 	cfg, err := e.load()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("load config: %w", err)
+		return nil, nil, nil, nil, exitcode.ConfigError(fmt.Errorf("load config: %w", err))
 	}
 	parent := cmd.Context()
 	if parent == nil {
@@ -170,18 +171,18 @@ func (e *env) createCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !auth.ValidName(name) {
-				return fmt.Errorf("invalid --name %q: want 1-32 characters of a-z, 0-9 and '-', not starting or ending with '-'", name)
+				return exitcode.UsageError(fmt.Errorf("invalid --name %q: want 1-32 characters of a-z, 0-9 and '-', not starting or ending with '-'", name))
 			}
 			sc, err := validateScopes(scopes)
 			if err != nil {
-				return err
+				return exitcode.UsageError(err)
 			}
 			d, err := parseExpires(expires)
 			if err != nil {
-				return fmt.Errorf("invalid --expires: %w", err)
+				return exitcode.UsageError(fmt.Errorf("invalid --expires: %w", err))
 			}
 			if maxTunnels < 0 {
-				return fmt.Errorf("invalid --max-tunnels %d: must not be negative", maxTunnels)
+				return exitcode.UsageError(fmt.Errorf("invalid --max-tunnels %d: must not be negative", maxTunnels))
 			}
 
 			cfg, st, ctx, cancel, err := e.open(cmd)
@@ -217,6 +218,20 @@ func (e *env) createCmd() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
+			if jsonout.Enabled(cmd) {
+				return jsonout.Write(out, createdJSON{
+					ID:         tok.ID,
+					Name:       name,
+					Token:      tok.String(),
+					Last4:      tok.Last4(),
+					Scopes:     sc,
+					MaxTunnels: maxTunnels,
+					CreatedAt:  now.UTC(),
+					ExpiresAt:  utcPtr(rec.ExpiresAt),
+					ServerURL:  loginURL(cfg),
+					Login:      fmt.Sprintf("porthole login %s %s", loginURL(cfg), tok.String()),
+				})
+			}
 			fmt.Fprintf(out, "Created token %q (id %s, scopes %s, expires %s).\n\n",
 				name, tok.ID, strings.Join(sc, ","), formatExpires(rec.ExpiresAt))
 			fmt.Fprintf(out, "    %s\n\n", tok.String())
@@ -275,6 +290,29 @@ type tokenJSON struct {
 	Status     string     `json:"status"`
 }
 
+// createdJSON is the --json output of `token create`. It is the only place that ever shows the secret: "token" is the
+// full token and "login" the command that stores it on a client.
+type createdJSON struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Token      string     `json:"token"`
+	Last4      string     `json:"last4"`
+	Scopes     []string   `json:"scopes"`
+	MaxTunnels int        `json:"max_tunnels"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at"`
+	ServerURL  string     `json:"server_url"`
+	Login      string     `json:"login"`
+}
+
+// revokedJSON is the --json output of `token revoke`.
+type revokedJSON struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Revoked        bool   `json:"revoked"`
+	AlreadyRevoked bool   `json:"already_revoked"`
+}
+
 func utcPtr(t *time.Time) *time.Time {
 	if t == nil {
 		return nil
@@ -284,7 +322,7 @@ func utcPtr(t *time.Time) *time.Time {
 }
 
 func (e *env) listCmd() *cobra.Command {
-	var all, asJSON bool
+	var all bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List client tokens",
@@ -309,14 +347,13 @@ func (e *env) listCmd() *cobra.Command {
 				}
 			}
 			out := cmd.OutOrStdout()
-			if asJSON {
+			if jsonout.Enabled(cmd) {
 				return writeJSON(out, shown, now)
 			}
 			return writeTable(out, shown, now)
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "include revoked tokens")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print a JSON array")
 	return cmd
 }
 
@@ -340,9 +377,7 @@ func writeJSON(w io.Writer, toks []*store.Token, now time.Time) error {
 			Status:     status(t, now),
 		})
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(arr)
+	return jsonout.Write(w, arr)
 }
 
 func writeTable(w io.Writer, toks []*store.Token, now time.Time) error {
@@ -385,6 +420,11 @@ func (e *env) revokeCmd() *cobra.Command {
 				return fmt.Errorf("revoke token: %w", err)
 			}
 			out := cmd.OutOrStdout()
+			if jsonout.Enabled(cmd) {
+				return jsonout.Write(out, revokedJSON{
+					ID: target.ID, Name: target.Name, Revoked: true, AlreadyRevoked: target.RevokedAt != nil,
+				})
+			}
 			if target.RevokedAt != nil {
 				fmt.Fprintf(out, "Token %q (id %s) was already revoked.\n", target.Name, target.ID)
 				return nil

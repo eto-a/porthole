@@ -38,6 +38,11 @@ type Config struct {
 	// modes; an explicit empty string disables it. It is an error in mode "off", where Listen is already plain HTTP.
 	HTTPListen *string `yaml:"http_listen"`
 
+	// MetricsListen is the address of the listener that serves Prometheus metrics at /metrics and the Go profiler
+	// at /debug/pprof/. Empty (the default) disables it. Use a loopback address such as "127.0.0.1:9090": the
+	// endpoints are unauthenticated.
+	MetricsListen string `yaml:"metrics_listen"`
+
 	TLS TLS `yaml:"tls"`
 
 	// PublicScheme is the scheme used in public HTTP tunnel URLs ("https" or "http").
@@ -64,6 +69,10 @@ type Config struct {
 
 	// DataDir holds the SQLite database.
 	DataDir string `yaml:"data_dir"`
+
+	// AdminSocket is the unix socket of the admin API (mode 0600, access is the permission). Empty means
+	// <data_dir>/admin.sock; "-" turns the socket off. Not served on Windows.
+	AdminSocket string `yaml:"admin_socket"`
 
 	// TrustProxyHeaders makes the server take visitor addresses from X-Forwarded-For.
 	// Enable only when portholed runs behind a reverse proxy you control.
@@ -239,7 +248,9 @@ func (c *Config) applyEnv(lookup func(string) (string, bool)) error {
 		"PORTHOLED_TCP_PORT_RANGE": &c.TCPPortRange,
 		"PORTHOLED_TCP_BIND_HOST":  &c.TCPBindHost,
 		"PORTHOLED_DATA_DIR":       &c.DataDir,
+		"PORTHOLED_ADMIN_SOCKET":   &c.AdminSocket,
 		"PORTHOLED_SSH_LISTEN":     &c.SSHGateway.Listen,
+		"PORTHOLED_METRICS_LISTEN": &c.MetricsListen,
 	}
 	for k, p := range str {
 		if v, ok := lookup(k); ok {
@@ -306,6 +317,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %w", err))
 		} else if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
 			errs = append(errs, fmt.Errorf("ssh_gateway.listen: %q needs a numeric port 1-65535", c.SSHGateway.Listen))
+		}
+	}
+	if c.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.MetricsListen); err != nil {
+			errs = append(errs, fmt.Errorf("metrics_listen: %w", err))
 		}
 	}
 	if c.SSHGateway.MaxConnsPerTunnel < 0 {
@@ -404,6 +420,17 @@ func (c *Config) PortRange() (lo, hi int, err error) {
 		return 0, 0, fmt.Errorf("tcp_port_range: %q, want \"LOW-HIGH\" within 1-65535", c.TCPPortRange)
 	}
 	return lo, hi, nil
+}
+
+// AdminSocketPath returns where the admin socket lives, or "" when it is turned off (admin_socket: "-").
+func (c *Config) AdminSocketPath() string {
+	switch c.AdminSocket {
+	case "-":
+		return ""
+	case "":
+		return filepath.Join(c.DataDir, "admin.sock")
+	}
+	return c.AdminSocket
 }
 
 // DBPath is the SQLite database location.

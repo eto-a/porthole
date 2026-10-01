@@ -13,10 +13,25 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/eto-a/porthole/internal/auth"
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/client"
 )
 
 const checkTimeout = 30 * time.Second
+
+// loginResult is the --json output of `porthole login`. It never contains the token.
+type loginResult struct {
+	Saved  bool        `json:"saved"`
+	Server string      `json:"server"`
+	Config string      `json:"config"` // path of the file the credentials were written to
+	Check  *loginCheck `json:"check,omitempty"`
+}
+
+// loginCheck is what `porthole login --check` learned from the server.
+type loginCheck struct {
+	ClientName    string `json:"client_name"`
+	ServerVersion string `json:"server_version"`
+}
 
 func (a *app) newLoginCmd() *cobra.Command {
 	var check bool
@@ -32,10 +47,10 @@ func (a *app) newLoginCmd() *cobra.Command {
 			server := strings.TrimRight(strings.TrimSpace(args[0]), "/")
 			token := strings.TrimSpace(args[1])
 			if _, err := client.ConnectURL(server); err != nil {
-				return err
+				return usageErr(err)
 			}
 			if _, err := auth.Parse(token); err != nil {
-				return errors.New("invalid token: expected the form ph_<id>_<secret>")
+				return usageErr(errors.New("invalid token: expected the form ph_<id>_<secret>"))
 			}
 			path, err := a.path()
 			if err != nil {
@@ -45,9 +60,16 @@ func (a *app) newLoginCmd() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Saved credentials for %s to %s\n", server, path)
+			asJSON := jsonout.Enabled(cmd)
+			if !asJSON {
+				fmt.Fprintf(out, "Saved credentials for %s to %s\n", server, path)
+			}
+			result := loginResult{Saved: true, Server: server, Config: path}
 
 			if !check {
+				if asJSON {
+					return jsonout.Write(out, result)
+				}
 				return nil
 			}
 			parent := cmd.Context()
@@ -64,6 +86,10 @@ func (a *app) newLoginCmd() *cobra.Command {
 			})
 			if err != nil {
 				return fmt.Errorf("credentials saved, but the server check failed: %w", explain(err))
+			}
+			if asJSON {
+				result.Check = &loginCheck{ClientName: res.ClientName, ServerVersion: res.ServerVersion}
+				return jsonout.Write(out, result)
 			}
 			fmt.Fprintf(out, "Server check passed: logged in as %q (server version %s)\n", res.ClientName, res.ServerVersion)
 			return nil

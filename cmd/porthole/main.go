@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,10 +18,7 @@ var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := clientcmd.NewRoot(version).ExecuteContext(ctx)
+	code := clientcmd.Main(ctx, version)
 	stop()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "porthole:", err)
-		os.Exit(clientcmd.ExitCode(err))
-	}
+	os.Exit(code)
 }

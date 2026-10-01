@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/localapi"
 	"github.com/eto-a/porthole/internal/proto"
@@ -194,11 +195,13 @@ func toClientEvent(ev localapi.Event, tun localapi.Tunnel) (client.Event, bool) 
 
 // attachTunnel adds the tunnel to the daemon as an attached tunnel and keeps it for as long as this command runs.
 func (a *app) attachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient, socket string, tr tunnelRequest) error {
-	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	errOut := cmd.ErrOrStderr()
 	var tun localapi.Tunnel
 	ready, removed := false, false
 	var failure error
 	hint := tr.hint()
+	sink := eventSink(cmd, hint, false)
+	asJSON := jsonout.Enabled(cmd)
 
 	err := cl.Attach(ctx, tr.apiRequest(), func(ev localapi.Event) error {
 		switch ev.Type {
@@ -213,7 +216,11 @@ func (a *app) attachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 			}
 			switch {
 			case ev.Error == "": // removed on the daemon (`porthole close`, or a reload that replaced it)
-				fmt.Fprintf(errOut, "tunnel %s was removed on the daemon\n", ev.Name)
+				if asJSON {
+					sink(client.TunnelClosed{Name: ev.Name, Reason: "removed on the daemon"})
+				} else {
+					fmt.Fprintf(errOut, "tunnel %s was removed on the daemon\n", ev.Name)
+				}
 				removed = true
 				return localapi.ErrStopStream
 			case !ready: // the server refused the registration: report and give up, like the in-process client
@@ -229,7 +236,7 @@ func (a *app) attachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 			}
 		}
 		if ce, ok := toClientEvent(ev, tun); ok {
-			printEvent(out, errOut, ce, hint)
+			sink(ce)
 		}
 		return nil
 	})
@@ -274,6 +281,9 @@ func (a *app) detachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 		if t, ok := findTunnel(tunnels, tun.Name); ok {
 			switch t.State {
 			case localapi.TunnelReady:
+				if jsonout.Enabled(cmd) {
+					return jsonout.Write(out, t)
+				}
 				hint := tr.hint()
 				a.learnClient(ctx, cl, hint)
 				printEvent(out, cmd.ErrOrStderr(), client.TunnelReady{

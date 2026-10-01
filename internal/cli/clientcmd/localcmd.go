@@ -5,7 +5,6 @@ package clientcmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eto-a/porthole/internal/cli/exitcode"
+	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/localapi"
 )
 
@@ -37,7 +38,6 @@ func (a *app) withDaemon(cmd *cobra.Command, fn func(ctx context.Context, cl api
 }
 
 func (a *app) newStatusCmd() *cobra.Command {
-	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the state of the porthole daemon and its tunnels",
@@ -51,20 +51,18 @@ func (a *app) newStatusCmd() *cobra.Command {
 				if st.Tunnels == nil {
 					st.Tunnels = []localapi.Tunnel{}
 				}
-				if asJSON {
-					return writeJSON(cmd.OutOrStdout(), st)
+				if jsonout.Enabled(cmd) {
+					return jsonout.Write(cmd.OutOrStdout(), st)
 				}
 				printStatus(cmd.OutOrStdout(), st, socket)
 				return nil
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print the status as JSON")
 	return cmd
 }
 
 func (a *app) newTunnelsCmd() *cobra.Command {
-	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "tunnels",
 		Aliases: []string{"ls"},
@@ -79,15 +77,14 @@ func (a *app) newTunnelsCmd() *cobra.Command {
 				if ts == nil {
 					ts = []localapi.Tunnel{}
 				}
-				if asJSON {
-					return writeJSON(cmd.OutOrStdout(), ts)
+				if jsonout.Enabled(cmd) {
+					return jsonout.Write(cmd.OutOrStdout(), ts)
 				}
 				printTunnels(cmd.OutOrStdout(), ts)
 				return nil
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print the tunnels as JSON")
 	return cmd
 }
 
@@ -104,6 +101,9 @@ func (a *app) newReloadCmd() *cobra.Command {
 				res, err := cl.Reload(ctx)
 				if err != nil {
 					return apiErr(err, socket)
+				}
+				if jsonout.Enabled(cmd) {
+					return writeReloadJSON(cmd.OutOrStdout(), res)
 				}
 				return printReload(cmd.OutOrStdout(), cmd.ErrOrStderr(), res)
 			})
@@ -123,6 +123,11 @@ func (a *app) newCloseCmd() *cobra.Command {
 				if err := cl.RemoveTunnel(ctx, args[0]); err != nil {
 					return apiErr(err, socket)
 				}
+				if jsonout.Enabled(cmd) {
+					return jsonout.Write(cmd.OutOrStdout(), struct {
+						Closed string `json:"closed"`
+					}{args[0]})
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "closed %s\n", args[0])
 				return nil
 			})
@@ -130,11 +135,24 @@ func (a *app) newCloseCmd() *cobra.Command {
 	}
 }
 
-func writeJSON(w io.Writer, v any) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+// writeReloadJSON writes the outcome of a reload as one JSON object (see localapi.ReloadResult). Per-tunnel failures
+// are in "errors" and make the command fail with exit status 5; no second document follows.
+func writeReloadJSON(w io.Writer, res localapi.ReloadResult) error {
+	for _, list := range []*[]string{&res.Added, &res.Removed, &res.Changed, &res.Unchanged} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	if err := jsonout.Write(w, res); err != nil {
+		return err
+	}
+	if len(res.Errors) > 0 {
+		return &ExitError{Code: exitcode.Rejected, Err: errReloadFailed, Quiet: true}
+	}
+	return nil
 }
+
+var errReloadFailed = errors.New("the reload finished with errors")
 
 // printStatus renders the daemon status for people.
 func printStatus(w io.Writer, st localapi.Status, socket string) {
@@ -204,5 +222,5 @@ func printReload(out, errOut io.Writer, res localapi.ReloadResult) error {
 	for _, name := range slices.Sorted(maps.Keys(res.Errors)) {
 		fmt.Fprintf(errOut, "tunnel %s: %s\n", name, res.Errors[name])
 	}
-	return errors.New("the reload finished with errors")
+	return &ExitError{Code: exitcode.Rejected, Err: errReloadFailed}
 }

@@ -85,7 +85,7 @@ func (a *app) resolveCreds(f *connFlags) (credsFrom, error) {
 func (a *app) credentials(f *connFlags) (server, token string, err error) {
 	c, err := a.resolveCreds(f)
 	if err != nil {
-		return "", "", err
+		return "", "", configErr(err)
 	}
 	server = c.server
 	if server == "" {
@@ -97,14 +97,14 @@ func (a *app) credentials(f *connFlags) (server, token string, err error) {
 // checkCreds verifies that server and token are set and well-formed.
 func (a *app) checkCreds(server, token string) (string, string, error) {
 	if server == "" || token == "" {
-		return "", "", fmt.Errorf("no server or token configured: run `porthole login <server-url> <token>`, "+
-			"or set %s and %s", envServer, envToken)
+		return "", "", configErr(fmt.Errorf("no server or token configured: run `porthole login <server-url> <token>`, "+
+			"or set %s and %s", envServer, envToken))
 	}
 	if _, err := client.ConnectURL(server); err != nil {
-		return "", "", err
+		return "", "", configErr(err)
 	}
 	if _, err := auth.Parse(token); err != nil {
-		return "", "", errors.New("the configured token is malformed (expected ph_<id>_<secret>); run `porthole login` with a valid token")
+		return "", "", configErr(errors.New("the configured token is malformed (expected ph_<id>_<secret>); run `porthole login` with a valid token"))
 	}
 	return server, token, nil
 }
@@ -189,7 +189,7 @@ func (a *app) newHTTPCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := parseTarget(args[0])
 			if err != nil {
-				return err
+				return usageErr(err)
 			}
 			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeHTTP, name: name, addr: target})
 		},
@@ -216,11 +216,11 @@ func (a *app) newTCPCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := parseTarget(args[0])
 			if err != nil {
-				return err
+				return usageErr(err)
 			}
 			if cmd.Flags().Changed("remote-port") {
 				if _, err := parsePort(fmt.Sprint(remotePort)); err != nil {
-					return fmt.Errorf("--remote-port: %w", err)
+					return usageErr(fmt.Errorf("--remote-port: %w", err))
 				}
 			}
 			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeTCP, name: name, addr: target, remotePort: remotePort})
@@ -251,18 +251,18 @@ func (a *app) newSSHCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := parsePort(fmt.Sprint(localPort)); err != nil {
-				return fmt.Errorf("--local-port: %w", err)
+				return usageErr(fmt.Errorf("--local-port: %w", err))
 			}
 			target, err := parseTarget(fmt.Sprint(localPort))
 			if err != nil {
-				return err
+				return usageErr(err)
 			}
 			if cmd.Flags().Changed("remote-port") {
 				if _, err := parsePort(fmt.Sprint(remotePort)); err != nil {
-					return fmt.Errorf("--remote-port: %w", err)
+					return usageErr(fmt.Errorf("--remote-port: %w", err))
 				}
 				if !publicPort {
-					return errors.New("--remote-port needs --public-port: through the gateway the tunnel has no public port")
+					return usageErr(errors.New("--remote-port needs --public-port: through the gateway the tunnel has no public port"))
 				}
 			}
 			if userName == "" {
@@ -352,8 +352,8 @@ func rejectCredentialFlags(cmd *cobra.Command, socket string) error {
 	if len(given) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s configure a standalone client and cannot be combined with the daemon at %s, which has its own "+
-		"server and token; drop them or use --no-daemon to run in this process", strings.Join(given, ", "), socket)
+	return usageErr(fmt.Errorf("%s configure a standalone client and cannot be combined with the daemon at %s, which has its own "+
+		"server and token; drop them or use --no-daemon to run in this process", strings.Join(given, ", "), socket))
 }
 
 // runStandalone runs the tunnel in this process, as porthole did before the daemon existed.
@@ -362,15 +362,15 @@ func (a *app) runStandalone(ctx context.Context, cmd *cobra.Command, cf *connFla
 	if err != nil {
 		return err
 	}
-	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	hint := tr.hint()
+	sink := eventSink(cmd, hint, false)
 	err = a.d.run(ctx, client.Options{
 		ServerURL: server,
 		Token:     token,
 		Tunnels:   []client.TunnelSpec{tr.spec()},
 		Version:   a.version,
 		Logger:    a.logger(cmd),
-		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, hint) },
+		OnEvent:   sink,
 
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})

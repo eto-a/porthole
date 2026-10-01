@@ -77,6 +77,11 @@ data_dir: /var/lib/porthole
 #   listen: ":2222"
 #   max_conns_per_tunnel: 256
 
+# Metrics: Prometheus /metrics and the Go profiler /debug/pprof/ on a separate listener. Off unless set. The
+# endpoints are unauthenticated: bind to loopback (a non-loopback address only logs a warning) and scrape from the
+# same host or through an authenticating proxy. Env: PORTHOLED_METRICS_LISTEN
+# metrics_listen: "127.0.0.1:9090"
+
 # Take visitor IP addresses from X-Forwarded-For. Enable ONLY when portholed is reachable exclusively through a
 # reverse proxy you control; otherwise visitors can spoof their address. Default false.
 # Env: PORTHOLED_TRUST_PROXY_HEADERS

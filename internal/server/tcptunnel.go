@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eto-a/porthole/internal/metrics"
 	"github.com/eto-a/porthole/internal/traffic"
 )
 
@@ -47,6 +48,7 @@ func (t *tunnel) acceptLoop() {
 			entry := t.connEntry(traffic.KindTCP, conn.RemoteAddr().String())
 			entry.Outcome = traffic.OutcomeLimit
 			c.srv.recordConn(entry, c.srv.now())
+			c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeLimit)
 			_ = conn.Close()
 			continue
 		}
@@ -67,6 +69,7 @@ func (t *tunnel) handleConn(conn net.Conn) {
 	stream, err := t.openStream(remote)
 	if err != nil {
 		c.log.Debug("open stream for tcp visitor failed", "tunnel", t.id, "remote", remote, "err", err)
+		c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeStreamError)
 		_ = conn.Close()
 		entry.Outcome = traffic.OutcomeRefused
 		s.recordConn(entry, start)
@@ -78,7 +81,9 @@ func (t *tunnel) handleConn(conn net.Conn) {
 		_ = stream.Close()
 	})
 	defer stop()
+	c.srv.metrics.ConnOutcome(metrics.KindTCP, metrics.OutcomeAccepted)
 	entry.BytesIn, entry.BytesOut = pipe(conn, stream)
+	c.srv.metrics.AddBytes(metrics.KindTCP, entry.BytesIn, entry.BytesOut)
 	entry.Outcome = traffic.OutcomeOK
 	s.recordConn(entry, start)
 }

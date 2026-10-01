@@ -119,6 +119,7 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `data_dir` | `PORTHOLED_DATA_DIR` | `/var/lib/porthole` | Directory of the SQLite database (`porthole.db`: tokens and port reservations) and, in mode `acme`, of `certs/`; must be writable by the service user |
 | `ssh_gateway.listen` | `PORTHOLED_SSH_LISTEN` | off | Address of the SSH gateway, for example `:2222` (see [SSH gateway](#ssh-gateway)) |
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
+| `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
 | `shutdown_grace` | - | `10s` | How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut |
@@ -269,19 +270,81 @@ or `PORTHOLED_SSH_LISTEN=:2222`. Open that port in the firewall (port 22 of the 
 
 Design and rejected alternatives: [ADR 0003](adr/0003-ssh-gateway-and-port-reservations.md).
 
+## Metrics
+
+Set `metrics_listen` (for example `127.0.0.1:9090`) to serve Prometheus metrics at `/metrics` and the Go profiler at
+`/debug/pprof/` on a separate listener. It is off by default. The listener has no authentication and the profiler can
+expose memory contents and slow the server down, so bind it to a loopback address and scrape it from the same host
+(Prometheus agent, node-local collector) or through a proxy that authenticates. Any other address works but logs a
+warning at start.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `porthole_build_info` | gauge | `version` | Always 1; the version of `portholed` |
+| `porthole_sessions` | gauge | - | Connected client sessions |
+| `porthole_tunnels` | gauge | `kind` (`http`, `tcp`, `ssh`) | Registered tunnels |
+| `porthole_http_requests_total` | counter | `status_class` (`1xx` to `5xx`) | Requests to tunnel hosts, by response status |
+| `porthole_http_request_duration_seconds` | histogram | - | Request time until the response is fully written; long-lived streaming responses land in the top buckets |
+| `porthole_bytes_total` | counter | `direction` (`in` toward the tunnel client, `out` toward the visitor), `kind` | Relayed bytes. For `http` only request and response bodies are counted, and a WebSocket upgrade counts as one `101` response without its frames |
+| `porthole_tcp_connections_total` | counter | `kind` (`tcp`, `ssh`), `outcome` | Visitor connections to TCP tunnels and SSH gateway channels. `outcome`: `accepted`, `limit` (tunnel at its connection limit), `stream_error` (the client did not open a stream), `refused` (`ssh` only: unknown or not permitted target) |
+| `porthole_ssh_gateway_auth_failures_total` | counter | - | Failed token logins at the SSH gateway |
+| `porthole_handshake_failures_total` | counter | `reason` | Control handshakes answered with an error; `reason` is the protocol error code (`unauthorized`, `unsupported_version`, `limit_exceeded`, ...) |
+| `porthole_acme_certificates_total` | counter | `result` (`obtained`, `failed`) | Certificate issuance and renewal attempts in mode `acme` |
+
+The standard `go_*` and `process_*` metrics are included. Metrics are never labelled by tunnel, client, host or
+address, so the number of series does not grow with traffic. Bytes of a TCP or SSH connection are added when the
+connection ends.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: portholed
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+Profiling, for example a 30 second CPU profile: `go tool pprof http://127.0.0.1:9090/debug/pprof/profile?seconds=30`.
+From your workstation use an SSH port forward (`ssh -L 9090:127.0.0.1:9090 tun.example.com`) instead of opening the port.
+
 ## Command reference
 
 | Command | Purpose |
 |---|---|
 | `portholed serve [--config] [--log-level]` | Run the server |
 | `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N]` | Create a token |
-| `portholed token list [--all] [--json]` | List tokens |
+| `portholed token list [--all]` | List tokens |
 | `portholed token revoke <id\|name>` | Revoke a token |
 | `portholed ssh-hostkey` | Print the fingerprint of the SSH gateway host key |
 | `portholed version` | Print the version |
 
 The global flag `-c, --config` (default `/etc/porthole/portholed.yaml`; empty means environment variables only)
 applies to all of them.
+
+### Machine-readable output (`--json`)
+
+The global flag `--json` makes a command write JSON to stdout instead of text (one document per command):
+
+| Command | Document |
+|---|---|
+| `token create` | `id`, `name`, `token` (the secret: this is the only place that ever shows it), `last4`, `scopes`, `max_tunnels`, `created_at`, `expires_at`, `server_url`, `login` (the `porthole login ...` command line) |
+| `token list` | An array of tokens, without secrets |
+| `token revoke` | `id`, `name`, `revoked`, `already_revoked` |
+| `ssh-hostkey` | `fingerprint`, `path` |
+| `version` | `name`, `version`, `go`, `os`, `arch` |
+
+`serve` writes nothing to stdout; its log is always JSON on stderr. A failure writes
+`{"error":{"code":"...","message":"..."}}` to stdout (without `--json`: `portholed: <message>` to stderr).
+
+### Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Any other failure: database, a token that does not exist, the server stopping with an error |
+| 2 | Usage error: unknown command, bad flag or argument, an invalid `--name`, `--expires`, `--scopes` or `--log-level` |
+| 78 | The configuration could not be loaded or is invalid |
+
+The client-side statuses 3 to 6 are not used by `portholed`; see the [client guide](client.md#exit-status).
 
 ## Security
 
