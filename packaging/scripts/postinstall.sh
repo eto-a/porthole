@@ -2,17 +2,24 @@
 # Post-install script of the portholed .deb and .rpm packages.
 #
 # Creates the "porthole" system user and the data directory. It deliberately does NOT enable or start the service:
-# the shipped /etc/porthole/portholed.yaml is only an example and must be edited first.
+# /etc/porthole/portholed.yaml is only a copy of the example and must be edited first.
 #
 # Called by dpkg as "configure [<previous version>]" (a previous version means upgrade) and by rpm with $1 = 1
 # (install) or 2 (upgrade). Structure follows the Caddy packaging scripts
 # (https://github.com/caddyserver/dist, scripts/postinstall.sh); the install/upgrade split follows zrok
 # (https://github.com/openziti/zrok, nfpm/postinstall-controller.bash).
+#
+# /etc/porthole/portholed.yaml is not a package file: dpkg creates it here from the example if it does not exist, and
+# never touches an existing one (as a conffile it made a non-interactive upgrade fail whenever the example changed,
+# because every operator edits it). rpm does this in posttrans.sh. Upgrading from a version that shipped it as a
+# conffile: dpkg leaves such an obsolete conffile on disk (and deletes it only on purge), so the file is kept.
 set -e
 
 user=porthole
 group=porthole
 home=/var/lib/porthole
+conf=/etc/porthole/portholed.yaml
+example=/usr/share/porthole/portholed.example.yaml
 
 case "$1" in
 configure)
@@ -45,6 +52,14 @@ fi
 
 # The SQLite database (token hashes) lives here; keep it private to the service user.
 install -d -o "$user" -g "$group" -m 0750 "$home"
+
+# dpkg only: rpm creates the file in posttrans.sh, after the old package is gone. Readable by root and by the service
+# user only (the unit's manual-install header does the same). Failing here must not fail the installation: the
+# operator can copy the example by hand.
+if [ "$1" = configure ] && [ ! -e "$conf" ] && [ -f "$example" ]; then
+  install -m 0640 -o root -g "$group" "$example" "$conf" ||
+    echo "portholed: could not create $conf; copy $example there" >&2
+fi
 
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload >/dev/null 2>&1 || true

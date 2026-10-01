@@ -69,9 +69,9 @@ archives:
 # cosign signature and the build provenance attestation like the archives. File names follow the archives,
 # <name>_<version>_linux_<arch>.deb|rpm, instead of ConventionalFileName, whose "~" GitHub rewrites in asset names.
 #
-# portholed: binary, systemd unit, example configuration (kept on upgrade) and maintainer scripts. The scripts create
-# the "porthole" user and the data directory but do not enable or start the service (the configuration has to be
-# edited first). porthole: binary, systemd unit of the client daemon, example tunnels file (copied to
+# portholed: binary, systemd unit, example configuration (copied to /etc/porthole/portholed.yaml by the scripts only if
+# missing) and maintainer scripts. The scripts create the "porthole" user and the data directory but do not enable or
+# start the service (the configuration has to be edited first). porthole: binary, systemd unit of the client daemon, example tunnels file (copied to
 # /etc/porthole/tunnels.yaml by the scripts only if missing) and maintainer scripts that create the "porthole-client"
 # user and group; the service is not enabled either (it needs credentials). Both packages may be installed together: they share only the directory /etc/porthole.
 nfpms:
@@ -107,15 +107,15 @@ nfpms:
         type: dir
         file_info:
           mode: 0755
-      # Edited by the operator; never overwritten on upgrade (rpm: %config(noreplace), deb: conffile).
+      # The configuration /etc/porthole/portholed.yaml is deliberately NOT a package file (not even a conffile): every
+      # operator edits it (at least `domain`), and when the example changed between releases dpkg asked about the
+      # conffile and failed in a non-interactive `apt-get install` (EOF at the prompt). The post-install script (rpm:
+      # post-transaction script) copies the example there if the file does not exist yet, so an existing file is never
+      # touched. The example, to diff against, is kept outside /usr/share/doc on purpose: the scripts read it, and
+      # minimal container images (the ubuntu and debian ones) exclude /usr/share/doc/* from dpkg. Policy 12.3: no
+      # dependency on documentation files.
       - src: deploy/portholed.example.yaml
-        dst: /etc/porthole/portholed.yaml
-        type: config|noreplace
-        file_info:
-          mode: 0644
-      # A pristine copy to diff against after an upgrade that changes the defaults.
-      - src: deploy/portholed.example.yaml
-        dst: /usr/share/doc/portholed/portholed.example.yaml
+        dst: /usr/share/porthole/portholed.example.yaml
         file_info:
           mode: 0644
       - src: LICENSE
@@ -133,6 +133,12 @@ nfpms:
       postinstall: packaging/scripts/postinstall.sh
       preremove: packaging/scripts/preremove.sh
       postremove: packaging/scripts/postremove.sh
+    # Runs after the old package's files are gone: on an upgrade from a version that shipped portholed.yaml as a
+    # %config file, rpm deletes it (unchanged) or renames it to portholed.yaml.rpmsave (edited) only after the new
+    # %post, so the file has to be created or restored here.
+    rpm:
+      scripts:
+        posttrans: packaging/scripts/posttrans.sh
     overrides:
       rpm:
         dependencies:

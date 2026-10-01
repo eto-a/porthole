@@ -1,0 +1,80 @@
+name: Packages
+
+# Upgrade test of the deb and rpm packages. It builds snapshot packages from the commit, installs the previously
+# published release, edits the configuration files the way an operator does, upgrades unattended (stdin on /dev/null,
+# like unattended-upgrades or a config-management run) and checks that the edits survive and nothing fails. dpkg used
+# to stop at a conffile prompt there ("end of file on stdin at conffile prompt"). Not a required check.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - ".goreleaser.yaml"
+      - "deploy/*.service"
+      - "deploy/*.example.yaml"
+      - ".github/workflows/packages.yml"
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".goreleaser.yaml"
+      - "deploy/*.service"
+      - "deploy/*.example.yaml"
+      - ".github/workflows/packages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The published release to upgrade from: the newest one that shipped the configuration files as conffiles.
+  OLD_TAG: v0.3.0-alpha.2
+  # Base images pinned by the digest of the multi-arch index. Dependabot does not see these lines: update tag and
+  # digest by hand (docker buildx imagetools inspect <image>).
+  DEB_IMAGE: ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+  RPM_IMAGE: fedora:latest@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+
+jobs:
+  upgrade:
+    name: upgrade (deb on Ubuntu, rpm on Fedora)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # GoReleaser reads the history for the version and the changelog
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # a pull request must not be able to write a cache that the build then trusts
+      - name: Prepare a GoReleaser configuration for linux/amd64 only
+        # The packages do not depend on the other platforms; the snapshot version is fixed and sorts above the old tag.
+        run: |
+          sed -e 's/goos: \[linux, darwin, windows\]/goos: [linux]/' \
+            -e 's/goarch: \[amd64, arm64\]/goarch: [amd64]/' .goreleaser.yaml > "$RUNNER_TEMP/goreleaser-ci.yaml"
+          printf 'snapshot:\n  version_template: "0.99.0-ci"\n' >> "$RUNNER_TEMP/goreleaser-ci.yaml"
+          grep -c 'goarch: \[amd64\]' "$RUNNER_TEMP/goreleaser-ci.yaml"
+      - name: Build snapshot packages
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: release --snapshot --clean --config ${{ runner.temp }}/goreleaser-ci.yaml --skip=sign,docker,publish,sbom,announce,archive
+      - name: Collect the new and download the published packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/new"
+          cp dist/portholed_*_linux_amd64.deb dist/portholed_*_linux_amd64.rpm \
+            dist/porthole_*_linux_amd64.deb dist/porthole_*_linux_amd64.rpm "$RUNNER_TEMP/new/"
+          bash packaging/test/fetch-release.sh "$OLD_TAG" "$RUNNER_TEMP/old"
+          ls "$RUNNER_TEMP/new" "$RUNNER_TEMP/old"
+      - name: Upgrade test, deb (Ubuntu)
+        run: bash packaging/test/run-in-container.sh "$DEB_IMAGE" deb "$RUNNER_TEMP/old" "$RUNNER_TEMP/new"
+      - name: Upgrade test, rpm (Fedora)
+        if: ${{ !cancelled() }}
+        run: bash packaging/test/run-in-container.sh "$RPM_IMAGE" rpm "$RUNNER_TEMP/old" "$RUNNER_TEMP/new"

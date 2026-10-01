@@ -128,7 +128,7 @@ Open TCP 443 (control connections and HTTP tunnels), TCP 80 in mode `acme` (HTTP
 
 ## Run it
 
-With the deb or rpm package the unit and the `porthole` user already exist and the example configuration is installed as `/etc/porthole/portholed.yaml`: edit it as above, then
+With the deb or rpm package the unit and the `porthole` user already exist and the example configuration is installed as `/etc/porthole/portholed.yaml` (only if missing; upgrades never touch it, and the current example is in `/usr/share/porthole/portholed.example.yaml`): edit it as above, then
 
 ```console
 $ sudo systemctl enable --now portholed
