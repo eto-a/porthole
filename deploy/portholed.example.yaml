@@ -1,0 +1,58 @@
+# portholed configuration. Copy to /etc/porthole/portholed.yaml and adjust.
+#
+# Unknown keys are an error. Every key except `version` and `shutdown_grace` can also be set with a PORTHOLED_*
+# environment variable (they override this file), for example PORTHOLED_DOMAIN or PORTHOLED_TCP_PORT_RANGE.
+# Pass `--config ""` to configure the server only through the environment.
+
+# Configuration schema version. Required; this build understands 1.
+version: 1
+
+# Base domain (a bare host name, no scheme or port). Required.
+#   https://<domain>/_porthole/v1/connect  control endpoint used by `porthole`
+#   https://<name>-<client>.<domain>       HTTP tunnels (needs DNS for both <domain> and *.<domain>)
+#   <domain>:<port>                        TCP tunnels
+# Env: PORTHOLED_DOMAIN
+domain: tun.example.com
+
+# Address of the HTTP(S) listener: control endpoint, health check and HTTP tunnels.
+# Default ":443". Env: PORTHOLED_LISTEN
+listen: ":443"
+
+# TLS certificate and key (PEM). Set both or neither. With both set, portholed terminates TLS itself; a wildcard
+# certificate for <domain> and *.<domain> is needed. With neither set, portholed speaks plain HTTP, which is what you want
+# behind a TLS-terminating reverse proxy (see Caddyfile.example). Restart portholed after the certificate is renewed.
+# Env: PORTHOLED_TLS_CERT_FILE, PORTHOLED_TLS_KEY_FILE
+tls:
+  cert_file: /etc/porthole/tls/fullchain.pem
+  key_file: /etc/porthole/tls/privkey.pem
+
+# Scheme and port used in the public HTTP tunnel URLs that clients are shown. Default "https" and no port.
+# Change them only for local development (for example public_scheme: http, public_port: 8080) or when the
+# public port differs from the listening port (for example behind a proxy on a non-standard port).
+# Env: PORTHOLED_PUBLIC_SCHEME, PORTHOLED_PUBLIC_PORT
+# public_scheme: https
+# public_port: 0
+
+# Inclusive range of public ports handed out to TCP (and SSH) tunnels. Open it in your firewall.
+# Default "20000-29999". Env: PORTHOLED_TCP_PORT_RANGE
+tcp_port_range: "20000-29999"
+
+# Address the TCP tunnel listeners bind to. Empty (the default) means all interfaces.
+# Env: PORTHOLED_TCP_BIND_HOST
+# tcp_bind_host: ""
+
+# Directory for the SQLite database (porthole.db): tokens and their state. Must be writable by the service user.
+# Default "/var/lib/porthole". Env: PORTHOLED_DATA_DIR
+data_dir: /var/lib/porthole
+
+# Take visitor IP addresses from X-Forwarded-For. Enable ONLY when portholed is reachable exclusively through a
+# reverse proxy you control; otherwise visitors can spoof their address. Default false.
+# Env: PORTHOLED_TRUST_PROXY_HEADERS
+# trust_proxy_headers: true
+
+# Maximum simultaneous tunnels for tokens that have no limit of their own (see `token create --max-tunnels`).
+# Default 10. Env: PORTHOLED_MAX_TUNNELS_PER_CLIENT
+max_tunnels_per_client: 10
+
+# How long graceful shutdown (SIGINT/SIGTERM) may take before connections are cut. Go duration. Default 10s.
+shutdown_grace: 10s

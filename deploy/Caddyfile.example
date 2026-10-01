@@ -1,0 +1,30 @@
+# Caddy in front of portholed: Caddy terminates TLS (wildcard certificate via DNS-01) and proxies plain HTTP to
+# portholed, including WebSocket upgrades (used by the porthole control connection and by tunneled websites).
+#
+# Wildcard certificates need a DNS provider module compiled into Caddy, for example:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+# Pick the module for your DNS provider and set its credentials in the environment of the Caddy process.
+#
+# portholed must listen on loopback in plain HTTP and trust Caddy's X-Forwarded-For header
+# (see portholed.example.yaml; omit the tls section):
+#
+#   version: 1
+#   domain: tun.example.com
+#   listen: "127.0.0.1:8080"
+#   trust_proxy_headers: true
+#   tcp_port_range: "20000-29999"
+#   data_dir: /var/lib/porthole
+#
+# TCP and SSH tunnels do not pass through Caddy: portholed listens on the ports of tcp_port_range directly,
+# so open that range in your firewall.
+
+tun.example.com, *.tun.example.com {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Do not buffer: tunneled responses may be streams (SSE, long polling).
+		flush_interval -1
+	}
+}

@@ -1,0 +1,82 @@
+# golangci-lint v2 configuration. Docs: https://golangci-lint.run/docs/configuration/
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck # in v2 also covers the former gosimple and stylecheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec
+    - errorlint
+    - bodyclose
+    - sloglint
+    - gocritic
+    - revive
+    - misspell
+    - nolintlint
+    - copyloopvar
+    - durationcheck
+    - nilerr
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Best-effort close of a WebSocket connection (typically in defer/cleanup): there is nothing to do on failure.
+        - (*github.com/coder/websocket.Conn).CloseNow
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        # Options/tuning structs (80-96 bytes) are passed by value on purpose: they are handed over once at start-up,
+        # value semantics keep the callee from mutating the caller's copy, and the cost is negligible.
+        - hugeParam
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # noisy; struct layout is not a priority
+        - shadow # `err` shadowing in short scopes is idiomatic
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    sloglint:
+      no-global: all # no global loggers: pass *slog.Logger explicitly
+      static-msg: true # log messages are constants; put variable data in attributes
+      no-mixed-args: true
+
+  exclusions:
+    generated: lax
+    warn-unused: true
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    rules:
+      # Tests legitimately: read fixture files from variable paths (G304), use weak randomness for test data (G404),
+      # create files with relaxed permissions in temporary directories (G301, G302, G306), ignore errors from
+      # best-effort cleanup (G104; errcheck still covers the rest), convert small test-controlled sizes between
+      # integer types (G115) and run test servers that echo request data (G705).
+      - path: _test\.go
+        linters:
+          - gosec
+        text: '^G(104|115|301|302|304|306|404|705):'
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      module-path: github.com/eto-a/porthole
+    goimports:
+      local-prefixes:
+        - github.com/eto-a/porthole

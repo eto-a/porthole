@@ -1,0 +1,40 @@
+# Example Docker Compose setup for portholed. Run from the repository root:
+#   docker compose -f deploy/compose.yaml up -d --build
+#   docker compose -f deploy/compose.yaml exec portholed portholed token create --name home
+#
+# Copy deploy/portholed.example.yaml to deploy/portholed.yaml first and adjust it (domain, TLS files).
+# Expected layout of the TLS directory: ./tls/fullchain.pem and ./tls/privkey.pem, readable by uid 65532.
+
+services:
+  portholed:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: dev
+    image: portholed:local
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      # TCP/SSH tunnel ports. Publishing 10000 ports is slow with the default Docker networking, so this example
+      # uses a small range; keep it in sync with tcp_port_range (here via PORTHOLED_TCP_PORT_RANGE below).
+      - "20000-20099:20000-20099"
+    environment:
+      PORTHOLED_TCP_PORT_RANGE: "20000-20099"
+      # Any other setting can be given the same way, for example:
+      # PORTHOLED_DOMAIN: tun.example.com
+    volumes:
+      - porthole-data:/var/lib/porthole
+      - ./portholed.yaml:/etc/porthole/portholed.yaml:ro
+      - ./tls:/etc/porthole/tls:ro
+    read_only: true
+    sysctls:
+      # Allow the non-root process to bind port 443 (capabilities are dropped below).
+      net.ipv4.ip_unprivileged_port_start: 0
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  porthole-data:

@@ -1,0 +1,44 @@
+# Build output
+/bin/
+/dist/
+/portholed
+/porthole
+*.exe
+*.exe~
+*.test
+*.out
+coverage.*
+*.prof
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local config and secrets (examples live in deploy/)
+/portholed.yaml
+/config.yaml
+*.pem
+*.key
+.env
+# Test fixtures (including fuzz corpora and throwaway test certificates) are tracked.
+!testdata/
+!**/testdata/**
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Tooling
+graphify-out/
+.claude/settings.local.json
+# Note: .claude/agents/ is intentionally tracked.
+
+# Go workspace files
+go.work
+go.work.sum

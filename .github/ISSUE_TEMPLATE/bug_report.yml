@@ -1,0 +1,62 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is a security vulnerability, do not file it here: see
+        [SECURITY.md](https://github.com/eto-a/porthole/blob/main/SECURITY.md).
+        Remove tokens (`ph_...`), private keys and other secrets from everything you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands and configuration (with secrets removed) that reproduce the problem.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: portholed version
+      description: Output of `portholed version`.
+    validations:
+      required: true
+  - type: input
+    id: client-version
+    attributes:
+      label: porthole version
+      description: Output of `porthole version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating systems
+      description: Server and client, for example "server Debian 12 amd64, client Windows 11 amd64".
+    validations:
+      required: true
+  - type: dropdown
+    id: tls-mode
+    attributes:
+      label: Server TLS setup
+      options:
+        - portholed terminates TLS (cert_file / key_file)
+        - Behind a reverse proxy (plain HTTP)
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant server and client logs (use `--log-level debug` on the server if possible). Remove tokens.
+      render: shell

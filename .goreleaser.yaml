@@ -1,0 +1,134 @@
+# GoReleaser configuration (v2). Docs: https://goreleaser.com/customization/
+# Releases are produced by .github/workflows/release.yml on tags matching v*.
+# Local dry run: goreleaser release --snapshot --clean
+version: 2
+
+project_name: porthole
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: portholed
+    main: ./cmd/portholed
+    binary: portholed
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: porthole
+    main: ./cmd/porthole
+    binary: porthole
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: portholed
+    ids: [portholed]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "portholed_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - src: deploy/portholed.example.yaml
+        dst: portholed.example.yaml
+
+  - id: porthole
+    ids: [porthole]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "porthole_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# SBOM for every archive, generated with syft (installed by the release workflow).
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless signature of the checksum file with cosign v3 (Sigstore bundle). Needs `id-token: write` in CI.
+# Verify: cosign verify-blob --bundle checksums.txt.sigstore.json \
+#   --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v' \
+#   --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - '^test(\(.+\))?!?:'
+      - '^ci(\(.+\))?!?:'
+      - '^chore(\(.+\))?!?:'
+      - "^Merge "
+  groups:
+    - title: Breaking changes
+      regexp: '^.*?(\(.+\))?!:'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\(.+\))?:'
+      order: 1
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))?:'
+      order: 2
+    - title: Security
+      regexp: '^.*?sec(urity)?(\(.+\))?:'
+      order: 3
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))?:'
+      order: 4
+    - title: Other changes
+      order: 999
+
+release:
+  github:
+    owner: eto-a
+    name: porthole
+  prerelease: auto
+  footer: |
+    ## Verify
+
+    ```
+    cosign verify-blob --bundle checksums.txt.sigstore.json \
+      --certificate-identity-regexp '^https://github.com/eto-a/porthole/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+    sha256sum --check --ignore-missing checksums.txt
+    ```
+
+    Build provenance: `gh attestation verify <archive> --repo eto-a/porthole`.

@@ -1,0 +1,66 @@
+# systemd unit for the porthole server.
+#
+# Install:
+#   useradd --system --home-dir /var/lib/porthole --shell /usr/sbin/nologin porthole
+#   install -m 0755 portholed /usr/local/bin/portholed
+#   install -d -m 0755 /etc/porthole
+#   install -m 0640 -g porthole portholed.yaml /etc/porthole/portholed.yaml
+#   install -m 0644 portholed.service /etc/systemd/system/portholed.service
+#   systemctl daemon-reload && systemctl enable --now portholed
+#
+# The user "porthole" must be able to read the TLS certificate and key referenced in the configuration
+# (for example by copying them to /etc/porthole/tls from your certbot deploy hook), and the service must be
+# restarted after the certificate is renewed.
+
+[Unit]
+Description=porthole tunnel server
+Documentation=https://github.com/eto-a/porthole
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=porthole
+Group=porthole
+ExecStart=/usr/local/bin/portholed serve --config /etc/porthole/portholed.yaml
+Restart=on-failure
+RestartSec=2s
+# Longer than shutdown_grace in the configuration (default 10s).
+TimeoutStopSec=30s
+LimitNOFILE=65536
+UMask=0077
+
+# State: the SQLite database lives in data_dir (/var/lib/porthole by default).
+StateDirectory=porthole
+ReadWritePaths=/var/lib/porthole
+
+# Binding to port 443 (and any port below 1024) without running as root.
+# If you use a port above 1023 (for example behind a reverse proxy), you can remove both capability lines.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Hardening.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
