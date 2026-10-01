@@ -525,7 +525,7 @@ func serverKnowsTLSMode(t *testing.T) bool {
 	if bin == "" {
 		return true
 	}
-	out, err := exec.Command(bin, "version").Output()
+	out, err := exec.Command(bin, "version").Output() //nolint:gosec // the test runs the binary the compat job points it at
 	if err != nil {
 		t.Fatalf("%s version: %v", bin, err)
 	}
