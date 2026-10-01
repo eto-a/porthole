@@ -33,7 +33,10 @@ using `sudo` only when needed. If [cosign](https://docs.sigstore.dev) is install
 
 Without `--version` the script asks the GitHub API for the latest release (60 requests per hour per IP address); with
 `--version` it makes no API call. Without cosign, the SHA-256 check only protects against a corrupted download, not against
-a tampered release: see [Verifying a download](#verifying-a-download).
+a tampered release: see [Verifying a download](#verifying-a-download). The version, given or returned by the API, must
+look like `v1.2.3` or `v1.2.3-rc.1`; anything else is refused. Downloads use HTTPS only and TLS 1.2 or newer (curl, and
+GNU wget; BusyBox wget cannot enforce this, so install curl there). Piping a script from the network to `sh` trusts the
+network and `main`: to review it first, download it, read it and pin a release (`--version vX.Y.Z`).
 
 ## Packages (Debian, Ubuntu, Fedora, RHEL and derivatives)
 

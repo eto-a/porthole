@@ -190,7 +190,20 @@ fetch() {
     esac
     ;;
   wget)
-    wget -q -T 30 -O "$2" "$1"
+    # GNU wget: HTTPS only (no downgrade by redirect) and TLS 1.2+. BusyBox wget has neither option; there the plain
+    # call is the best that can be done, so prefer curl on such systems.
+    case "$1" in
+    https://*)
+      if wget --help 2>&1 | grep -q -e '--https-only'; then
+        wget -q -T 30 --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"
+      else
+        wget -q -T 30 -O "$2" "$1"
+      fi
+      ;;
+    *)
+      wget -q -T 30 -O "$2" "$1"
+      ;;
+    esac
     ;;
   esac
 }
@@ -198,6 +211,13 @@ fetch() {
 # json_tag FILE: first "tag_name" value in a GitHub API response (a release, or a list of releases, newest first).
 json_tag() {
   tr ',' '\n' <"$1" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# valid_tag TAG: true for vMAJOR.MINOR.PATCH with an optional pre-release suffix, nothing else. The tag ends up in
+# download URLs and file names, so no "/", ".." or other surprises (a hostile PORTHOLE_API_URL can return any tag).
+valid_tag() {
+  printf '%s
+' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 }
 
 # resolve_version sets $tag (v1.2.3) and $ver (1.2.3).
@@ -209,10 +229,8 @@ json_tag() {
 resolve_version() {
   if [ -n "$version" ]; then
     ver=${version#v}
-    case "$ver" in
-    *[!0-9A-Za-z.+-]* | "" | [!0-9]*) die "invalid version \"$version\"; expected something like v0.1.0 or v0.1.0-alpha.1" ;;
-    esac
     tag="v$ver"
+    valid_tag "$tag" || die "invalid version \"$version\"; expected something like v0.1.0 or v0.1.0-alpha.1"
     return
   fi
 
@@ -234,10 +252,7 @@ resolve_version() {
     *-*) say "Using the pre-release ${tag}." ;;
     esac
   fi
-  case "$tag" in
-  v[0-9]*) ;;
-  *) die "unexpected release tag \"$tag\"" ;;
-  esac
+  valid_tag "$tag" || die "unexpected release tag \"$tag\" from the GitHub API"
   ver=${tag#v}
 }
 

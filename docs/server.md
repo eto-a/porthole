@@ -278,8 +278,15 @@ TCP service) and `portholed` reads it:
 
 ```yaml
 proxy_protocol: true
-trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12"]   # the Docker network of Traefik; narrow it to your subnet
+trusted_proxies: ["10.0.1.0/24"]   # example: the subnet of the Docker network Traefik is on
 ```
+
+`trusted_proxies` is the list of peers that may state any visitor address, so keep it as narrow as possible: the exact
+subnet of the network Traefik shares with `portholed` (`docker network inspect dokploy-network -f
+'{{(index .IPAM.Config 0).Subnet}}'`), not the broad private ranges `10.0.0.0/8` or `172.16.0.0/12`. Every container in
+a listed subnet can connect to `portholed` directly and forge the address, so on Dokploy, where all your apps share
+`dokploy-network`, prefer a network of its own for Traefik and `portholed` if you can set that up. A wrong value fails
+closed: Traefik is then not trusted, its header is refused and HTTPS stops working.
 
 - Applies to the HTTPS listener and the SSH gateway. The metrics listener and TCP tunnel ports are not affected: they
   are reached directly.
