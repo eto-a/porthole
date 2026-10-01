@@ -1,0 +1,74 @@
+/* One accent colour (teal), Inter for text and JetBrains Mono for code; both self-hosted via @fontsource. */
+:root {
+  --sl-font: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sl-color-accent-low: #0a3330;
+  --sl-color-accent: #14b8a6;
+  --sl-color-accent-high: #5eead4;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #eceef2;
+  --sl-color-gray-2: #c0c2c7;
+  --sl-color-gray-3: #888b96;
+  --sl-color-gray-4: #545861;
+  --sl-color-gray-5: #353841;
+  --sl-color-gray-6: #24272f;
+  --sl-color-black: #14161b;
+  --sl-content-width: 46rem;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #ccfbf1;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #115e59;
+  --sl-color-white: #14161b;
+  --sl-color-gray-1: #24272f;
+  --sl-color-gray-2: #353841;
+  --sl-color-gray-3: #545861;
+  --sl-color-gray-4: #7c808b;
+  --sl-color-gray-5: #c0c2c7;
+  --sl-color-gray-6: #eceef2;
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #ffffff;
+}
+
+/* The terminal is dark in both themes. */
+:root {
+  --lp-term-bg: #12151b;
+  --lp-term-bar: #1b1f27;
+  --lp-term-fg: #dfe3ea;
+  --lp-term-dim: #8b93a1;
+  --lp-term-accent: #5eead4;
+}
+
+/* Landing page: use the full width of the splash template and drop the page title (the hero has the h1). */
+.sl-container:has(.lp) {
+  max-width: none;
+}
+.content-panel:has(.lp) {
+  padding: 0;
+  border: 0;
+}
+.main-pane:has(.lp) .content-panel:not(:has(.lp)) {
+  display: none;
+}
+body:has(.lp) footer {
+  display: none;
+}
+html:has(.lp) {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html:has(.lp) {
+    scroll-behavior: auto;
+  }
+}
+
+/* Docs: slightly calmer inline code, visible focus. */
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent-high);
+  outline-offset: 2px;
+}
+.sl-markdown-content details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}

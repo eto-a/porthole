@@ -1,7 +1,8 @@
 # porthole
 
-**A self-hosted, open-source alternative to ngrok: expose a service behind NAT through your own server, and reach your
-machines over SSH by name.**
+**Self-hosted tunnels built for LLM agents: your agent exposes ports, opens SSH to machines behind NAT, inspects
+traffic and onboards new machines, on your own server.** An open-source alternative to ngrok that Claude Code (or any
+[MCP](https://modelcontextprotocol.io) client) can drive.
 
 [![CI](https://github.com/eto-a/porthole/actions/workflows/ci.yml/badge.svg)](https://github.com/eto-a/porthole/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/eto-a/porthole?include_prereleases)](https://github.com/eto-a/porthole/releases)
@@ -10,28 +11,93 @@ machines over SSH by name.**
 [![Go version](https://img.shields.io/github/go-mod/go-version/eto-a/porthole)](go.mod)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[Install](docs/install.md) | [Server](docs/server.md) | [Client](docs/client.md) | [SSH by name](docs/ssh.md) |
-[Design](DESIGN.md) | [Releases](https://github.com/eto-a/porthole/releases)
+[Quickstart](docs/quickstart.md) | [Agents](docs/agents.md) | [Install](docs/install.md) | [Server](docs/server.md) |
+[Client](docs/client.md) | [SSH by name](docs/ssh.md) | [Recipes](docs/recipes.md) | [Releases](https://github.com/eto-a/porthole/releases)
 
-You run one server, `portholed`, on a machine with a public IP address and a domain. On any machine behind NAT you run
-the client, `porthole`. No public instance, no usage limits, no account with a third party: you own the server, the
-domain and the data. The headline use case is `ssh -J tun.example.com:2222 alice@home` with stock OpenSSH and nothing
-installed on the machine you connect from. Management of the server by LLM agents (admin API and MCP server) is next on
-the [roadmap](#status).
+## What your agent can do
+
+```text
+You:    Expose port 8080 on home
+Agent:  request_tunnel {client: "home", kind: "http", local_addr: "8080"}
+        -> https://http-8080-home.tun.example.com
+
+You:    What hit my webhook in the last 10 minutes?
+Agent:  query_requests {since: "10m"}      (headers and bodies if the tunnel runs with --inspect)
+
+You:    Add my new laptop
+Agent:  create_join_link {client: "laptop"}
+        -> run on the laptop: porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...
+```
+
+Connect Claude Code to your server and to a machine (details and the full tool list: [Agents](docs/agents.md)):
+
+```console
+$ sudo -u porthole portholed token create --name ops-agent --scopes admin:read,admin:tunnels,admin:remote,admin:tokens   # on the server
+$ claude mcp add --transport http porthole https://tun.example.com/_porthole/mcp --header "Authorization: Bearer ph_..."
+$ claude mcp add porthole-local -- porthole mcp                                                  # on a client machine
+```
+
+### Safe to hand to an agent
+
+- **Scopes and toolsets.** Every tool checks a scope (`admin:read`, `admin:tunnels`, `admin:remote`, ...); an agent that
+  should only look around gets a token with `admin:read`. `--read-only` registers no mutating tool at all.
+- **Audit.** Every mutating call is written to the audit log with the token that made it, including refusals.
+- **Join links, not secrets.** `create_join_link` returns a single-use, 15-minute link; the permanent token goes
+  straight to the new machine and never passes through the conversation. No tool returns a long-lived secret.
+- **The machine has the last word.** When the server asks a client to open a tunnel, it only goes through if the client's
+  token allows remote control and the machine's own policy accepts the target. By default that means ports of the
+  machine itself (loopback); other hosts on its LAN only if you list them in `allow_remote`.
+- **No MCP? Use the CLI.** `--json` makes every command print JSON (JSON Lines for long-running ones) and use stable exit
+  codes, so any agent can script it: `porthole http 8080 --detach --json`. See
+  [machine-readable output](docs/client.md#machine-readable-output---json).
+
+## And the tunnels themselves
+
+- **HTTPS with automatic certificates.** One subdomain per HTTP(S) or WebSocket tunnel; the server gets Let's Encrypt
+  certificates itself, no DNS provider needed ([TLS](docs/server.md#tls)).
+- **SSH by name.** `ssh -J tun.example.com:2222 alice@home` with stock OpenSSH and nothing installed on the machine you
+  connect from; `scp`, `sftp` and `rsync` work too. The gateway only forwards and never sees your password or key
+  ([SSH by name](docs/ssh.md)).
+- **TCP.** A database, a game server, anything, on a port of the server's range.
+- **Service and daemon.** List tunnels in `tunnels.yaml`, run the client as a systemd service, and they survive reboots.
+- **Traffic log and inspector.** Search requests, see what a webhook sent, replay it ([Request log](docs/server.md#request-log-and-inspection)).
+- **Outbound-only client.** One TLS connection on port 443, so it works behind NAT and most corporate firewalls and
+  reconnects automatically. Stable addresses, tokens with expiry and scopes, signed releases ([verify a download](docs/install.md#verifying-a-download)).
 
 > **Status: alpha.** Only [preview releases](https://github.com/eto-a/porthole/releases) exist so far. The wire
 > protocol, the configuration format and the CLI may still change before the first stable release. Do not rely on it
 > for anything you cannot afford to break. This README describes `main`; check the release notes of the version you
 > install.
 
-## Quick start
+## Install
+
+porthole has two parts: a server you set up once, and a client on every machine. No public instance, no account with a
+third party: you own the server, the domain and the data. A first run from scratch: [Quickstart](docs/quickstart.md).
+
+### Server (once, on a VPS)
+
+1. **DNS.** Point the domain and a wildcard at the server's IP address:
+   `tun.example.com. A 203.0.113.10` and `*.tun.example.com. A 203.0.113.10`.
+2. **Install**, with the script, a Docker image or Dokploy ([all options](docs/install.md#server-once-on-a-vps)):
+
+   ```console
+   $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server
+   ```
+
+   With Docker see [Docker](docs/install.md#docker) and [deploy/compose.yaml](deploy/compose.yaml); on Dokploy paste
+   [deploy/dokploy-compose.yaml](deploy/dokploy-compose.yaml) as a Compose service ([deploy guide](docs/deploy.md)).
+3. **Configure and start.** Set `domain: tun.example.com` in `/etc/porthole/portholed.yaml`, open ports 80 and 443 (and
+   the TCP range and SSH port if you use them), then `sudo systemctl enable --now portholed`. HTTPS certificates are
+   obtained automatically, per host name, from Let's Encrypt. Other modes: [TLS](docs/server.md#tls).
+4. **Create a join link** for the first machine:
+
+   ```console
+   $ sudo -u porthole portholed join create --name home
+   ```
+
+### Clients (on every machine)
 
 ```console
-# On the server (public IP, domain and wildcard DNS record, TLS certificate: see docs/server.md)
-$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server
-$ sudo -u porthole portholed join create --name home       # prints a one-time `porthole join` command
-
-# On your machine, behind NAT
 $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh
 $ porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_....    # works once, valid for 15 minutes
 $ porthole http 3000
@@ -39,53 +105,7 @@ connected as home
 https://http-3000-home.tun.example.com -> 127.0.0.1:3000
 ```
 
-The first command only installs the server: edit `/etc/porthole/portholed.yaml` and start the service as described in
-[Server setup](docs/server.md) before creating the join link (it needs the running server). A join link hands the
-machine its own token without anyone copying a secret; `portholed token create` and `porthole login` remain for scripted setups.
-
-## Use cases
-
-**Publish a web application** (HTTPS and WebSocket, one subdomain per tunnel):
-
-```console
-$ porthole http 8080                       # https://http-8080-home.tun.example.com
-$ porthole http 192.168.1.10:3000 --name blog   # https://blog-home.tun.example.com
-```
-
-**SSH to a home machine behind NAT, by name.** On the machine (it needs an sshd), run `porthole ssh`; it prints the
-command. Anywhere else, with plain OpenSSH:
-
-```console
-$ ssh -J tun.example.com:2222 alice@home
-```
-
-or once in `~/.ssh/config`, then just `ssh home` (also `scp`, `sftp`, `rsync`):
-
-```
-Host home
-    HostName home
-    User alice
-    ProxyJump tun.example.com:2222
-```
-
-The gateway only forwards, never gives a shell on the server, and never sees your password or key. Compare its host
-key fingerprint (`portholed ssh-hostkey`) on the first connection. Details: [SSH by name](docs/ssh.md).
-
-**Private SSH**: `porthole ssh --private` makes the gateway ask for a porthole token before it opens the tunnel; you
-select this with the user name `token`:
-
-```console
-$ ssh -J token@tun.example.com:2222 alice@home
-```
-
-**A TCP service** (database, game server, anything), on a port of the server's range:
-
-```console
-$ porthole tcp 5432                        # tcp://tun.example.com:<port from the range>
-$ porthole tcp nas.local:5432 --remote-port 20017
-```
-
-**Several tunnels that survive reboots.** List them in `tunnels.yaml` and run the client as a service:
+For tunnels that stay up, list them in `tunnels.yaml` and run the client as a service:
 
 ```yaml
 version: 1
@@ -100,23 +120,19 @@ $ sudo systemctl enable --now porthole     # deb/rpm package; or `porthole start
 $ porthole status
 ```
 
-See the [Client guide](docs/client.md) for the daemon, user units and `--detach`.
+Packages, Docker sidecar, Windows and macOS archives: [Installation](docs/install.md#clients-on-every-machine). More
+on the daemon, user units and `--detach`: [Client guide](docs/client.md).
 
-## Features
+### Everyday commands
 
-| | |
-|---|---|
-| **Self-hosted** | One static binary per side, no CGO; systemd units, deb/rpm packages and distroless Docker images ([install](docs/install.md)) |
-| **Client-driven** | Tunnels are configured on the client; the server allocates the address and only issues tokens |
-| **Outbound-only client** | One TLS connection to the server on port 443, so it works behind NAT and most corporate firewalls; reconnects automatically |
-| **Protocols** | HTTP(S) and WebSocket (subdomain per tunnel), TCP (port from a configured range), SSH (by name through the gateway) |
-| **Tokens** | Created, listed and revoked on the server; they can expire and carry scopes and tunnel limits; a token is a client identity, and each client sees only its own tunnels and names |
-| **Stable addresses** | HTTP names are derived from the tunnel name; TCP ports stay reserved for a client and tunnel name for 24 hours, also across server restarts |
-| **TLS** | From certificate files (renewals picked up without a restart) or behind a reverse proxy such as Caddy ([server setup](docs/server.md)) |
-| **Agent-managed** | MCP servers for LLM agents: an operator endpoint on the server (`/_porthole/mcp`, bearer token with scopes, toolsets, `--read-only`, audit log; list and search clients, tunnels and traffic, replay recorded requests, open a tunnel on a connected client on request, create single-use join links) and `porthole mcp` for opening tunnels on a machine ([agents](docs/agents.md)) |
-| **Supply chain** | Signed releases (cosign), build provenance attestations, SBOMs ([verify a download](docs/install.md#verifying-a-download)) |
+```console
+$ porthole http 192.168.1.10:3000 --name blog   # https://blog-home.tun.example.com
+$ porthole tcp 5432                             # tcp://tun.example.com:<port from the range>
+$ porthole ssh                                  # prints the ssh -J command for this machine
+$ ssh -J tun.example.com:2222 alice@home        # from anywhere; private variant: porthole ssh --private
+```
 
-### How it compares
+## How it compares
 
 | | porthole | ngrok | frp | cloudflared | sish |
 |---|---|---|---|---|---|
@@ -146,11 +162,14 @@ target and copies bytes both ways. HTTP routing by `Host`, TLS and WebSocket upg
 
 ## Documentation
 
-- [Installation](docs/install.md): install script, packages, Docker, archives, verifying signatures, building from source
-- [Server setup](docs/server.md): DNS, TLS, configuration, reverse proxy, Docker Compose, SSH gateway, tokens, ports
-- [Client guide](docs/client.md): login, `http`/`tcp`/`ssh`, tunnels file, daemon and services
-- [SSH by name](docs/ssh.md): `ssh -J`, public and private machines, `~/.ssh/config`, host key
+- [Quickstart](docs/quickstart.md) and [Recipes](docs/recipes.md): first run, then ready commands for real services
+- [Guides](docs/guides.md): expose localhost, webhooks, SSH behind NAT/CGNAT, a NAS on your LAN, let an agent do it
 - [Agents](docs/agents.md): MCP servers for Claude Code and other agents, tools, toolsets, scopes
+- [Installation](docs/install.md): server and clients, packages, Docker, archives, verifying signatures, building from source
+- [Deploy](docs/deploy.md): VPS, Docker Compose and Dokploy step by step; [Troubleshooting](docs/troubleshooting.md); [FAQ](docs/faq.md)
+- [Server setup](docs/server.md): DNS, TLS, configuration, reverse proxy, SSH gateway, tokens, ports
+- [Client guide](docs/client.md): join, `http`/`tcp`/`ssh`, tunnels file, daemon, `--json`
+- [SSH by name](docs/ssh.md): `ssh -J`, public and private machines, `~/.ssh/config`, host key
 - [DESIGN.md](DESIGN.md): architecture and reasoning; [docs/protocol.md](docs/protocol.md): wire format;
   [docs/adr/](docs/adr/): individual decisions
 - Examples: [portholed.example.yaml](deploy/portholed.example.yaml), [tunnels.example.yaml](deploy/tunnels.example.yaml),
@@ -160,7 +179,8 @@ target and copies bytes both ways. HTTP routing by `Host`, TLS and WebSocket upg
 
 Alpha. Roadmap, from [DESIGN.md](DESIGN.md#7-roadmap): v0.2 "install and forget" (install script, deb/rpm and Docker,
 client daemon, SSH gateway by name, private SSH tunnels, persisted port reservations); v0.3 management by LLM agents
-(admin API and MCP server) instead of a web UI; v0.4 QUIC, UDP and more HTTP access control.
+(admin API, MCP servers, join links, remote tunnel requests, traffic inspector) instead of a web UI; v0.4 QUIC, UDP
+and more HTTP access control.
 
 ## Security
 

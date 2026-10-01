@@ -1,19 +1,31 @@
 # Installation
 
-You do not need to build anything. Use the install script, a Linux package, a container image, or an archive; all of
-them come from the [GitHub releases](https://github.com/eto-a/porthole/releases) (Linux and macOS on amd64 and arm64;
-Windows has archives only). To build from source instead, see [Building from source](#building-from-source).
+You do not need to build anything. porthole has two programs, installed in two places:
+
+- **Server** (`portholed`): once, on a machine with a public IP address and a domain, usually a small VPS.
+- **Client** (`porthole`): on every machine whose services you want to expose, or that your agent should manage. A
+  client needs only an outbound connection to the server.
+
+Both come from the [GitHub releases](https://github.com/eto-a/porthole/releases): an install script, a Linux package, a
+container image or an archive (Linux and macOS on amd64 and arm64; Windows has archives only). To build from source
+instead, see [Building from source](#building-from-source).
 
 > Packages and container images are produced by the release workflow, so they exist for releases made after
 > v0.1.0-alpha.1. That release has archives only; the install script falls back to them.
 
 After installing, continue with [Server setup](server.md) (`portholed`) or the [Client guide](client.md) (`porthole`).
+For a first run from scratch, see the [quickstart](quickstart.md).
 
-## Install script (Linux and macOS)
+## Server (once, on a VPS)
+
+Point the domain and a wildcard at the server ([DNS](server.md#dns)) and open the ports listed under
+[Firewall](server.md#firewall). By default the server gets its HTTPS certificates itself ([TLS](server.md#tls)).
+
+### Install script (Linux and macOS)
 
 ```console
-$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh                   # client: porthole
 $ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server    # server: portholed
+$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh                   # client: porthole
 ```
 
 The script detects your OS and CPU, downloads the release, checks its SHA-256 against `checksums.txt` and installs it,
@@ -38,15 +50,14 @@ look like `v1.2.3` or `v1.2.3-rc.1`; anything else is refused. Downloads use HTT
 GNU wget; BusyBox wget cannot enforce this, so install curl there). Piping a script from the network to `sh` trusts the
 network and `main`: to review it first, download it, read it and pin a release (`--version vX.Y.Z`).
 
-## Packages (Debian, Ubuntu, Fedora, RHEL and derivatives)
+### Packages (Debian, Ubuntu, Fedora, RHEL and derivatives)
 
 Download the package for your CPU from [Releases](https://github.com/eto-a/porthole/releases) (`portholed_*` is the
-server, `porthole_*` the client; amd64 and arm64) and install it:
+server; amd64 and arm64) and install it:
 
 ```console
 $ sudo apt install ./portholed_<version>_linux_amd64.deb        # Debian, Ubuntu
 $ sudo dnf install ./portholed_<version>_linux_amd64.rpm        # Fedora, RHEL, Rocky, Alma
-$ sudo apt install ./porthole_<version>_linux_amd64.deb         # client
 ```
 
 The server package installs the binary in `/usr/bin`, the systemd unit `portholed.service`, an example configuration as
@@ -56,16 +67,10 @@ It does **not** start or enable the service, because the configuration has to be
 keeps the configuration, the data directory and the user; `apt purge` also deletes `/var/lib/porthole` (the token
 database) and the user, but leaves anything you added under `/etc/porthole/` (such as certificates).
 
-The client package installs `/usr/bin/porthole`, the systemd unit `porthole.service` of the client daemon, an example
-`/etc/porthole/tunnels.yaml` (kept on upgrade) and the `porthole-client` system user and group. It does not enable or
-start the service either; see [Run the client as a service](client.md#run-the-client-as-a-service). Both packages can be
-installed on one machine: they share only the directory `/etc/porthole`. `apt purge porthole` also deletes
-`/etc/porthole/config.yaml` and `/etc/porthole/token` (the stored credentials) and the user and group.
-
 The packages themselves are not signed (apt and dnf will say so); check them against the signed `checksums.txt` as
 described in [Verifying a download](#verifying-a-download). There is no apt or dnf repository yet.
 
-## Docker
+### Docker
 
 Images are published to GitHub Container Registry for linux/amd64 and linux/arm64, based on distroless and running as
 a non-root user: `ghcr.io/eto-a/porthole/portholed` (server) and `ghcr.io/eto-a/porthole/porthole` (client). Tags are
@@ -87,7 +92,50 @@ $ docker exec portholed portholed token create --name home --config ""
 The certificate files must be readable by uid 65532 (and `live/` holds symlinks into `archive/`, so mount the
 `/etc/letsencrypt` tree or copy the files). Instead of environment variables you can mount a configuration file at
 `/etc/porthole/portholed.yaml` and drop `--config ""`; see also [deploy/compose.yaml](../deploy/compose.yaml), which builds
-the image from source (more in [Docker Compose](server.md#docker-compose)).
+the image from source (more in [Docker Compose](server.md#docker-compose)). The client image is described under
+[Docker (sidecar)](#docker-sidecar) in the client section.
+
+### Dokploy
+
+On a server that runs [Dokploy](https://dokploy.com), whose Traefik owns ports 80 and 443, deploy the ready compose file
+[deploy/dokploy-compose.yaml](../deploy/dokploy-compose.yaml): create a Compose service, choose Raw, paste it and set
+`PORTHOLED_DOMAIN` and your domain in the labels. Traefik passes TLS through to `portholed`, which keeps getting the
+certificates itself. Details and the PROXY protocol setup:
+[Behind Traefik or Dokploy](server.md#behind-traefik-or-dokploy-tls-passthrough); step by step: [deploy.md](deploy.md).
+
+### Server archive
+
+Take the `portholed_*` archive and unpack it as described under [Archives](#archives).
+
+## Clients (on every machine)
+
+Install `porthole`, then enrol the machine with a one-time link from the server: `porthole join <link>` (see
+[Join with a link](client.md#join-with-a-link)).
+
+### Install script for the client
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh
+```
+
+This is the same script and the same options as for the server (see the [table above](#install-script-linux-and-macos)),
+without `--server`. It works on Linux and macOS; on Windows use an archive.
+
+### Client packages (Debian, Ubuntu, Fedora, RHEL and derivatives)
+
+```console
+$ sudo apt install ./porthole_<version>_linux_amd64.deb         # client
+$ sudo dnf install ./porthole_<version>_linux_amd64.rpm
+```
+
+The client package installs `/usr/bin/porthole`, the systemd unit `porthole.service` of the client daemon, an example
+`/etc/porthole/tunnels.yaml` (kept on upgrade) and the `porthole-client` system user and group. It does not enable or
+start the service either; see [Run the client as a service](client.md#run-the-client-as-a-service). Both packages can be
+installed on one machine: they share only the directory `/etc/porthole`. `apt purge porthole` also deletes
+`/etc/porthole/config.yaml` and `/etc/porthole/token` (the stored credentials) and the user and group. The packages are
+not signed; see [Verifying a download](#verifying-a-download).
+
+### Docker (sidecar)
 
 The client image is meant for sidecar use; it reads `PORTHOLE_SERVER` and `PORTHOLE_TOKEN` from the environment and
 reaches targets by host name on the container network:
@@ -97,11 +145,12 @@ $ docker run --rm -e PORTHOLE_SERVER=https://tun.example.com -e PORTHOLE_TOKEN=p
     ghcr.io/eto-a/porthole/porthole:<version> http web:8080
 ```
 
-## Archives
+### Archives
 
 Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for
 the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static
-binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it.
+binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it. On Windows
+and on macOS without the script this is the way to install the client.
 
 ## Verifying a download
 

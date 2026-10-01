@@ -1,0 +1,45 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import { base, repoUrl } from '../../site.config.mjs';
+
+const links = [
+  { label: 'Docs', href: `${base}/docs/overview/` },
+  { label: 'Quick start', href: `${base}/docs/quickstart/` },
+  { label: 'Releases', href: `${repoUrl}/releases` },
+];
+---
+
+<nav class="site-nav" aria-label="Site">
+  {links.map((l) => <a href={l.href}>{l.label}</a>)}
+  <a href={repoUrl} rel="me" class="gh">
+    <span class="sr-only">GitHub</span>
+    <Icon name="github" />
+  </a>
+</nav>
+
+<style>
+  .site-nav {
+    display: flex;
+    align-items: center;
+    gap: 1.1rem;
+  }
+  a {
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--sl-color-white);
+  }
+  .gh {
+    display: flex;
+    color: var(--sl-color-text-accent);
+    font-size: var(--sl-text-xl);
+  }
+  @media (max-width: 49.99rem) {
+    .site-nav {
+      flex-wrap: wrap;
+      gap: 0.75rem 1rem;
+    }
+  }
+</style>

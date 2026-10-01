@@ -1,0 +1,8 @@
+---
+import PageActionsTitle from 'starlight-page-actions/overrides/PageTitle.astro';
+
+// The landing page (splash template) has its own h1 in the hero: no title and no page actions there.
+const splash = Astro.locals.starlightRoute.entry.data.template === 'splash';
+---
+
+{!splash && <PageActionsTitle />}
