@@ -11,6 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,12 +23,73 @@ const (
 	envToken  = "PORTHOLE_TOKEN"
 )
 
-const maxConfigSize = 64 << 10
+const (
+	maxConfigSize    = 64 << 10
+	maxTokenFileSize = 4 << 10
+)
 
 // fileConfig is the content of the client config file.
 type fileConfig struct {
 	Server string `yaml:"server"`
 	Token  string `yaml:"token"`
+	// TokenFile is a file holding the token on one line, as an alternative to Token (setting both is an error). A
+	// relative path is relative to the directory of the config file.
+	TokenFile string `yaml:"token_file,omitempty"`
+}
+
+// resolveToken returns the token the config file provides: Token, or the content of TokenFile. configPath is the
+// path of the config file, which relative token_file paths are resolved against.
+func (c fileConfig) resolveToken(configPath string) (string, error) {
+	switch {
+	case c.Token != "" && c.TokenFile != "":
+		return "", fmt.Errorf("config %s: set either token or token_file, not both", configPath)
+	case c.TokenFile == "":
+		return c.Token, nil
+	}
+	path := c.TokenFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(filepath.Dir(configPath), path)
+	}
+	tok, err := readTokenFile(path)
+	if err != nil {
+		return "", fmt.Errorf("config %s: token_file: %w", configPath, err)
+	}
+	return tok, nil
+}
+
+// readTokenFile reads a token file: one line, surrounding whitespace trimmed. On Unix it refuses a file that is
+// readable by group or others (as ssh does for private keys), because the token is a credential.
+func readTokenFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is accessible by group or others (mode %04o); run `chmod 600 %s`", path, fi.Mode().Perm(), path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxTokenFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(data) > maxTokenFileSize {
+		return "", fmt.Errorf("%s is larger than %d bytes", path, maxTokenFileSize)
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	if strings.ContainsAny(tok, "\r\n") {
+		return "", fmt.Errorf("%s must contain the token on a single line", path)
+	}
+	return tok, nil
 }
 
 // defaultConfigPath returns <user config dir>/porthole/config.yaml.
