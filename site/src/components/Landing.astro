@@ -1,0 +1,1407 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import { base, repoUrl, version } from '../../site.config.mjs';
+
+const doc = (p: string) => `${base}/docs/${p}`;
+const install = 'curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh';
+
+/**
+ * Terminal lines. Kinds: c command (copied), k continuation of a command (copied), o output, m comment,
+ * u what the user types to the agent, a tool call of the agent, r result of a tool call, f file content, b blank.
+ */
+type Line = [kind: 'c' | 'k' | 'o' | 'm' | 'u' | 'a' | 'r' | 'f' | 'b', text: string];
+const tabs: { id: string; label: string; title: string; lines: Line[] }[] = [
+  {
+    id: 'agent',
+    label: 'Agent',
+    title: 'claude: porthole',
+    lines: [
+      ['m', '# once: connect Claude Code to your server'],
+      ['c', 'claude mcp add --transport http porthole \\'],
+      ['k', 'https://tun.example.com/_porthole/mcp \\'],
+      ['k', '--header "Authorization: Bearer ph_..."'],
+      ['b', ''],
+      ['u', 'expose port 8080 on home'],
+      ['a', 'request_tunnel {client: "home", kind: "http", local_addr: "8080"}'],
+      ['r', 'https://http-8080-home.tun.example.com'],
+      ['u', 'what hit my webhook in the last 10 minutes?'],
+      ['a', 'query_requests {since: "10m"}'],
+      ['u', 'add my new laptop'],
+      ['a', 'create_join_link {client: "laptop"}'],
+      ['r', 'porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...'],
+    ],
+  },
+  {
+    id: 'https',
+    label: 'HTTPS',
+    title: 'bash: home',
+    lines: [
+      ['c', install],
+      ['c', 'porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...'],
+      ['c', 'porthole http 3000'],
+      ['o', 'connected as home'],
+      ['o', 'https://http-3000-home.tun.example.com -> 127.0.0.1:3000'],
+    ],
+  },
+  {
+    id: 'ssh',
+    label: 'SSH',
+    title: 'bash: ssh by name',
+    lines: [
+      ['m', '# on the machine behind NAT (it needs an sshd)'],
+      ['c', 'porthole ssh'],
+      ['b', ''],
+      ['m', '# anywhere else, with stock OpenSSH'],
+      ['c', 'ssh -J tun.example.com:2222 alice@home'],
+    ],
+  },
+  {
+    id: 'tcp',
+    label: 'TCP',
+    title: 'bash: tcp',
+    lines: [
+      ['m', '# a database or any TCP service, on a port of the server'],
+      ['c', 'porthole tcp 5432'],
+      ['c', 'porthole tcp nas.local:5432 --remote-port 20017'],
+    ],
+  },
+  {
+    id: 'daemon',
+    label: 'Daemon',
+    title: 'bash: tunnels that survive reboots',
+    lines: [
+      ['f', '# tunnels.yaml'],
+      ['f', 'version: 1'],
+      ['f', 'tunnels:'],
+      ['f', '  blog: {type: http, addr: 3000}'],
+      ['f', '  db:   {type: tcp, addr: "nas.local:5432"}'],
+      ['f', '  ssh:  {type: ssh}'],
+      ['b', ''],
+      ['c', 'sudo systemctl enable --now porthole'],
+      ['c', 'porthole status'],
+    ],
+  },
+];
+
+const chips = [
+  'MCP server built in',
+  'Agent opens tunnels on request',
+  'Join links, no secrets in the chat',
+  'Traffic log and inspector for the agent',
+  'SSH by name',
+];
+
+const agentPoints = [
+  {
+    h: 'Two MCP surfaces',
+    t: 'An operator MCP server on your server (`/_porthole/mcp` over HTTP, or `portholed mcp` over stdio) and `porthole mcp` on a machine. Works with Claude Code and any MCP client.',
+  },
+  {
+    h: 'Scopes, toolsets, read-only',
+    t: 'A bearer token carries only the scopes you give it. `--toolsets` picks tools and `--read-only` registers no mutating tool at all. Every mutating call, refusals included, goes to the audit log.',
+  },
+  {
+    h: 'Join links, not secrets',
+    t: '`create_join_link` returns a single-use link, valid 15 minutes. The permanent token goes straight to the new machine and never passes through the conversation.',
+  },
+  {
+    h: 'Remote tunnel requests',
+    t: '`request_tunnel` asks a connected machine to open a tunnel. The machine has the last word: by default only its own loopback ports, anything else only if listed in `allow_remote`.',
+  },
+  {
+    h: 'No MCP? Use the CLI',
+    t: '`--json` prints JSON (JSON Lines for long-running commands) with stable exit codes, so any agent can script `porthole http 8080 --detach --json`.',
+  },
+];
+
+const tools = [
+  'server_status',
+  'list_clients',
+  'list_tunnels',
+  'request_tunnel',
+  'close_tunnel',
+  'create_join_link',
+  'list_tokens',
+  'query_requests',
+  'get_request',
+  'replay_request',
+  'connection_log',
+  'audit_log',
+];
+
+const capabilities = [
+  {
+    h: 'HTTPS tunnels',
+    t: 'Expose localhost to the internet: share a local web server at its own subdomain. HTTP(S) and WebSocket, with automatic Let\'s Encrypt certificates and no DNS provider to configure.',
+    code: 'porthole http 3000',
+    href: doc('quickstart/'),
+  },
+  {
+    h: 'SSH by name',
+    t: 'SSH into a computer behind NAT with stock OpenSSH and nothing installed on the machine you connect from. `scp`, `sftp` and `rsync` work too.',
+    code: 'ssh -J tun.example.com:2222 alice@home',
+    href: doc('ssh/'),
+  },
+  {
+    h: 'TCP services',
+    t: 'Publish a database, a game server or anything else on a port of your server\'s range. The port stays reserved for the tunnel for 24 hours.',
+    code: 'porthole tcp 5432',
+    href: doc('recipes/'),
+  },
+];
+
+const why = [
+  { h: 'You own the server, domain and data', t: 'A tunnel from your own VPS. No account with a third party, nothing leaves your machines.', href: doc('server/') },
+  { h: 'No metering', t: 'No plans, no request caps, no bandwidth bills. The limits are yours to set.', href: doc('faq/') },
+  { h: 'Works behind NAT', t: 'The client only makes one outbound TLS connection on port 443, so it passes NAT and most corporate firewalls.', href: doc('client/') },
+  { h: 'Tokens with scopes and expiry', t: 'Created, listed and revoked on the server. Revocation applies to live sessions.', href: doc('server/#tokens') },
+  { h: 'Stable addresses', t: 'HTTP names come from the tunnel name; TCP ports stay reserved for 24 hours, also across server restarts.', href: doc('server/#tcp-ports-and-reservations') },
+  { h: 'Signed releases and SBOMs', t: 'Signed with cosign, with build provenance attestations and SBOMs you can verify.', href: doc('install/#verifying-a-download') },
+];
+
+const compare = {
+  head: ['', 'porthole', 'ngrok', 'frp', 'cloudflared', 'sish'],
+  rows: [
+    ['You run the server', 'yes', 'no, hosted service', 'yes', 'no, Cloudflare network', 'yes'],
+    ['On the machine behind NAT', '`porthole`', '`ngrok` agent', '`frpc`', '`cloudflared`', 'plain `ssh -R`'],
+    [
+      'SSH by name with only OpenSSH on the connecting side',
+      'yes (`ssh -J`)',
+      'see its docs',
+      'see its docs',
+      'needs `cloudflared` or WARP on the visitor',
+      'yes (TCP aliases)',
+    ],
+  ],
+};
+const inline = (s: string) => s.split('`').map((p, i) => (i % 2 ? `<code>${p}</code>` : p)).join('');
+
+const roadmap = [
+  { v: 'v0.2', state: 'Done', h: 'Install and forget', t: 'Install script, deb/rpm and Docker, client daemon, SSH gateway by name, private SSH tunnels, persisted port reservations.' },
+  { v: 'v0.3', state: 'Done', h: 'Management by LLM agents', t: 'Admin API, MCP servers, join links, remote tunnel requests and a traffic inspector, instead of a web UI.' },
+  { v: 'v0.4', state: 'Planned', h: 'More transports and access control', t: 'QUIC, UDP and more HTTP access control.' },
+];
+
+const footer = [
+  { label: 'Docs', href: doc('overview/') },
+  { label: 'Quick start', href: doc('quickstart/') },
+  { label: 'For AI assistants', href: doc('for-ai-assistants/') },
+  { label: 'llms.txt', href: `${base}/llms.txt` },
+  { label: 'GitHub', href: repoUrl },
+  { label: 'Releases', href: `${repoUrl}/releases` },
+  { label: 'Security', href: doc('security/') },
+  { label: 'Contributing', href: doc('contributing/') },
+  { label: 'Code of Conduct', href: `${repoUrl}/blob/main/CODE_OF_CONDUCT.md` },
+  { label: 'License (Apache-2.0)', href: `${repoUrl}/blob/main/LICENSE` },
+];
+---
+
+<div class="lp not-content">
+  <div class="banner" id="lp-banner" role="region" aria-label="Announcement">
+    <p>
+      <strong>porthole is in alpha.</strong> v0.3 adds an MCP server, join links and an HTTP inspector.
+      <a href={`${repoUrl}/releases`}>Read the release notes</a>
+    </p>
+    <button type="button" class="banner-close" aria-label="Dismiss the announcement" data-dismiss="lp-banner">&times;</button>
+  </div>
+  <script is:inline>
+    try {
+      if (localStorage.getItem('porthole-banner-v0.3') === '1') document.getElementById('lp-banner').hidden = true;
+    } catch (e) {}
+  </script>
+
+  <nav class="mobile-nav" aria-label="Site">
+    <a href={doc('overview/')}>Docs</a>
+    <a href={doc('quickstart/')}>Quick start</a>
+    <a href={repoUrl}>GitHub</a>
+    <a href={`${repoUrl}/releases`}>Releases</a>
+    <ThemeSelect />
+  </nav>
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-text">
+        <p class="eyebrow">Open source &middot; self-hosted &middot; Apache-2.0</p>
+        <h1 id="_top">Tunnels your AI agent can run.</h1>
+        <p class="lead">
+          Self-hosted ngrok alternative with an MCP server built in: ask your agent to expose a port, open SSH to a
+          machine behind NAT, inspect traffic or onboard a new machine, on your own server.
+        </p>
+        <ul class="chips" aria-label="Highlights">
+          {chips.map((c) => <li>{c}</li>)}
+        </ul>
+        <div class="cta">
+          <a class="btn primary" href={doc('quickstart/')}>Quick start</a>
+          <a class="btn" href={repoUrl}>
+            <Icon name="github" size="1.1em" /> GitHub
+          </a>
+        </div>
+        <div class="cmd">
+          <code>{install}</code>
+          <button type="button" class="copy-btn" data-copy={install} aria-label="Copy the install command">Copy</button>
+        </div>
+        <ul class="facts" aria-label="Facts">
+          <li>Apache-2.0</li>
+          <li><a href={`${repoUrl}/releases`}>{version}</a></li>
+          <li>One static binary per side</li>
+          <li>Signed releases (cosign)</li>
+        </ul>
+      </div>
+
+      <div class="term" data-term>
+        <div class="term-bar">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="term-title" data-term-title>{tabs[0].title}</span>
+          <button type="button" class="copy-btn" data-copy-term aria-label="Copy the commands of this tab">Copy</button>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Examples">
+          {
+            tabs.map((t, i) => (
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${t.id}`}
+                aria-selected={i === 0 ? 'true' : 'false'}
+                aria-controls={`panel-${t.id}`}
+                tabindex={i === 0 ? 0 : -1}
+                data-title={t.title}
+              >
+                {t.label}
+              </button>
+            ))
+          }
+        </div>
+        <div class="panels">
+          {
+            tabs.map((t, i) => (
+              <div role="tabpanel" id={`panel-${t.id}`} aria-labelledby={`tab-${t.id}`} hidden={i !== 0}>
+                <pre><code>{t.lines.map(([k, text]) => <span class={`l ${k}`}>{text}</span>)}</code></pre>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="agents" aria-labelledby="agents-h">
+    <div class="wrap">
+      <p class="kicker">For AI agents and Claude Code</p>
+      <h2 id="agents-h">Managed by your LLM agent</h2>
+      <p class="sub">
+        porthole has no web UI. Instead it ships an MCP server, so Claude Code or any MCP client can operate the server
+        and the tunnels of a machine, within the scopes you grant.
+      </p>
+      <div class="agents-grid">
+        <ul class="points">
+          {agentPoints.map((p) => <li><h3>{p.h}</h3><p set:html={inline(p.t)} /></li>)}
+        </ul>
+        <div>
+          <div class="term small">
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="term-title">connect Claude Code</span><button type="button" class="copy-btn" data-copy-term aria-label="Copy the commands">Copy</button></div>
+            <pre><code><span class="l m"># on the server</span><span class="l c">sudo -u porthole portholed token create --name ops-agent --scopes admin:read,admin:tunnels,admin:remote,admin:tokens</span><span class="l c">claude mcp add --transport http porthole https://tun.example.com/_porthole/mcp \</span><span class="l k">--header "Authorization: Bearer ph_..."</span><span class="l b"></span><span class="l m"># on a client machine</span><span class="l c">claude mcp add porthole-local -- porthole mcp</span></code></pre>
+          </div>
+          <p class="tools-h">Operator tools</p>
+          <ul class="toolchips">
+            {tools.map((t) => <li><code>{t}</code></li>)}
+          </ul>
+          <p class="more"><a href={doc('agents/')}>All tools, toolsets and scopes</a> &middot; <a href={doc('for-ai-assistants/')}>Instructions for AI assistants</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section alt" id="tunnels" aria-labelledby="tunnels-h">
+    <div class="wrap">
+      <p class="kicker">The tunnels themselves</p>
+      <h2 id="tunnels-h">Expose localhost, reach machines behind NAT</h2>
+      <p class="sub">Three ways to put a service on the internet, all through the server you run.</p>
+      <div class="cards three">
+        {
+          capabilities.map((c) => (
+            <article class="card">
+              <h3>{c.h}</h3>
+              <p set:html={inline(c.t)} />
+              <pre class="mini"><code>{c.code}</code></pre>
+              <a class="more" href={c.href}>Learn more &rarr;</a>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="why" aria-labelledby="why-h">
+    <div class="wrap">
+      <p class="kicker">Why self-hosted</p>
+      <h2 id="why-h">A self-hosted ngrok alternative you control</h2>
+      <p class="sub">
+        Hosted tunnel services run your traffic on their network, under their terms. porthole runs a tunnel from your
+        own VPS instead.
+      </p>
+      <div class="cards six">
+        {
+          why.map((w) => (
+            <a class="card link" href={w.href}>
+              <h3>{w.h}</h3>
+              <p>{w.t}</p>
+            </a>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="section alt" id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <p class="kicker">How it works</p>
+      <h2 id="how-h">One outbound connection, many tunnels</h2>
+      <figure class="diagram">
+        <svg class="wide" viewBox="0 0 980 330" role="img" aria-labelledby="d1t d1d">
+          <title id="d1t">porthole architecture</title>
+          <desc id="d1d">Visitors reach portholed on your VPS over HTTPS, TCP or ssh -J. The porthole client behind NAT keeps one outbound TLS session to portholed and forwards streams to 127.0.0.1:3000, nas.local:5432 and 127.0.0.1:22.</desc>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="fill-line" /></marker>
+          </defs>
+          <rect x="590" y="22" width="380" height="288" rx="14" class="nat" />
+          <text x="606" y="48" class="t-dim">behind NAT</text>
+          <rect x="8" y="115" width="140" height="96" rx="10" class="box" />
+          <text x="78" y="153" class="t-head" text-anchor="middle">visitors</text>
+          <text x="78" y="178" class="t-dim" text-anchor="middle">browser, ssh, ...</text>
+          <line x1="148" y1="163" x2="316" y2="163" class="line" marker-end="url(#ah)" />
+          <text x="232" y="148" class="t-mono" text-anchor="middle">HTTPS / TCP / ssh -J</text>
+          <rect x="316" y="105" width="190" height="116" rx="10" class="box accent" />
+          <text x="411" y="148" class="t-head" text-anchor="middle">portholed</text>
+          <text x="411" y="172" class="t-dim" text-anchor="middle">your VPS</text>
+          <text x="411" y="196" class="t-mono" text-anchor="middle">tun.example.com</text>
+          <line x1="626" y1="163" x2="508" y2="163" class="line thick" marker-end="url(#ah)" />
+          <text x="567" y="132" class="t-mono" text-anchor="middle">one outbound</text>
+          <text x="567" y="148" class="t-mono" text-anchor="middle">TLS session</text>
+          <text x="567" y="196" class="t-dim" text-anchor="middle">many streams</text>
+          <rect x="626" y="115" width="130" height="96" rx="10" class="box accent" />
+          <text x="691" y="153" class="t-head" text-anchor="middle">porthole</text>
+          <text x="691" y="178" class="t-dim" text-anchor="middle">the client</text>
+          <path d="M756 163 H790 M790 78 V248 M790 78 H806 M790 163 H806 M790 248 H806" class="line" fill="none" />
+          <rect x="806" y="56" width="150" height="44" rx="8" class="box" /><text x="881" y="83" class="t-mono" text-anchor="middle">127.0.0.1:3000</text>
+          <rect x="806" y="141" width="150" height="44" rx="8" class="box" /><text x="881" y="168" class="t-mono" text-anchor="middle">nas.local:5432</text>
+          <rect x="806" y="226" width="150" height="44" rx="8" class="box" /><text x="881" y="253" class="t-mono" text-anchor="middle">127.0.0.1:22</text>
+        </svg>
+        <svg class="tall" viewBox="0 0 320 560" role="img" aria-labelledby="d2t">
+          <title id="d2t">porthole architecture (narrow layout)</title>
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="fill-line" /></marker>
+          </defs>
+          <rect x="60" y="8" width="200" height="64" rx="10" class="box" />
+          <text x="160" y="36" class="t-head" text-anchor="middle">visitors</text>
+          <text x="160" y="58" class="t-dim" text-anchor="middle">browser, ssh, ...</text>
+          <line x1="160" y1="72" x2="160" y2="124" class="line" marker-end="url(#ah2)" />
+          <text x="172" y="103" class="t-mono">HTTPS / TCP / ssh -J</text>
+          <rect x="60" y="124" width="200" height="82" rx="10" class="box accent" />
+          <text x="160" y="152" class="t-head" text-anchor="middle">portholed</text>
+          <text x="160" y="173" class="t-dim" text-anchor="middle">your VPS</text>
+          <text x="160" y="194" class="t-mono" text-anchor="middle">tun.example.com</text>
+          <rect x="8" y="238" width="304" height="314" rx="14" class="nat" />
+          <text x="22" y="262" class="t-dim">behind NAT</text>
+          <line x1="160" y1="276" x2="160" y2="208" class="line thick" marker-end="url(#ah2)" />
+          <text x="172" y="236" class="t-mono">one outbound TLS session</text>
+          <rect x="60" y="276" width="200" height="64" rx="10" class="box accent" />
+          <text x="160" y="304" class="t-head" text-anchor="middle">porthole</text>
+          <text x="160" y="326" class="t-dim" text-anchor="middle">the client</text>
+          <path d="M160 340 V370 M60 370 H260 M60 370 V386 M160 370 V386 M260 370 V386" class="line" fill="none" />
+          <rect x="22" y="386" width="86" height="56" rx="8" class="box" /><text x="65" y="410" class="t-mono2" text-anchor="middle">127.0.0.1</text><text x="65" y="428" class="t-mono2" text-anchor="middle">:3000</text>
+          <rect x="117" y="386" width="86" height="56" rx="8" class="box" /><text x="160" y="410" class="t-mono2" text-anchor="middle">nas.local</text><text x="160" y="428" class="t-mono2" text-anchor="middle">:5432</text>
+          <rect x="212" y="386" width="86" height="56" rx="8" class="box" /><text x="255" y="410" class="t-mono2" text-anchor="middle">127.0.0.1</text><text x="255" y="428" class="t-mono2" text-anchor="middle">:22</text>
+        </svg>
+      </figure>
+      <p class="prose">
+        The client opens one outbound WebSocket-over-TLS session to <code>portholed</code> and multiplexes everything over
+        it (yamux). There is one control stream (login, tunnel registration, heartbeats) and one data stream per visitor
+        connection, opened by the server. The client never interprets proxied bytes: for each data stream it dials the
+        local target and copies bytes both ways. HTTP routing by <code>Host</code>, TLS and WebSocket upgrades all live on
+        the server. <a href={doc('design/')}>Design</a> &middot; <a href={doc('protocol/')}>Wire protocol</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="inspector" aria-labelledby="insp-h">
+    <div class="wrap two">
+      <div>
+        <p class="kicker">Traffic log and inspector</p>
+        <h2 id="insp-h">See what hit your webhook</h2>
+        <p class="sub left">
+          The server terminates TLS for HTTP tunnels, so it records every proxied request in memory. Nothing is written
+          to disk. You or your agent can search the log and replay a request.
+        </p>
+        <ul class="plain">
+          <li>Each entry has the time, tunnel, visitor IP, method, host, path, masked query, status, latency, body bytes and user agent.</li>
+          <li>Start a tunnel with <code>porthole http --inspect</code> to also keep request and response headers and bodies, up to 64 KiB each. <code>Authorization</code> and cookies are always stored as <code>REDACTED</code>.</li>
+          <li>Replay a recorded request into its tunnel with <code>replay_request</code>.</li>
+        </ul>
+        <p class="more"><a href={doc('server/#request-log-and-inspection')}>Request log and inspection</a></p>
+      </div>
+      <div class="term small">
+        <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="term-title">claude: porthole</span></div>
+        <pre><code><span class="l u">what hit my webhook in the last 10 minutes?</span><span class="l a">query_requests {'{'}tunnel: "hooks", since: "10m"{'}'}</span><span class="l u">show me the failed one</span><span class="l a">query_requests {'{'}tunnel: "hooks", status_class: 5{'}'}</span><span class="l a">get_request {'{'}id: "..."{'}'}</span><span class="l u">replay it against my dev server</span><span class="l a">replay_request {'{'}id: "..."{'}'}</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="section alt" id="compare" aria-labelledby="cmp-h">
+    <div class="wrap">
+      <p class="kicker">Comparison</p>
+      <h2 id="cmp-h">Which tunnel is right for you?</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>{compare.head.map((h) => <th scope="col">{h}</th>)}</tr></thead>
+          <tbody>
+            {compare.rows.map((r) => <tr>{r.map((c, i) => (i === 0 ? <th scope="row">{c}</th> : <td set:html={inline(c)} />))}</tr>)}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        Statements about other tools come from their public documentation and are simplified; check them before deciding.
+        No performance claims are made here.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="install" aria-labelledby="inst-h">
+    <div class="wrap">
+      <p class="kicker">Install</p>
+      <h2 id="inst-h">Two programs, two machines</h2>
+      <p class="sub">A server you set up once on a VPS, and a client on every machine behind NAT.</p>
+      <div class="cards two">
+        <article class="card">
+          <h3>Server (VPS)</h3>
+          <p>Point <code>tun.example.com</code> and <code>*.tun.example.com</code> at the server, set <code>domain</code> in <code>/etc/porthole/portholed.yaml</code>, and start the service. Certificates are obtained automatically.</p>
+          <pre class="mini multi"><code><span class="l c">curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh -s -- --server</span><span class="l c">sudo systemctl enable --now portholed</span><span class="l c">sudo -u porthole portholed join create --name home</span></code></pre>
+          <a class="more" href={doc('quickstart/')}>Server steps in the Quick start &rarr;</a>
+        </article>
+        <article class="card">
+          <h3>Client (each machine)</h3>
+          <p>Install the client, redeem the one-time join link and open a tunnel. The link works once and is valid for 15 minutes.</p>
+          <pre class="mini multi"><code><span class="l c">curl -fsSL https://raw.githubusercontent.com/eto-a/porthole/main/install.sh | sh</span><span class="l c">porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...</span><span class="l c">porthole http 3000</span></code></pre>
+          <a class="more" href={doc('client/')}>Client guide &rarr;</a>
+        </article>
+      </div>
+      <div class="cards four">
+        <a class="card link slim" href={doc('install/#packages-debian-ubuntu-fedora-rhel-and-derivatives')}><h3>deb and rpm</h3><p>Packages with systemd units for Debian, Ubuntu, Fedora and RHEL.</p></a>
+        <a class="card link slim" href={doc('install/#docker')}><h3>Docker</h3><p>Distroless images, a Compose file, and Dokploy.</p></a>
+        <a class="card link slim" href={doc('install/#server-archive')}><h3>Archives</h3><p>Static binaries for Linux, macOS and Windows.</p></a>
+        <a class="card link slim" href={doc('install/#verifying-a-download')}><h3>Verify</h3><p><code>gh attestation verify</code> and cosign for archives, packages and images.</p></a>
+      </div>
+      <p class="more center"><a href={doc('install/')}>All installation options</a></p>
+    </div>
+  </section>
+
+  <section class="section alt" id="status" aria-labelledby="st-h">
+    <div class="wrap">
+      <p class="kicker">Status and roadmap</p>
+      <h2 id="st-h">Alpha: try it, do not rely on it yet</h2>
+      <p class="sub">
+        Only preview releases exist so far. The wire protocol, the configuration format and the CLI may still change
+        before the first stable release.
+      </p>
+      <ol class="cards three road">
+        {
+          roadmap.map((r) => (
+            <li class="card">
+              <p class="ver"><span>{r.v}</span><span class={`state ${r.state.toLowerCase()}`}>{r.state}</span></p>
+              <h3>{r.h}</h3>
+              <p>{r.t}</p>
+            </li>
+          ))
+        }
+      </ol>
+      <p class="more center"><a href={`${repoUrl}/releases`}>Releases</a> &middot; <a href={doc('design/')}>Design and roadmap</a></p>
+    </div>
+  </section>
+
+  <section class="cta-final" aria-labelledby="cta-h">
+    <div class="wrap">
+      <h2 id="cta-h">Run your first tunnel in minutes.</h2>
+      <p class="sub">Your server, your domain, your agent.</p>
+      <div class="cta center">
+        <a class="btn primary" href={doc('quickstart/')}>Quick start</a>
+        <a class="btn" href={doc('for-ai-assistants/')}>For AI assistants</a>
+      </div>
+    </div>
+  </section>
+
+  <footer class="lp-footer">
+    <div class="wrap">
+      <ul>
+        {footer.map((f) => <li><a href={f.href}>{f.label}</a></li>)}
+      </ul>
+      <p>porthole is released under the Apache License 2.0.</p>
+    </div>
+  </footer>
+</div>
+
+<script>
+  const copy = async (btn: HTMLButtonElement, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied';
+    } catch {
+      btn.textContent = 'Press Ctrl+C';
+    }
+    setTimeout(() => (btn.textContent = 'Copy'), 1800);
+  };
+
+  document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((b) => {
+    b.addEventListener('click', () => copy(b, b.dataset.copy ?? ''));
+  });
+
+  // Terminals: copy the commands of the visible tab, without prompts, comments' prompts and output.
+  document.querySelectorAll<HTMLButtonElement>('[data-copy-term]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const root = b.closest('.term') as HTMLElement;
+      const panel = root.querySelector<HTMLElement>('[role=tabpanel]:not([hidden])') ?? root;
+      const lines = [...panel.querySelectorAll<HTMLElement>('.l.c, .l.k')].map((l) => l.textContent ?? '');
+      copy(b, lines.join('\n'));
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>('[data-term]').forEach((term) => {
+    const tabs = [...term.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+    const title = term.querySelector('[data-term-title]');
+    const select = (tab: HTMLButtonElement, focus = false) => {
+      tabs.forEach((t) => {
+        const on = t === tab;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        const panel = document.getElementById(t.getAttribute('aria-controls') ?? '');
+        if (panel) panel.hidden = !on;
+      });
+      if (title) title.textContent = tab.dataset.title ?? '';
+      if (focus) tab.focus();
+    };
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t));
+      t.addEventListener('keydown', (e) => {
+        const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (dir) {
+          e.preventDefault();
+          select(tabs[(i + dir + tabs.length) % tabs.length], true);
+        }
+      });
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-dismiss]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const el = document.getElementById(b.dataset.dismiss ?? '');
+      if (el) el.hidden = true;
+      try {
+        localStorage.setItem('porthole-banner-v0.3', '1');
+      } catch {
+        // storage unavailable: the banner returns on the next visit
+      }
+    });
+  });
+</script>
+
+<style>
+  .lp {
+    --accent: var(--sl-color-accent);
+    --accent-text: var(--sl-color-accent-high);
+    --fg: var(--sl-color-white);
+    --muted: var(--sl-color-gray-2);
+    --bg: var(--sl-color-black);
+    --card: color-mix(in srgb, var(--sl-color-white) 4%, var(--sl-color-black));
+    --alt: color-mix(in srgb, var(--sl-color-white) 2.5%, var(--sl-color-black));
+    --line: color-mix(in srgb, var(--sl-color-white) 14%, var(--sl-color-black));
+    color: var(--fg);
+    font-size: 1rem;
+    overflow-x: clip;
+  }
+  .lp :global(a) {
+    color: var(--accent-text);
+  }
+  .wrap {
+    max-width: 72rem;
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+  }
+  .lp code {
+    font-family: var(--sl-font-mono);
+    font-size: 0.9em;
+  }
+  .lp h1,
+  .lp h2,
+  .lp h3 {
+    margin: 0;
+    color: var(--fg);
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+  }
+
+  /* Banner */
+  .banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.55rem 1rem;
+    background: var(--sl-color-accent-low);
+    border-bottom: 1px solid var(--line);
+    font-size: var(--sl-text-sm);
+  }
+  .banner[hidden] {
+    display: none;
+  }
+  .banner p {
+    margin: 0;
+    text-align: center;
+    color: var(--fg);
+  }
+  .banner a {
+    margin-left: 0.4rem;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .banner-close {
+    flex: none;
+    background: none;
+    border: 0;
+    color: var(--fg);
+    font-size: 1.4rem;
+    line-height: 1;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+
+  .mobile-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.1rem;
+    padding: 0.7rem 1.25rem;
+    border-bottom: 1px solid var(--line);
+    font-size: var(--sl-text-sm);
+  }
+  .mobile-nav a {
+    text-decoration: none;
+    color: var(--muted);
+  }
+  .mobile-nav :global(starlight-theme-select) {
+    margin-inline-start: auto;
+  }
+
+  /* Hero */
+  .hero {
+    padding: 2.5rem 0 3.5rem;
+    background:
+      radial-gradient(60rem 28rem at 85% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+      var(--bg);
+  }
+  .hero-grid {
+    display: grid;
+    gap: 2.5rem;
+    align-items: center;
+  }
+  .eyebrow,
+  .kicker {
+    margin: 0 0 0.9rem;
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-text);
+  }
+  .hero h1 {
+    font-size: clamp(2.3rem, 7vw, 3.9rem);
+    font-weight: 800;
+    letter-spacing: -0.035em;
+  }
+  .lead {
+    margin: 1.2rem 0 0;
+    font-size: 1.15rem;
+    line-height: 1.55;
+    color: var(--muted);
+    max-width: 38rem;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1.4rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .chips li {
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: var(--sl-text-sm);
+    color: var(--fg);
+    background: var(--card);
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1.8rem;
+  }
+  .cta.center {
+    justify-content: center;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.4rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--line);
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--fg) !important;
+    background: var(--card);
+  }
+  .btn:hover {
+    border-color: var(--accent);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--sl-color-text-invert) !important;
+  }
+  .btn.primary:hover {
+    filter: brightness(1.08);
+  }
+  .cmd {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 1.3rem;
+    padding: 0.55rem 0.6rem 0.55rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: 0.6rem;
+    background: var(--card);
+    max-width: 38rem;
+  }
+  .cmd code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    font-size: 0.82rem;
+    scrollbar-width: none;
+  }
+  .cmd code::before {
+    content: '$ ';
+    color: var(--accent-text);
+  }
+  .copy-btn {
+    flex: none;
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: var(--sl-text-xs);
+    cursor: pointer;
+  }
+  .copy-btn:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.4rem;
+    margin: 1.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--sl-text-sm);
+    color: var(--muted);
+  }
+  .facts li::before {
+    content: '';
+    display: inline-block;
+    width: 0.4rem;
+    height: 0.4rem;
+    margin-right: 0.5rem;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+  }
+
+  /* Terminal */
+  .term {
+    border-radius: 0.8rem;
+    overflow: hidden;
+    background: var(--lp-term-bg);
+    color: var(--lp-term-fg);
+    border: 1px solid color-mix(in srgb, var(--sl-color-white) 12%, var(--lp-term-bg));
+    box-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.55);
+    min-width: 0;
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--lp-term-bar);
+  }
+  .dots {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .dots i {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    background: #ff5f57;
+  }
+  .dots i:nth-child(2) {
+    background: #febc2e;
+  }
+  .dots i:nth-child(3) {
+    background: #28c840;
+  }
+  .term-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+    font-family: var(--sl-font-mono);
+    font-size: 0.75rem;
+    color: var(--lp-term-dim);
+  }
+  .term .copy-btn {
+    color: var(--lp-term-dim);
+    border-color: #343a46;
+  }
+  .term .copy-btn:hover {
+    color: #fff;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.5rem 0.6rem 0;
+    border-bottom: 1px solid #262b35;
+    overflow-x: auto;
+  }
+  .tabs button {
+    padding: 0.45rem 0.8rem;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--lp-term-dim);
+    font: inherit;
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tabs button:hover {
+    color: #fff;
+  }
+  .tabs button[aria-selected='true'] {
+    color: #fff;
+    border-bottom-color: var(--lp-term-accent);
+  }
+  .panels {
+    min-height: 19.5rem;
+  }
+  .term pre {
+    margin: 0;
+    padding: 1rem 1.1rem 1.2rem;
+    overflow-x: auto;
+    font-family: var(--sl-font-mono);
+    font-size: 0.8rem;
+    line-height: 1.7;
+    background: transparent;
+    color: inherit;
+  }
+  .term.small .l {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .mini.multi .l {
+    white-space: pre;
+    overflow-wrap: normal;
+  }
+  .l {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .l.c::before {
+    content: '$ ';
+    color: var(--lp-term-accent);
+    user-select: none;
+  }
+  .l.k {
+    padding-left: 2ch;
+  }
+  .l.m,
+  .l.f {
+    color: var(--lp-term-dim);
+  }
+  .l.f {
+    color: #b8c0cc;
+  }
+  .l.u::before {
+    content: '> ';
+    color: var(--lp-term-accent);
+    user-select: none;
+  }
+  .l.u {
+    color: #fff;
+    font-weight: 500;
+    margin-top: 0.5rem;
+  }
+  .l.a {
+    padding-left: 2ch;
+    color: #8ab4ff;
+  }
+  .l.r {
+    padding-left: 2ch;
+    color: #d6c58f;
+  }
+  .l.r::before {
+    content: '-> ';
+    user-select: none;
+    color: var(--lp-term-dim);
+  }
+  .l.b {
+    height: 0.9em;
+  }
+
+  /* Sections */
+  .section {
+    padding: 4rem 0;
+  }
+  .section.alt {
+    background: var(--alt);
+    border-block: 1px solid var(--line);
+  }
+  .lp h2 {
+    font-size: clamp(1.7rem, 4.4vw, 2.4rem);
+    font-weight: 750;
+  }
+  .lp h3 {
+    font-size: 1.1rem;
+    font-weight: 650;
+  }
+  .sub {
+    max-width: 42rem;
+    margin: 0.9rem 0 0;
+    font-size: 1.05rem;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .sub.left {
+    max-width: none;
+  }
+  .prose {
+    max-width: 52rem;
+    margin: 1.8rem 0 0;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+  .note {
+    margin: 1rem 0 0;
+    font-size: var(--sl-text-sm);
+    color: var(--muted);
+    max-width: 52rem;
+  }
+  .more {
+    display: inline-block;
+    margin: 1.1rem 0 0;
+    font-size: var(--sl-text-sm);
+    font-weight: 600;
+  }
+  .more.center,
+  p.center {
+    text-align: center;
+    display: block;
+  }
+
+  .agents-grid {
+    display: grid;
+    gap: 2rem;
+    margin-top: 2.2rem;
+  }
+  .points {
+    display: grid;
+    gap: 1.3rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .points li {
+    padding-left: 1rem;
+    border-left: 2px solid var(--accent);
+  }
+  .points h3 {
+    font-size: 1.02rem;
+  }
+  .points p {
+    margin: 0.35rem 0 0;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .points p :global(code),
+  .card p :global(code),
+  .prose code,
+  .plain code,
+  .sub code {
+    padding: 0.08em 0.35em;
+    border-radius: 4px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    color: var(--fg);
+  }
+  .tools-h {
+    margin: 1.5rem 0 0.5rem;
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .toolchips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .toolchips li {
+    padding: 0.15rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+  }
+  .toolchips code {
+    font-size: 0.76rem;
+  }
+
+  .cards {
+    display: grid;
+    gap: 1rem;
+    margin: 2.2rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .card {
+    display: block;
+    padding: 1.4rem;
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--card);
+    text-decoration: none;
+    min-width: 0;
+  }
+  .card p {
+    margin: 0.55rem 0 0;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .card.link:hover {
+    border-color: var(--accent);
+  }
+  .card.slim {
+    padding: 1.1rem 1.2rem;
+  }
+  .card .more {
+    margin-top: 1rem;
+  }
+  .cards.four,
+  .cards.two {
+    margin-top: 1rem;
+  }
+  .cards.two {
+    margin-top: 2.2rem;
+  }
+  .mini {
+    margin: 1rem 0 0;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.5rem;
+    background: var(--lp-term-bg);
+    color: var(--lp-term-fg);
+    overflow-x: auto;
+    font-size: 0.8rem;
+    line-height: 1.6;
+  }
+  .mini code {
+    font-size: inherit;
+  }
+  .mini:not(.multi) code::before {
+    content: '$ ';
+    color: var(--lp-term-accent);
+    user-select: none;
+  }
+  .mini.multi .l {
+    font-family: var(--sl-font-mono);
+  }
+  .road {
+    counter-reset: none;
+  }
+  .ver {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 0.6rem !important;
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-sm);
+  }
+  .state {
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    font-family: var(--sl-font);
+    font-size: var(--sl-text-xs);
+    color: var(--muted);
+  }
+  .state.done {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+
+  .two {
+    display: grid;
+    gap: 2rem;
+    align-items: start;
+  }
+  .plain {
+    margin: 1.2rem 0 0;
+    padding-left: 1.1rem;
+    display: grid;
+    gap: 0.6rem;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+
+  .diagram {
+    margin: 2rem 0 0;
+    padding: 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--card);
+  }
+  .diagram svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-inline: auto;
+  }
+  .diagram .tall {
+    display: none;
+    max-width: 22rem;
+  }
+  .diagram :global(.box) {
+    fill: var(--bg);
+    stroke: var(--line);
+    stroke-width: 1.5;
+  }
+  .diagram :global(.box.accent) {
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+  .diagram :global(.nat) {
+    fill: none;
+    stroke: var(--sl-color-gray-3);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 6;
+  }
+  .diagram :global(.line) {
+    stroke: var(--sl-color-gray-3);
+    stroke-width: 2;
+  }
+  .diagram :global(.line.thick) {
+    stroke: var(--accent);
+    stroke-width: 3;
+  }
+  .diagram :global(.fill-line) {
+    fill: var(--sl-color-gray-3);
+  }
+  .diagram :global(.t-head) {
+    fill: var(--fg);
+    font: 650 17px var(--sl-font);
+  }
+  .diagram :global(.t-dim) {
+    fill: var(--muted);
+    font: 400 14px var(--sl-font);
+  }
+  .diagram :global(.t-mono) {
+    fill: var(--fg);
+    font: 400 13px var(--sl-font-mono);
+  }
+  .diagram :global(.t-mono2) {
+    fill: var(--fg);
+    font: 400 12px var(--sl-font-mono);
+  }
+
+  .table-wrap {
+    margin-top: 2rem;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--card);
+  }
+  table {
+    width: 100%;
+    min-width: 46rem;
+    border-collapse: collapse;
+    font-size: var(--sl-text-sm);
+  }
+  th,
+  td {
+    padding: 0.85rem 1rem;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--line);
+    line-height: 1.5;
+  }
+  thead th {
+    font-size: var(--sl-text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  thead th:nth-child(2) {
+    color: var(--accent-text);
+  }
+  tbody tr:last-child > * {
+    border-bottom: 0;
+  }
+  tbody th {
+    font-weight: 600;
+    color: var(--fg);
+  }
+  td {
+    color: var(--muted);
+  }
+  td:nth-child(2) {
+    color: var(--fg);
+  }
+  td :global(code) {
+    font-size: 0.85em;
+  }
+
+  .cta-final {
+    padding: 4.5rem 0;
+    text-align: center;
+    background: radial-gradient(40rem 18rem at 50% 100%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 70%);
+  }
+  .cta-final .sub {
+    margin-inline: auto;
+  }
+
+  .lp-footer {
+    padding: 2rem 0 3rem;
+    border-top: 1px solid var(--line);
+    font-size: var(--sl-text-sm);
+  }
+  .lp-footer ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .lp-footer a {
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .lp-footer a:hover {
+    color: var(--fg);
+    text-decoration: underline;
+  }
+  .lp-footer p {
+    margin: 1.2rem 0 0;
+    color: var(--muted);
+  }
+
+  .hero-grid,
+  .agents-grid,
+  .cards,
+  .two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cmd code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+
+  @media (min-width: 50rem) {
+    .mobile-nav {
+      display: none;
+    }
+    .wrap {
+      padding-inline: 2rem;
+    }
+    .hero {
+      padding: 4.5rem 0 5rem;
+    }
+    .hero-grid {
+      grid-template-columns: minmax(0, 1.02fr) minmax(0, 1fr);
+    }
+    .agents-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 3rem;
+    }
+    .cards.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .cards.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .cards.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .cards.six {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .two {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 3rem;
+    }
+    .section {
+      padding: 5.5rem 0;
+    }
+  }
+  @media (min-width: 38rem) and (max-width: 49.99rem) {
+    .cards.six,
+    .cards.four {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 49.99rem) {
+    .cta .btn {
+      flex: 1 1 100%;
+    }
+    .diagram .wide {
+      display: none;
+    }
+    .diagram .tall {
+      display: block;
+    }
+    .cards {
+      gap: 0.8rem;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .btn,
+    .card {
+      transition:
+        border-color 0.15s,
+        filter 0.15s;
+    }
+  }
+</style>

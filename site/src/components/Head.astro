@@ -1,0 +1,36 @@
+---
+import Default from '@astrojs/starlight/components/Head.astro';
+import { base } from '../../site.config.mjs';
+
+// Every documentation page is also served as raw Markdown next to its HTML (starlight-page-actions).
+const id = Astro.locals.starlightRoute.id;
+const markdown = id && id !== 'index' && id !== '404' ? `${base}/${id}.md` : undefined;
+---
+
+<Default />
+{markdown && <link rel="alternate" type="text/markdown" href={markdown} />}
+
+<script>
+  // Terminal blocks (```console) copy only the commands: no "$ " prompt and no output lines.
+  // Expressive Code stores the text for its copy button in data-code (newlines encoded as U+007F).
+  document.querySelectorAll<HTMLElement>('.expressive-code').forEach((block) => {
+    const pre = block.querySelector('pre[data-language]');
+    const btn = block.querySelector<HTMLButtonElement>('.copy button[data-code]');
+    if (!pre || !btn || !['console', 'shell-session'].includes(pre.getAttribute('data-language') ?? '')) return;
+    const lines = (btn.dataset.code ?? '').split('\u007f');
+    if (!lines.some((l) => l.startsWith('$ '))) return;
+    const out: string[] = [];
+    let continued = false;
+    for (const line of lines) {
+      if (continued) {
+        out.push(line);
+        continued = line.endsWith('\\');
+      } else if (line.startsWith('$ ')) {
+        const cmd = line.slice(2).replace(/\s{2,}#.*$/, '');
+        out.push(cmd);
+        continued = cmd.endsWith('\\');
+      }
+    }
+    btn.dataset.code = out.join('\u007f');
+  });
+</script>

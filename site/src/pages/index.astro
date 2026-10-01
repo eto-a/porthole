@@ -1,0 +1,42 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import Landing from '../components/Landing.astro';
+import { base, repoUrl, siteUrl, version } from '../../site.config.mjs';
+
+const description =
+  'porthole is a self-hosted, open-source ngrok alternative with an MCP server built in. Expose localhost to the internet from your own VPS, SSH into a computer behind NAT, and let Claude Code or any AI agent open tunnels and inspect traffic.';
+
+const ld = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'porthole',
+  alternateName: 'portholed',
+  description,
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'Linux, macOS, Windows',
+  softwareVersion: version.replace(/^v/, ''),
+  license: 'https://www.apache.org/licenses/LICENSE-2.0',
+  url: `${siteUrl}${base}/`,
+  downloadUrl: `${repoUrl}/releases`,
+  codeRepository: repoUrl,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+};
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'porthole: self-hosted ngrok alternative with an MCP server for AI agents',
+    description,
+    template: 'splash',
+    pagefind: false,
+    head: [
+      {
+        tag: 'script',
+        attrs: { type: 'application/ld+json' },
+        content: JSON.stringify(ld).replace(/</g, '\\u003c'),
+      },
+    ],
+  }}
+>
+  <Landing />
+</StarlightPage>

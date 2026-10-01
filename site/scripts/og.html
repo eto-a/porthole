@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- Source of public/og.png (1200x630) and public/apple-touch-icon.png (180x180).
+     Rendered with Playwright from the site directory; see scripts/make-images.mjs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: 'Inter'; src: url('../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2'); font-weight: 100 900; }
+  @font-face { font-family: 'JetBrains Mono'; src: url('../node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2'); font-weight: 400; }
+  * { box-sizing: border-box; margin: 0; }
+  body { width: 1200px; height: 630px; background: #14161b; color: #fff; font-family: 'Inter', sans-serif; position: relative; overflow: hidden; }
+  .glow { position: absolute; inset: 0; background: radial-gradient(760px 420px at 88% 0%, rgba(20, 184, 166, .28), transparent 70%); }
+  .wrap { position: absolute; inset: 0; padding: 72px 80px; display: flex; flex-direction: column; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 20px; font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
+  .brand svg { width: 64px; height: 64px; }
+  h1 { font-size: 92px; line-height: 1.02; letter-spacing: -0.04em; font-weight: 800; max-width: 900px; }
+  h1 span { color: #5eead4; }
+  p { font-size: 32px; line-height: 1.4; color: #c0c2c7; max-width: 900px; }
+  .foot { display: flex; gap: 28px; font-family: 'JetBrains Mono', monospace; font-size: 24px; color: #5eead4; }
+  .touch { display: none; }
+  body.touch-icon { width: 180px; height: 180px; background: #14161b; }
+  body.touch-icon .glow, body.touch-icon .wrap { display: none; }
+  body.touch-icon .touch { display: flex; align-items: center; justify-content: center; width: 180px; height: 180px; }
+  body.touch-icon .touch svg { width: 124px; height: 124px; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <circle cx="16" cy="16" r="13.5" stroke="#14b8a6" stroke-width="3"/>
+      <circle cx="16" cy="16" r="8" fill="#14b8a6" fill-opacity=".22" stroke="#14b8a6" stroke-width="1.5"/>
+      <path d="M11.2 15a5 5 0 0 1 3.8-3.9" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round"/>
+      <circle cx="16" cy="2.6" r="1" fill="#14b8a6"/><circle cx="16" cy="29.4" r="1" fill="#14b8a6"/>
+      <circle cx="2.6" cy="16" r="1" fill="#14b8a6"/><circle cx="29.4" cy="16" r="1" fill="#14b8a6"/>
+    </svg>
+    porthole
+  </div>
+  <div>
+    <h1>Tunnels your <span>AI agent</span> can run.</h1>
+    <p style="margin-top: 28px">Self-hosted ngrok alternative with an MCP server built in. Your server, your domain, your data.</p>
+  </div>
+  <div class="foot"><span>MCP</span><span>HTTPS</span><span>SSH by name</span><span>TCP</span><span>Apache-2.0</span></div>
+</div>
+<div class="touch">
+  <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <circle cx="16" cy="16" r="13.5" stroke="#14b8a6" stroke-width="3"/>
+    <circle cx="16" cy="16" r="8" fill="#14b8a6" fill-opacity=".22" stroke="#14b8a6" stroke-width="1.5"/>
+    <path d="M11.2 15a5 5 0 0 1 3.8-3.9" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>
+</div>
+<script>if (location.hash === '#touch') document.body.classList.add('touch-icon');</script>
+</body>
+</html>
