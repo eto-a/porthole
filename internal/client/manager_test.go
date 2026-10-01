@@ -1127,3 +1127,81 @@ func TestManagerEventsFromRunGoroutineOnly(t *testing.T) {
 		t.Fatalf("first event %T", events[0])
 	}
 }
+
+// TestManagerStopLosesNoAcceptedChange checks that a change which Add accepted while Run is stopping is always
+// delivered as an event: from the moment the last events are taken for delivery, Add must refuse with ErrStopped
+// instead of queueing an event nobody will deliver. OnEvent adds a tunnel for every event delivered after the
+// cancellation, so the chain runs through the final delivery inside Run.
+func TestManagerStopLosesNoAcceptedChange(t *testing.T) {
+	fs := newFakeServer(t)
+	fs.expectRegs = -1
+	var (
+		mu        sync.Mutex
+		accepted  []string
+		delivered = map[string]bool{}
+		sawStop   bool
+		m         *Manager
+		cancel    context.CancelFunc
+	)
+	addNext := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(accepted) >= 20 {
+			return
+		}
+		name := fmt.Sprintf("chain-%d", len(accepted))
+		if _, err := m.Add(httpSpec(name, 1000+len(accepted))); err == nil {
+			accepted = append(accepted, name)
+		} else if errors.Is(err, ErrStopped) {
+			sawStop = true
+		}
+	}
+	h := newMgrOpts(t, Options{
+		ServerURL: fs.url(),
+		Token:     newToken(t),
+		Version:   "test",
+		Logger:    slog.New(slog.DiscardHandler),
+		OnEvent: func(e Event) {
+			mu.Lock()
+			if ta, ok := e.(TunnelAdded); ok {
+				delivered[ta.Spec.Name] = true
+			}
+			started := cancel != nil
+			mu.Unlock()
+			if _, ok := e.(Connected); ok && started {
+				cancel() // stop Run from inside the first delivery
+			}
+			if started {
+				addNext()
+			}
+		},
+	}, testTuning())
+	m = h.m
+	ctx, cancelFn := context.WithCancel(context.Background())
+	mu.Lock()
+	cancel = cancelFn
+	mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	select {
+	case <-done:
+	case <-time.After(waitFor):
+		t.Fatal("Run did not return")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) == 0 {
+		t.Fatal("the test did not add anything while stopping")
+	}
+	for _, name := range accepted {
+		if !delivered[name] {
+			t.Errorf("Add(%q) succeeded but its TunnelAdded event was never delivered", name)
+		}
+	}
+	if !sawStop {
+		t.Error("Add never reported ErrStopped during the chain")
+	}
+	if _, err := m.Add(httpSpec("after", 1)); !errors.Is(err, ErrStopped) {
+		t.Errorf("Add after Run: %v", err)
+	}
+}

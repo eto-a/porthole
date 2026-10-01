@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -210,5 +211,21 @@ func TestRemotePolicyPermits(t *testing.T) {
 		if got := tc.policy.Permits(tc.addr); got != tc.want {
 			t.Errorf("%s: Permits(%q)=%v, want %v", tc.name, tc.addr, got, tc.want)
 		}
+	}
+}
+
+// TestRemoteOpenSessionEndedRemovesTunnel: if the session ends while the answer is awaited, the server has already
+// told the operator "client disconnected"; the tunnel must not survive in the set and come back on reconnect.
+func TestRemoteOpenSessionEndedRemovesTunnel(t *testing.T) {
+	fs := newFakeServer(t)
+	h := newMgr(t, fs, nil, testTuning(), func(o *Options) { o.AcceptRemoteOpen = true })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the session context is already gone; no connection is needed, the tunnel stays pending
+	res := h.m.openTunnel(ctx, &proto.OpenRequest{ReqID: 1, Kind: proto.KindHTTP, LocalAddr: "3000", Name: "web"})
+	if res != nil {
+		t.Fatalf("result %+v, want nil (session ended)", res)
+	}
+	if _, ok := tunnelOf(h.m, "web"); ok {
+		t.Error("the tunnel of an unanswered remote request stays in the set")
 	}
 }

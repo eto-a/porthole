@@ -371,6 +371,11 @@ func (m *Manager) flush() {
 	evs := m.outbox
 	m.outbox = nil
 	m.mu.Unlock()
+	m.deliver(evs)
+}
+
+// deliver hands events to the subscribers and to Options.OnEvent. Only the Run goroutine calls it.
+func (m *Manager) deliver(evs []Event) {
 	for _, e := range evs {
 		m.subMu.Lock()
 		for s := range m.subs {
@@ -416,16 +421,20 @@ func (m *Manager) Run(ctx context.Context) error {
 	return err
 }
 
-// finish marks the Manager stopped after the last event has been delivered.
+// finish marks the Manager stopped and delivers the last events. The two happen in this order: the queue is taken in
+// the same critical section that sets stopped, so a change accepted by Add/Remove/Replace is either in the queue
+// delivered here or refused with ErrStopped; none can be queued after the last delivery and be lost.
 func (m *Manager) finish(err error) {
-	m.flush()
 	m.mu.Lock()
 	m.conn, m.stopped, m.running = ConnStopped, true, false
 	m.retryAt = time.Time{}
 	if err != nil {
 		m.lastErr = err
 	}
+	evs := m.outbox
+	m.outbox = nil
 	m.mu.Unlock()
+	m.deliver(evs)
 	m.subMu.Lock()
 	m.subsClosed = true
 	for s := range m.subs {
