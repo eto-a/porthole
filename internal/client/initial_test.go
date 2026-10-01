@@ -129,10 +129,10 @@ func TestInitialConnectUnlimitedKeepsRetrying(t *testing.T) {
 }
 
 func TestInitialConnectTLSVerifyErrorFailsAtOnce(t *testing.T) {
-	// A TLS server with a certificate the system does not trust; the limit is off, yet Run must not retry.
+	// A TLS server with a certificate the system does not trust; the limit is 5, yet Run must not retry.
 	ts := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(ts.Close)
-	_, done, _ := runOpts(t, ts.URL, 0)
+	_, done, _ := runOpts(t, ts.URL, 5)
 
 	select {
 	case err := <-done:
@@ -149,6 +149,37 @@ func TestInitialConnectTLSVerifyErrorFailsAtOnce(t *testing.T) {
 		done <- err
 	case <-time.After(waitFor):
 		t.Fatal("Run did not fail on the certificate error")
+	}
+}
+
+func TestInitialConnectTLSVerifyErrorRetriedWithoutLimit(t *testing.T) {
+	// Without a limit (the daemon) even a failure that looks permanent is retried: DNS may come up later and a
+	// certificate may be renewed.
+	ts := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	events, done, cancel := runOpts(t, ts.URL, 0)
+
+	for n := 1; n <= 2; n++ {
+		select {
+		case e := <-events:
+			if _, ok := e.(Disconnected); !ok {
+				t.Fatalf("unexpected event %+v", e)
+			}
+		case err := <-done:
+			t.Fatalf("Run returned %v after %d attempts, want it to keep retrying", err, n-1)
+		case <-time.After(waitFor):
+			t.Fatalf("timed out waiting for attempt %d", n)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancel, want nil", err)
+		}
+		done <- err
+	case <-time.After(waitFor):
+		t.Fatal("Run did not return after cancel")
 	}
 }
 

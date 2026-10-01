@@ -23,6 +23,6 @@ func main() {
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "porthole:", err)
-		os.Exit(1)
+		os.Exit(clientcmd.ExitCode(err))
 	}
 }

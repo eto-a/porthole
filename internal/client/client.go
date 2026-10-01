@@ -61,8 +61,10 @@ type Options struct {
 	// MaxInitialAttempts bounds the connection attempts made before the first session is established in this
 	// process: Run gives up with an *InitialConnectError once that many attempts failed, or at once when the
 	// failure cannot be fixed by retrying (unknown host, TLS certificate verification). Zero or a negative value
-	// means no limit. Once a session has been established (the server accepted the handshake) the limit no longer
-	// applies and Run reconnects forever. DefaultMaxInitialAttempts is the value the porthole CLI uses.
+	// means no limit and no giving up at all, even on those failures: a daemon started before DNS works, or while
+	// the server certificate is being renewed, must keep trying. Once a session has been established (the server
+	// accepted the handshake) the limit no longer applies and Run reconnects forever. DefaultMaxInitialAttempts is
+	// the value the porthole CLI uses.
 	MaxInitialAttempts int
 }
 

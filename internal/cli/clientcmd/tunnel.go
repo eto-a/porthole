@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/eto-a/porthole/internal/auth"
 	"github.com/eto-a/porthole/internal/client"
+	"github.com/eto-a/porthole/internal/localapi"
 	"github.com/eto-a/porthole/internal/proto"
 )
 
@@ -30,38 +32,70 @@ type connFlags struct {
 }
 
 func (f *connFlags) add(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.server, "server", "", "server URL (overrides $"+envServer+" and the config file)")
-	cmd.Flags().StringVar(&f.token, "token", "", "token (overrides $"+envToken+" and the config file)")
+	cmd.Flags().StringVar(&f.server, "server", "", "server URL (overrides $"+envServer+" and the config file; only with --no-daemon)")
+	cmd.Flags().StringVar(&f.token, "token", "", "token (overrides $"+envToken+" and the config file; only with --no-daemon)")
 	cmd.Flags().IntVar(&f.maxAttempts, "max-initial-attempts", client.DefaultMaxInitialAttempts,
 		"give up if no connection to the server could be established after this many attempts (0 = retry forever); "+
 			"once connected, the client always reconnects")
 }
 
-// credentials resolves server and token: flag, then environment, then config file.
-func (a *app) credentials(f *connFlags) (server, token string, err error) {
-	server, token = f.server, f.token
-	if server == "" {
-		server = a.d.getenv(envServer)
+// credsFrom is where the credentials of a command come from.
+type credsFrom struct {
+	// server is the server URL given by flag or environment; configServer is the one of the config file. The caller
+	// picks (the tunnels file sits in between for `start` and the daemon). Either may be empty.
+	server, configServer string
+	token                string
+}
+
+// resolveCreds resolves the server and the token: flag, then environment, then the config file (where the token
+// comes from `token` or `token_file`). The config file is read only if something is still missing.
+func (a *app) resolveCreds(f *connFlags) (credsFrom, error) {
+	c := credsFrom{server: f.server, token: f.token}
+	if c.server == "" {
+		c.server = a.d.getenv(envServer)
 	}
-	if token == "" {
-		token = a.d.getenv(envToken)
+	if c.token == "" {
+		c.token = a.d.getenv(envToken)
 	}
-	if server == "" || token == "" {
+	if c.server == "" || c.token == "" {
 		path, err := a.path()
 		if err != nil {
-			return "", "", err
+			return credsFrom{}, err
 		}
 		cfg, err := loadConfig(path)
 		if err != nil {
-			return "", "", err
+			return credsFrom{}, err
 		}
-		if server == "" {
-			server = cfg.Server
-		}
-		if token == "" {
-			token = cfg.Token
+		c.configServer = cfg.Server
+		if c.token == "" {
+			if c.token, err = cfg.resolveToken(path); err != nil {
+				return credsFrom{}, err
+			}
 		}
 	}
+	if c.token != "" {
+		if _, err := auth.Parse(c.token); err != nil {
+			return credsFrom{}, errors.New("the configured token is malformed (expected ph_<id>_<secret>); run `porthole login` with a valid token")
+		}
+	}
+	return c, nil
+}
+
+// credentials resolves server and token: flag, then environment, then config file.
+func (a *app) credentials(f *connFlags) (server, token string, err error) {
+	c, err := a.resolveCreds(f)
+	if err != nil {
+		return "", "", err
+	}
+	server = c.server
+	if server == "" {
+		server = c.configServer
+	}
+	return a.checkCreds(server, c.token)
+}
+
+// checkCreds verifies that server and token are set and well-formed.
+func (a *app) checkCreds(server, token string) (string, string, error) {
 	if server == "" || token == "" {
 		return "", "", fmt.Errorf("no server or token configured: run `porthole login <server-url> <token>`, "+
 			"or set %s and %s", envServer, envToken)
@@ -75,13 +109,52 @@ func (a *app) credentials(f *connFlags) (server, token string, err error) {
 	return server, token, nil
 }
 
+// routeFlags choose between the daemon and an in-process client for `porthole http|tcp|ssh`.
+type routeFlags struct {
+	noDaemon bool
+	daemon   bool
+	detach   bool
+}
+
+func (f *routeFlags) add(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&f.noDaemon, "no-daemon", false, "run in this process even if a daemon is running")
+	cmd.Flags().BoolVar(&f.daemon, "daemon", false, "require a running daemon (fail instead of running in this process)")
+	cmd.Flags().BoolVar(&f.detach, "detach", false,
+		"add the tunnel to the daemon and exit; it stays until `porthole close <name>` or a daemon restart (implies --daemon)")
+	cmd.MarkFlagsMutuallyExclusive("daemon", "no-daemon")
+	cmd.MarkFlagsMutuallyExclusive("detach", "no-daemon")
+}
+
+// tunnelRequest is one tunnel as the http, tcp and ssh commands describe it.
+type tunnelRequest struct {
+	typ        string // localapi.TypeHTTP, TypeTCP or TypeSSH
+	name       string
+	addr       string // "host:port", already normalized
+	remotePort int
+	sshUser    string // non-empty for `porthole ssh`: print the ssh command line
+}
+
+func (r tunnelRequest) spec() client.TunnelSpec {
+	kind := proto.KindTCP
+	if r.typ == localapi.TypeHTTP {
+		kind = proto.KindHTTP
+	}
+	return client.TunnelSpec{Kind: kind, Name: r.name, LocalAddr: r.addr, RemotePort: r.remotePort}
+}
+
+func (r tunnelRequest) apiRequest() localapi.AddTunnelRequest {
+	return localapi.AddTunnelRequest{Type: r.typ, Name: r.name, Addr: r.addr, RemotePort: r.remotePort}
+}
+
 func (a *app) newHTTPCmd() *cobra.Command {
 	var cf connFlags
+	var rf routeFlags
 	var name string
 	cmd := &cobra.Command{
 		Use:   "http <port|host:port>",
 		Short: "Expose a local HTTP service",
-		Long:  "Expose a local HTTP service. A bare port means 127.0.0.1:<port>.",
+		Long: "Expose a local HTTP service. A bare port means 127.0.0.1:<port>.\n\n" +
+			"If a porthole daemon is running the tunnel is added to it and removed again when this command ends.",
 		Example: "  porthole http 8080\n" +
 			"  porthole http 192.168.1.10:3000 --name blog",
 		Args: cobra.ExactArgs(1),
@@ -90,23 +163,25 @@ func (a *app) newHTTPCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			spec := client.TunnelSpec{Kind: proto.KindHTTP, Name: name, LocalAddr: target}
-			return a.runTunnel(cmd, &cf, spec, "")
+			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeHTTP, name: name, addr: target})
 		},
 	}
 	cf.add(cmd)
+	rf.add(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "tunnel name (default http-<port>)")
 	return cmd
 }
 
 func (a *app) newTCPCmd() *cobra.Command {
 	var cf connFlags
+	var rf routeFlags
 	var name string
 	var remotePort int
 	cmd := &cobra.Command{
 		Use:   "tcp <port|host:port>",
 		Short: "Expose a local TCP service",
-		Long:  "Expose a local TCP service on a public port of the server. A bare port means 127.0.0.1:<port>.",
+		Long: "Expose a local TCP service on a public port of the server. A bare port means 127.0.0.1:<port>.\n\n" +
+			"If a porthole daemon is running the tunnel is added to it and removed again when this command ends.",
 		Example: "  porthole tcp 5432\n" +
 			"  porthole tcp 5432 --remote-port 20017",
 		Args: cobra.ExactArgs(1),
@@ -120,11 +195,11 @@ func (a *app) newTCPCmd() *cobra.Command {
 					return fmt.Errorf("--remote-port: %w", err)
 				}
 			}
-			spec := client.TunnelSpec{Kind: proto.KindTCP, Name: name, LocalAddr: target, RemotePort: remotePort}
-			return a.runTunnel(cmd, &cf, spec, "")
+			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeTCP, name: name, addr: target, remotePort: remotePort})
 		},
 	}
 	cf.add(cmd)
+	rf.add(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "tunnel name (default tcp-<port>)")
 	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "request this public port (default: any free port in the server's range)")
 	return cmd
@@ -132,13 +207,15 @@ func (a *app) newTCPCmd() *cobra.Command {
 
 func (a *app) newSSHCmd() *cobra.Command {
 	var cf connFlags
+	var rf routeFlags
 	var name, userName string
 	var localPort int
 	cmd := &cobra.Command{
 		Use:   "ssh",
 		Short: "Expose the local ssh server",
-		Long:  "Expose the local ssh server (a TCP tunnel to 127.0.0.1:22) and print the ssh command to reach it.",
-		Args:  cobra.NoArgs,
+		Long: "Expose the local ssh server (a TCP tunnel to 127.0.0.1:22) and print the ssh command to reach it.\n\n" +
+			"If a porthole daemon is running the tunnel is added to it and removed again when this command ends.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := parsePort(fmt.Sprint(localPort)); err != nil {
 				return fmt.Errorf("--local-port: %w", err)
@@ -150,38 +227,87 @@ func (a *app) newSSHCmd() *cobra.Command {
 			if userName == "" {
 				userName = a.d.currentUser()
 			}
-			spec := client.TunnelSpec{Kind: proto.KindTCP, Name: name, LocalAddr: target}
-			return a.runTunnel(cmd, &cf, spec, userName)
+			return a.runTunnel(cmd, &cf, &rf, tunnelRequest{typ: localapi.TypeSSH, name: name, addr: target, sshUser: userName})
 		},
 	}
 	cf.add(cmd)
+	rf.add(cmd)
 	cmd.Flags().IntVar(&localPort, "local-port", 22, "local ssh port")
 	cmd.Flags().StringVar(&userName, "user", "", "user name for the printed ssh command (default: current user)")
 	cmd.Flags().StringVar(&name, "name", "ssh", "tunnel name")
 	return cmd
 }
 
-// runTunnel runs one tunnel in the foreground until interrupted. sshUser is non-empty for `porthole ssh`.
-func (a *app) runTunnel(cmd *cobra.Command, cf *connFlags, spec client.TunnelSpec, sshUser string) error {
-	server, token, err := a.credentials(cf)
-	if err != nil {
-		return err
-	}
+// signalContext returns the command's context cancelled by Ctrl-C and SIGTERM.
+func signalContext(cmd *cobra.Command) (context.Context, context.CancelFunc) {
 	parent := cmd.Context()
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+}
+
+// runTunnel runs one tunnel in the foreground until interrupted: through the daemon if one is reachable (and the
+// flags allow it), otherwise in this process.
+func (a *app) runTunnel(cmd *cobra.Command, cf *connFlags, rf *routeFlags, tr tunnelRequest) error {
+	ctx, stop := signalContext(cmd)
 	defer stop()
 
+	if rf.noDaemon {
+		return a.runStandalone(ctx, cmd, cf, tr)
+	}
+	cl, path, err := a.findDaemon(ctx)
+	switch {
+	case err == nil:
+		defer cl.Close()
+		if err := rejectCredentialFlags(cmd, path); err != nil {
+			return err
+		}
+		if rf.detach {
+			return a.detachTunnel(ctx, cmd, cl, path, tr)
+		}
+		return a.attachTunnel(ctx, cmd, cl, path, tr)
+	case isNoDaemon(err):
+		// An explicit --socket that nobody answers on is a mistake, not a reason to quietly run standalone.
+		if rf.daemon || rf.detach || a.socket != "" {
+			return err
+		}
+		return a.runStandalone(ctx, cmd, cf, tr)
+	default:
+		return err
+	}
+}
+
+// rejectCredentialFlags fails if flags that only configure an in-process client were given while a daemon, which has
+// its own credentials, is going to run the tunnel.
+func rejectCredentialFlags(cmd *cobra.Command, socket string) error {
+	var given []string
+	for _, name := range []string{"server", "token", "max-initial-attempts"} {
+		if cmd.Flags().Changed(name) {
+			given = append(given, "--"+name)
+		}
+	}
+	if len(given) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s configure a standalone client and cannot be combined with the daemon at %s, which has its own "+
+		"server and token; drop them or use --no-daemon to run in this process", strings.Join(given, ", "), socket)
+}
+
+// runStandalone runs the tunnel in this process, as porthole did before the daemon existed.
+func (a *app) runStandalone(ctx context.Context, cmd *cobra.Command, cf *connFlags, tr tunnelRequest) error {
+	server, token, err := a.credentials(cf)
+	if err != nil {
+		return err
+	}
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	err = a.d.run(ctx, client.Options{
 		ServerURL: server,
 		Token:     token,
-		Tunnels:   []client.TunnelSpec{spec},
+		Tunnels:   []client.TunnelSpec{tr.spec()},
 		Version:   a.version,
 		Logger:    a.logger(cmd),
-		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, sshUser) },
+		OnEvent:   func(e client.Event) { printEvent(out, errOut, e, tr.sshUser) },
 
 		MaxInitialAttempts: max(cf.maxAttempts, 0),
 	})

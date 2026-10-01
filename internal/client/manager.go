@@ -472,7 +472,7 @@ func (m *Manager) loop(ctx context.Context) error {
 			initialFailures++
 			initialAttempt = initialFailures
 			limit := m.opts.MaxInitialAttempts
-			if isPermanentDialError(err) || (limit > 0 && initialFailures >= limit) {
+			if limit > 0 && (isPermanentDialError(err) || initialFailures >= limit) {
 				return &InitialConnectError{URL: m.url, Attempts: initialFailures, Err: err}
 			}
 		}

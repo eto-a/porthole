@@ -307,6 +307,10 @@ func (e *env) client(t *testing.T, tok string, args ...string) *proc {
 	t.Helper()
 	full := append([]string{"--config", e.clientConf}, args...)
 	full = append(full, "--server", e.server, "--token", tok)
+	if os.Getenv(envCompat) != "1" {
+		// A daemon of the developer's machine must not take these over; releases before the daemon lack the flag.
+		full = append(full, "--no-daemon")
+	}
 	return start(t, porthole, full...)
 }
 
