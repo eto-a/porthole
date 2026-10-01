@@ -39,6 +39,62 @@ jobs:
         if: runner.os != 'Linux'
         run: go test -count=1 ./...
 
+  # Protocol compatibility (DESIGN.md section 6): the e2e scenarios, which run real binaries in separate processes,
+  # once with the previous release's client against the server built from this commit, and once the other way
+  # round. The server accepts protocol versions N and N-1, so both directions must keep working. The previous
+  # release is the newest published one, pre-releases included. Not a required check.
+  compat:
+    name: compat (previous release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Download and verify the previous release
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEST: ${{ runner.temp }}/baseline
+        run: |
+          tag=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -z "$tag" ]; then
+            echo "::notice::No published release yet; nothing to compare against."
+            exit 0
+          fi
+          mkdir -p "$DEST"
+          gh release download "$tag" --dir "$DEST" \
+            --pattern checksums.txt \
+            --pattern 'portholed_*_linux_amd64.tar.gz' \
+            --pattern 'porthole_*_linux_amd64.tar.gz'
+          cd "$DEST"
+          # Each archive must be listed in checksums.txt and match it (an empty selection makes sha256sum fail).
+          for f in portholed_*_linux_amd64.tar.gz porthole_*_linux_amd64.tar.gz; do
+            awk -v f="$f" '$2 == f' checksums.txt | sha256sum --check --strict -
+            tar -xzf "$f" "${f%%_*}"
+          done
+          ./portholed version
+          ./porthole version
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Previous client, current server
+        if: steps.baseline.outputs.tag != ''
+        env:
+          PORTHOLE_E2E_COMPAT: "1"
+          PORTHOLE_E2E_CLIENT_BIN: ${{ runner.temp }}/baseline/porthole
+        run: go test -count=1 -v ./tests/e2e/
+      - name: Current client, previous server
+        if: steps.baseline.outputs.tag != ''
+        env:
+          PORTHOLE_E2E_COMPAT: "1"
+          PORTHOLE_E2E_SERVER_BIN: ${{ runner.temp }}/baseline/portholed
+        run: go test -count=1 -v ./tests/e2e/
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
