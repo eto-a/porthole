@@ -69,8 +69,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: govulncheck
-        # Keep the version in sync with GOVULNCHECK_VERSION in the Makefile.
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        # govulncheck is pinned as a tool dependency in go.mod, so Dependabot keeps it current.
+        run: go tool govulncheck ./...
 
   fuzz:
     runs-on: ubuntu-latest

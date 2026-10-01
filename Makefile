@@ -5,7 +5,6 @@ LDFLAGS  := -s -w -X main.version=$(VERSION)
 BIN_DIR  ?= bin
 FUZZTIME ?= 10s
 # Keep in sync with .github/workflows/ci.yml.
-GOVULNCHECK_VERSION ?= v1.1.4
 
 export CGO_ENABLED = 0
 
@@ -30,7 +29,7 @@ lint: ## Run golangci-lint (v2)
 
 .PHONY: vuln
 vuln: ## Scan dependencies and code for known vulnerabilities
-	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	go tool govulncheck ./...
 
 .PHONY: fuzz
 fuzz: ## Short fuzzing run of the frame decoder and the token parser (FUZZTIME=10s)
