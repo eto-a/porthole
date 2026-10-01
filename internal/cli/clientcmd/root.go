@@ -18,6 +18,7 @@ import (
 	"github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/daemon"
 	"github.com/eto-a/porthole/internal/localapi"
+	"github.com/eto-a/porthole/internal/service"
 )
 
 // envSocket selects the daemon socket (below --socket, above the default locations).
@@ -50,6 +51,15 @@ type deps struct {
 
 	// detachTimeout bounds how long `--detach` waits for the tunnel to become ready; zero means the default.
 	detachTimeout time.Duration
+
+	// The operating system service (`porthole service`, `porthole daemon` under the Windows service manager). A nil
+	// field means the feature is not available, so a test that does not set them never touches the real system.
+	newService   func(user bool) (service.Manager, error)
+	prepareDir   func() (string, error)                                                                             // the system config directory
+	executable   func() (string, error)                                                                             // the running binary
+	fixOwnership func(config, tunnels string) (changed bool, err error)                                             // hand files to the service account
+	isService    func() (bool, error)                                                                               // started by the Windows SCM
+	runService   func(name string, run func(ctx context.Context, ready func(), reload <-chan struct{}) error) error // Windows SCM entry
 }
 
 func defaultDeps() deps {
@@ -62,7 +72,14 @@ func defaultDeps() deps {
 
 		socketPaths: localapi.DefaultSocketPaths,
 		userSocket:  localapi.UserSocketPath,
-		dial:        func(p string) apiClient { return localapi.NewClient(p) },
+
+		newService:   service.New,
+		prepareDir:   service.PrepareSystemDir,
+		executable:   selfExecutable,
+		fixOwnership: handToServiceAccount,
+		isService:    service.IsService,
+		runService:   service.RunService,
+		dial:         func(p string) apiClient { return localapi.NewClient(p) },
 		runDaemon: func(ctx context.Context, opts daemon.Options) error {
 			d, err := daemon.New(opts)
 			if err != nil {
@@ -113,6 +130,7 @@ func newRoot(version string, d deps) *cobra.Command {
 		a.newSSHCmd(),
 		a.newStartCmd(),
 		a.newDaemonCmd(),
+		a.newServiceCmd(),
 		a.newStatusCmd(),
 		a.newTunnelsCmd(),
 		a.newReloadCmd(),

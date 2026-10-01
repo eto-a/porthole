@@ -49,7 +49,7 @@ HTTP(S) with WebSocket (`porthole http`), TCP (`porthole tcp 5432`, optionally w
 
 ## Does porthole run on Windows and macOS?
 
-The client does: `porthole` archives exist for Linux, macOS and Windows on amd64 and arm64 ([Archives](install.md#archives)), and `install.sh` covers Linux and macOS. On macOS and Windows there are no service definitions yet, so run `porthole daemon` yourself ([Client guide](client.md#macos-and-windows)). The server is meant for Linux, with deb and rpm packages, a systemd unit and a Docker image ([Deployment](deploy.md)).
+The client does: `porthole` archives exist for Linux, macOS and Windows on amd64 and arm64 ([Archives](install.md#archives)), and `install.sh` covers Linux and macOS. On macOS and Windows there are no service definitions yet, so run `porthole daemon` yourself ([Client guide](client.md#porthole-service-linux-macos-windows)). The server is meant for Linux, with deb and rpm packages, a systemd unit and a Docker image ([Deployment](deploy.md)).
 
 ## How many tunnels can I have?
 

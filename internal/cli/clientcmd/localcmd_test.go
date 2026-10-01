@@ -6,6 +6,7 @@ package clientcmd
 import (
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +181,7 @@ func TestLocalCommandsNeedADaemon(t *testing.T) {
 	denied.statusErr = errPerm
 	d, _ = withSockets(testDeps(nil), map[string]*fakeAPI{"/s/user": denied}, "/s/user")
 	_, _, err := execute(t, d, "status")
-	if err == nil || !strings.Contains(err.Error(), "porthole-client") || strings.Contains(err.Error(), "--no-daemon") {
+	if err == nil || !strings.Contains(err.Error(), accessAdvice(runtime.GOOS)) || strings.Contains(err.Error(), "--no-daemon") {
 		t.Errorf("denied: err = %v (the hint must not offer --no-daemon: these commands need the daemon)", err)
 	}
 }

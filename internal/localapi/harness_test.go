@@ -22,7 +22,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	goleak.VerifyTestMain(m, leakOptions()...)
 }
 
 const testTimeout = 5 * time.Second

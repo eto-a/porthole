@@ -34,7 +34,7 @@ type loginCheck struct {
 }
 
 func (a *app) newLoginCmd() *cobra.Command {
-	var check bool
+	var check, system bool
 	cmd := &cobra.Command{
 		Use:   "login <server-url> <token>",
 		Short: "Store the server URL and token",
@@ -52,7 +52,7 @@ func (a *app) newLoginCmd() *cobra.Command {
 			if _, err := auth.Parse(token); err != nil {
 				return usageErr(errors.New("invalid token: expected the form ph_<id>_<secret>"))
 			}
-			path, err := a.path()
+			path, err := a.configTarget(system)
 			if err != nil {
 				return err
 			}
@@ -60,6 +60,7 @@ func (a *app) newLoginCmd() *cobra.Command {
 			if err := saveConfig(path, fileConfig{Server: server, Token: token}); err != nil {
 				return err
 			}
+			a.afterSystemSave(cmd, system, path)
 			out := cmd.OutOrStdout()
 			asJSON := jsonout.Enabled(cmd)
 			if !asJSON {
@@ -97,5 +98,6 @@ func (a *app) newLoginCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "connect to the server and verify the token")
+	cmd.Flags().BoolVar(&system, "system", false, "write the config file of the system service (needs root or Administrator) instead of your own")
 	return cmd
 }

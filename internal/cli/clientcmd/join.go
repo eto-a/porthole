@@ -39,7 +39,7 @@ type joinResult struct {
 
 func (a *app) newJoinCmd() *cobra.Command {
 	var server string
-	var force, insecureHTTP bool
+	var force, insecureHTTP, system bool
 	cmd := &cobra.Command{
 		Use:   "join <link|code>",
 		Short: "Enrol this machine with a one-time join link",
@@ -53,7 +53,7 @@ func (a *app) newJoinCmd() *cobra.Command {
 		Example: "  porthole join https://tun.example.com/j/pj_3kq9w2m1z8xa_...",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, err := a.path()
+			path, err := a.configTarget(system)
 			if err != nil {
 				return err
 			}
@@ -95,6 +95,7 @@ func (a *app) newJoinCmd() *cobra.Command {
 			if err := saveConfig(path, fileConfig{Server: base, Token: res.Token}); err != nil {
 				return err
 			}
+			a.afterSystemSave(cmd, system, path)
 			out := cmd.OutOrStdout()
 			if jsonout.Enabled(cmd) {
 				return jsonout.Write(out, joinResult{Joined: true, ClientName: res.ClientName, Server: base, Config: path})
@@ -106,6 +107,7 @@ func (a *app) newJoinCmd() *cobra.Command {
 	cmd.Flags().StringVar(&server, "server", "", "server URL, needed when giving a bare code (default: $"+envServer+", then the config file)")
 	cmd.Flags().BoolVar(&force, "force", false, "replace the server and token of an existing config file")
 	cmd.Flags().BoolVar(&insecureHTTP, "insecure-http", false, "allow a plain http:// server (the join code and the token travel unencrypted)")
+	cmd.Flags().BoolVar(&system, "system", false, "write the config file of the system service (needs root or Administrator) instead of your own")
 	return cmd
 }
 

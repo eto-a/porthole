@@ -118,7 +118,32 @@ $ docker run --rm -e PORTHOLE_SERVER=https://tun.example.com -e PORTHOLE_TOKEN=p
 
 ### Archives
 
-Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it. On Windows and on macOS without the script this is the way to install the client.
+Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it. On Windows and on macOS without the script this is the way to install the client; see the two sections below.
+
+### Windows
+
+Packages for Scoop and winget are coming (the release generates their manifests, but they are not published yet). Until then:
+
+1. Download `porthole_<version>_windows_amd64.zip` (or `_arm64`) from [Releases](https://github.com/eto-a/porthole/releases) and extract `porthole.exe` to a directory of your choice, for example `C:\Program Files\porthole`. Add it to `PATH`. Browsers may show SmartScreen for an unsigned exe; see [Troubleshooting](troubleshooting.md#windows-smartscreen-and-macos-gatekeeper).
+2. Enrol the machine: `porthole join <link>`.
+3. To keep tunnels up across reboots, run `porthole service install` in an **Administrator** terminal (available from v0.4). It registers the Windows service `porthole`; see [Run the client as a service](client.md#porthole-service-linux-macos-windows). If you do not want a system service, run `porthole daemon` from Task Scheduler instead (recipe in the same section).
+
+### macOS
+
+Homebrew (`brew install eto-a/tap/porthole`) is coming; the tap is not published yet. Until then use the install script above or the tarball:
+
+```console
+$ tar -xzf porthole_<version>_darwin_arm64.tar.gz porthole        # or _darwin_amd64 on an Intel Mac
+$ sudo install -m 0755 porthole /usr/local/bin/porthole
+```
+
+The binary is not notarized yet, so Gatekeeper blocks a file downloaded in a browser ("cannot be opened because the developer cannot be verified"). Remove the quarantine attribute once you have checked the download ([Verifying a download](#verifying-a-download)):
+
+```console
+$ xattr -d com.apple.quarantine /usr/local/bin/porthole
+```
+
+`curl` and the install script do not set the attribute, so they are not affected. To keep tunnels up across reboots (available from v0.4): `porthole service install --user` registers a LaunchAgent that runs while you are logged in; `sudo porthole service install` registers a system LaunchDaemon. See [Run the client as a service](client.md#porthole-service-linux-macos-windows).
 
 ## Verifying a download
 
