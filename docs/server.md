@@ -121,6 +121,9 @@ environment variable (they override the file), for example `PORTHOLED_DOMAIN` or
 | `ssh_gateway.max_conns_per_tunnel` | - | `256` | Concurrent SSH channels per tunnel |
 | `metrics_listen` | `PORTHOLED_METRICS_LISTEN` | off | Address of the metrics and profiling listener, for example `127.0.0.1:9090` (see [Metrics](#metrics)) |
 | `trust_proxy_headers` | `PORTHOLED_TRUST_PROXY_HEADERS` | `false` | Take visitor IP addresses from `X-Forwarded-For`; enable only behind a proxy you control |
+| `proxy_protocol` | `PORTHOLED_PROXY_PROTOCOL` | `false` | Accept PROXY protocol v1/v2 headers on the HTTPS listener and the SSH gateway, from the peers in `trusted_proxies` only (see [Behind Traefik or Dokploy](#behind-traefik-or-dokploy-tls-passthrough)) |
+| `proxy_protocol_http` | `PORTHOLED_PROXY_PROTOCOL_HTTP` | `false` | Also accept it on the plain HTTP listener (`http_listen`); needs `proxy_protocol` |
+| `trusted_proxies` | `PORTHOLED_TRUSTED_PROXIES` (comma-separated) | empty | IP addresses and CIDR ranges of the proxies allowed to send PROXY headers; required by `proxy_protocol` |
 | `max_tunnels_per_client` | `PORTHOLED_MAX_TUNNELS_PER_CLIENT` | `10` | Simultaneous tunnels for tokens without a limit of their own |
 | `traffic.max_requests`, `traffic.max_conns` | `PORTHOLED_TRAFFIC_MAX_REQUESTS`, `PORTHOLED_TRAFFIC_MAX_CONNS` | `10000` each | Size of the in-memory request log and connection log; `0` turns a log off. Lost on restart (see [Request log and inspection](#request-log-and-inspection)) |
 | `traffic.allow_inspect` | `PORTHOLED_TRAFFIC_ALLOW_INSPECT` | `true` | Let clients ask for body inspection of an HTTP tunnel (`porthole http --inspect`); with `false` such a tunnel is refused |
@@ -266,6 +269,34 @@ default in Dokploy) can instead pass the TLS connection through by SNI and leave
 the same hosts forwarding to `http_listen` (HTTP-01 and the redirect). TCP and SSH tunnel ports are published
 directly. [deploy/dokploy-compose.yaml](../deploy/dokploy-compose.yaml) is a ready compose file: in Dokploy create a
 Compose service, choose Raw and paste it, then set `PORTHOLED_DOMAIN` and your domain in the labels.
+
+Passthrough hides the visitor: every connection arrives from Traefik, so per-address limits, the SSH gateway failure
+limiter, the request log and the audit log would all see Traefik's address. There is no `X-Forwarded-For` either,
+because the proxy never reads the encrypted HTTP. The fix is the PROXY protocol: Traefik writes a small header with the
+real address in front of the stream (label `traefik.tcp.services.<name>.loadbalancer.proxyProtocol.version=2` on the
+TCP service) and `portholed` reads it:
+
+```yaml
+proxy_protocol: true
+trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12"]   # the Docker network of Traefik; narrow it to your subnet
+```
+
+- Applies to the HTTPS listener and the SSH gateway. The metrics listener and TCP tunnel ports are not affected: they
+  are reached directly.
+- A peer inside `trusted_proxies` must send a header (v1 or v2); a connection from it without one is refused. A peer
+  outside the list must not send one (the connection is refused), so a visitor cannot choose its own address; without a
+  header it is served as an ordinary connection with its real address. The header must arrive within 5 seconds.
+- `trusted_proxies` takes addresses and CIDR ranges. `proxy_protocol: true` without it is a configuration error, so
+  that "trust every sender" can never happen by accident.
+- Traefik's HTTP routers cannot send the PROXY protocol, so the plain HTTP listener (`http_listen`: challenge and
+  redirect) is left out unless you set `proxy_protocol_http: true` and the proxy sends it there. With the default
+  it sees Traefik's address; it serves no tunnel traffic.
+
+Pick one mechanism per proxy. `trust_proxy_headers` (`X-Forwarded-For`) is for a proxy that terminates TLS and speaks
+HTTP to `portholed` (`tls.mode: off`, the Caddy case above). The PROXY protocol is for a proxy that forwards raw TCP,
+which is TLS passthrough and also the SSH gateway behind a TCP load balancer. The Caddy equivalent is the
+`proxy_protocol` listener wrapper with an `allow` list; the Go library used here,
+[pires/go-proxyproto](https://github.com/pires/go-proxyproto), is the one Traefik and Caddy build on.
 
 ## Docker
 

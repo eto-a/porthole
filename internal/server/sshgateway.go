@@ -141,6 +141,10 @@ func (s *Server) startSSHGateway(ctx context.Context) error {
 // StartSSHGateway serves the SSH gateway on ln in the background until the server closes. It takes ownership of
 // ln and returns once the host key is loaded.
 func (s *Server) StartSSHGateway(ln net.Listener) error {
+	ln, err := s.wrapProxyIf(ln, s.cfg.ProxyProtocol)
+	if err != nil {
+		return err
+	}
 	signer, err := loadOrCreateHostKey(s.cfg.DataDir)
 	if err != nil {
 		_ = ln.Close()
@@ -192,7 +196,7 @@ func (s *Server) sshAcceptLoop(ln net.Listener, gw *sshGateway) {
 		default:
 			s.log.Warn("ssh gateway at its connection limit, dropping connection", "limit", sshMaxConns)
 			s.recordConn(traffic.Conn{
-				Kind: traffic.KindSSH, VisitorIP: ipOf(conn.RemoteAddr().String()), Outcome: traffic.OutcomeLimit,
+				Kind: traffic.KindSSH, VisitorIP: ipOf(peerAddr(conn).String()), Outcome: traffic.OutcomeLimit,
 			}, s.now())
 			_ = conn.Close()
 			continue

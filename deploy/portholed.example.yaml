@@ -86,6 +86,11 @@ data_dir: /var/lib/porthole
 # reverse proxy you control; otherwise visitors can spoof their address. Default false.
 # Env: PORTHOLED_TRUST_PROXY_HEADERS
 # trust_proxy_headers: true
+# PROXY protocol (v1/v2) from a proxy that forwards raw TCP, for example Traefik with TLS passthrough. Only the peers
+# in trusted_proxies may send the header and they must; see docs/server.md.
+# proxy_protocol: true
+# trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12"]
+# proxy_protocol_http: false  # also on http_listen; most proxies cannot send it for HTTP routers
 
 # Maximum simultaneous tunnels for tokens that have no limit of their own (see `token create --max-tunnels`).
 # Default 10. Env: PORTHOLED_MAX_TUNNELS_PER_CLIENT
