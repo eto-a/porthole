@@ -36,6 +36,8 @@ type fakeServer struct {
 	regError func(n int, reg *proto.Register) *proto.Error
 	// regGate, if set, makes the default handler wait for one token per register message before it answers.
 	regGate chan struct{}
+	// ignorePrivate makes the default handler behave like a server that does not know the "private" field.
+	ignorePrivate bool
 
 	mu     sync.Mutex
 	conns  []*srvConn
@@ -255,7 +257,13 @@ func (fs *fakeServer) defaultHandler(c *srvConn) {
 				}
 				url = "tcp://tun.test:" + strconv.Itoa(port)
 			}
-			_ = c.send(&proto.Registered{ReqID: m.ReqID, TunnelID: id, Kind: m.Kind, Name: name, PublicURL: url})
+			reply := &proto.Registered{ReqID: m.ReqID, TunnelID: id, Kind: m.Kind, Name: name, PublicURL: url}
+			if m.Kind == proto.KindSSH {
+				reply.PublicURL = ""
+				reply.SSHJump = "tun.test:2222"
+				reply.Private = m.Private && !fs.ignorePrivate
+			}
+			_ = c.send(reply)
 			answered++
 		case *proto.Pong:
 			select {

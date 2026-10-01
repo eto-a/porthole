@@ -61,8 +61,12 @@ type Tunnel struct {
 	// Addr is the local target: "3000", ":3000" or "host:port". Required for http and tcp; ssh defaults to
 	// DefaultSSHAddr. After Parse it is always normalized to "host:port".
 	Addr string `yaml:"addr,omitempty"`
-	// RemotePort is the requested public port (tcp and ssh only); 0 lets the server choose.
+	// RemotePort is the requested public port (tcp, and ssh with PublicPort only); 0 lets the server choose.
 	RemotePort int `yaml:"remote_port,omitempty"`
+	// Private (ssh only) makes the SSH gateway require a porthole token to reach the tunnel.
+	Private bool `yaml:"private,omitempty"`
+	// PublicPort (ssh only) is the v0.1 mode: a public TCP port instead of the SSH gateway.
+	PublicPort bool `yaml:"public_port,omitempty"`
 	// Enabled is nil (meaning true) unless the file says otherwise.
 	Enabled *bool `yaml:"enabled,omitempty"`
 }
@@ -187,8 +191,13 @@ func (t Tunnel) spec(name string) (client.TunnelSpec, error) {
 	switch t.Type {
 	case TypeHTTP:
 		kind = proto.KindHTTP
-	case TypeTCP, TypeSSH:
+	case TypeTCP:
 		kind = proto.KindTCP
+	case TypeSSH:
+		kind = proto.KindSSH
+		if t.PublicPort {
+			kind = proto.KindTCP
+		}
 	case "":
 		bad("type is required (%s, %s or %s)", TypeHTTP, TypeTCP, TypeSSH)
 	default:
@@ -209,18 +218,26 @@ func (t Tunnel) spec(name string) (client.TunnelSpec, error) {
 			addr = norm
 		}
 	}
+	if (t.Private || t.PublicPort) && t.Type != TypeSSH && t.Type != "" {
+		bad("private and public_port are only valid for ssh tunnels")
+	}
+	if t.Private && t.PublicPort {
+		bad("private and public_port cannot be combined: a public port has no gateway to authenticate")
+	}
 	if t.RemotePort != 0 {
 		switch {
 		case t.RemotePort < 1 || t.RemotePort > 65535:
 			bad("remote_port %d out of range (1-65535)", t.RemotePort)
 		case t.Type == TypeHTTP:
-			bad("remote_port is only valid for tcp and ssh tunnels")
+			bad("remote_port is only valid for tcp tunnels and ssh tunnels with public_port: true")
+		case t.Type == TypeSSH && !t.PublicPort:
+			bad("remote_port on an ssh tunnel needs public_port: true (otherwise it is reached through the SSH gateway and has no public port)")
 		}
 	}
 	if len(errs) > 0 {
 		return client.TunnelSpec{}, errors.Join(errs...)
 	}
-	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: t.RemotePort}, nil
+	return client.TunnelSpec{Kind: kind, Name: name, LocalAddr: addr, RemotePort: t.RemotePort, Private: t.Private}, nil
 }
 
 // normalizeServer mirrors `porthole login`: trailing slashes are dropped and client.ConnectURL must accept the URL

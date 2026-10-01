@@ -340,7 +340,7 @@ func (w *wire) reconcile() error {
 	}
 	for _, wt := range register {
 		sp := wt.spec
-		err := w.ctl.send(&proto.Register{ReqID: wt.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort})
+		err := w.ctl.send(&proto.Register{ReqID: wt.reqID, Kind: sp.Kind, Name: sp.Name, RemotePort: sp.RemotePort, Private: sp.Private})
 		if err != nil {
 			return fmt.Errorf("register %q: %w", sp.Name, err)
 		}
@@ -366,14 +366,24 @@ func (w *wire) onRegistered(msg *proto.Registered) error {
 	if msg.TunnelID == "" {
 		return errors.New("server returned a tunnel without an id")
 	}
+	if wt.spec.Private && !msg.Private {
+		// An old server ignores the unknown "private" field and would expose the tunnel publicly: never keep it.
+		w.forget(wt)
+		if err := w.ctl.send(&proto.Unregister{TunnelID: msg.TunnelID}); err != nil {
+			return fmt.Errorf("unregister: %w", err)
+		}
+		werr := fmt.Errorf("register tunnel %q: the server did not confirm a private tunnel (server too old?)", wt.spec.Name)
+		m.log.Warn("registration refused", "name", wt.spec.Name, "reason", "private not confirmed")
+		return w.refuse(wt, proto.CodeInvalidRequest, "private tunnel not confirmed by the server", werr)
+	}
 	// The record may have been removed or replaced after the request went out without reconcile having noticed yet
 	// (Remove and the reply race), so the desired set is consulted here, in the same critical section that
 	// publishes the new state.
 	m.mu.Lock()
 	current := m.desired[wt.spec.Name] == wt.rec
 	if current && !wt.stale {
-		wt.rec.status, wt.rec.url, wt.rec.err = StatusReady, msg.PublicURL, nil
-		m.postLocked(TunnelReady{Spec: wt.spec, Name: msg.Name, PublicURL: msg.PublicURL})
+		wt.rec.status, wt.rec.url, wt.rec.jump, wt.rec.err = StatusReady, msg.PublicURL, msg.SSHJump, nil
+		m.postLocked(TunnelReady{Spec: wt.spec, Name: msg.Name, PublicURL: msg.PublicURL, SSHJump: msg.SSHJump})
 	}
 	m.mu.Unlock()
 	if !current || wt.stale {
@@ -406,20 +416,28 @@ func (w *wire) onError(e *proto.Error) (handled bool, err error) {
 	if !e.Retryable() {
 		return true, werr // token problems and the like: the whole session is lost
 	}
+	return true, w.refuse(wt, e.Code, e.Error(), werr)
+}
+
+// refuse records that the registration of wt failed with werr. In strict mode before the first complete round
+// the failure ends the session; otherwise the tunnel is marked failed and the loop goes on.
+func (w *wire) refuse(wt *wireTunnel, code, reason string, werr error) error {
+	m := w.m
+	sp := wt.spec
 	if m.strict && !m.regDone {
-		switch e.Code {
+		switch code {
 		case proto.CodeInternal, proto.CodeShuttingDown:
-			return true, werr // transient: reconnect
+			return werr // transient: reconnect
 		}
-		return true, &permanentError{err: werr}
+		return &permanentError{err: werr}
 	}
 	m.mu.Lock()
 	if m.desired[sp.Name] == wt.rec && !wt.stale { // otherwise nobody wants this tunnel any more
 		wt.rec.status, wt.rec.url, wt.rec.err = StatusFailed, "", werr
-		m.postLocked(TunnelClosed{Name: sp.Name, Reason: e.Error()})
+		m.postLocked(TunnelClosed{Name: sp.Name, Reason: reason})
 	}
 	m.mu.Unlock()
-	return true, w.reconcile() // the name is free again: a replacement may be waiting for it
+	return w.reconcile() // the name is free again: a replacement may be waiting for it
 }
 
 func (w *wire) onTunnelClosed(msg *proto.TunnelClosed) {

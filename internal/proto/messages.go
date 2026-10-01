@@ -23,6 +23,7 @@ const (
 	KindHTTP = "http"
 	KindTCP  = "tcp"
 	KindUDP  = "udp" // reserved for v0.2
+	KindSSH  = "ssh" // reachable only through the server's SSH gateway; no public listener
 )
 
 // Error codes carried in Error.Code.
@@ -69,6 +70,8 @@ type Register struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"`
+	// Private (kind ssh only) makes the gateway require a porthole token before it opens the tunnel.
+	Private bool `json:"private,omitempty"`
 }
 
 // Registered confirms a tunnel and carries its public address (server → client).
@@ -78,6 +81,11 @@ type Registered struct {
 	Kind      string `json:"kind"`
 	Name      string `json:"name"`
 	PublicURL string `json:"public_url"`
+	// Private echoes Register.Private. A client that asked for a private tunnel and gets false back is talking to
+	// a server that ignored the field and must treat the reply as a failure.
+	Private bool `json:"private,omitempty"`
+	// SSHJump is the host:port of the SSH gateway (kind ssh only).
+	SSHJump string `json:"ssh_jump,omitempty"`
 }
 
 // Unregister releases a tunnel (client → server).

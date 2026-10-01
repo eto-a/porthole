@@ -338,7 +338,7 @@ func TestSSHCommand(t *testing.T) {
 	}
 	d := capture(testDeps(nil), &got, ready)
 
-	stdout, _, err := execute(t, d, "--config", path, "ssh")
+	stdout, _, err := execute(t, d, "--config", path, "ssh", "--public-port")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestSSHCommand(t *testing.T) {
 		t.Errorf("stdout %q", stdout)
 	}
 
-	stdout, _, err = execute(t, d, "--config", path, "ssh", "--user", "bob", "--local-port", "2222", "--name", "box")
+	stdout, _, err = execute(t, d, "--config", path, "ssh", "--public-port", "--user", "bob", "--local-port", "2222", "--name", "box")
 	if err != nil {
 		t.Fatal(err)
 	}

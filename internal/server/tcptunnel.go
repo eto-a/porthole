@@ -40,15 +40,13 @@ func (t *tunnel) acceptLoop() {
 		}
 		backoff = acceptBackoffFloor
 
-		select {
-		case t.sem <- struct{}{}:
-		default:
+		if !t.acquire() {
 			c.log.Warn("tcp tunnel at its connection limit, dropping connection", "tunnel", t.id, "limit", cap(t.sem))
 			_ = conn.Close()
 			continue
 		}
 		c.wg.Go(func() {
-			defer func() { <-t.sem }()
+			defer t.release()
 			t.handleConn(conn)
 		})
 	}
@@ -58,7 +56,7 @@ func (t *tunnel) acceptLoop() {
 func (t *tunnel) handleConn(conn net.Conn) {
 	c := t.sess
 	remote := conn.RemoteAddr().String()
-	stream, err := c.openStream(t.ctx, t.id, remote)
+	stream, err := t.openStream(remote)
 	if err != nil {
 		c.log.Debug("open stream for tcp visitor failed", "tunnel", t.id, "remote", remote, "err", err)
 		_ = conn.Close()

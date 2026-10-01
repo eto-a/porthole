@@ -73,7 +73,8 @@ func TestParseValid(t *testing.T) {
 		{"empty server is unset", "version: 1\nserver: \"\"\n", 0, ""},
 		{"ipv6 addr", "version: 1\ntunnels:\n  a:\n    type: tcp\n    addr: '[::1]:80'\n", 1, ""},
 		{"max name", "version: 1\ntunnels:\n  " + strings.Repeat("a", 32) + ":\n    type: http\n    addr: 1\n", 1, ""},
-		{"remote port on ssh", "version: 1\ntunnels:\n  s:\n    type: ssh\n    remote_port: 2222\n", 1, ""},
+		{"remote port on public-port ssh", "version: 1\ntunnels:\n  s:\n    type: ssh\n    public_port: true\n    remote_port: 2222\n", 1, ""},
+		{"private ssh", "version: 1\ntunnels:\n  s:\n    type: ssh\n    private: true\n", 1, ""},
 		{"enabled true", "version: 1\ntunnels:\n  s:\n    type: ssh\n    enabled: true\n", 1, ""},
 	}
 	for _, tc := range tests {
@@ -134,7 +135,11 @@ func TestParseInvalid(t *testing.T) {
 		{"addr garbage", tunnelFile("a", "type: tcp\naddr: nope"), []string{`tunnel "a": addr:`}},
 		{"remote port too big", tunnelFile("db", "type: tcp\naddr: 1\nremote_port: 99999"), []string{`tunnel "db": remote_port 99999 out of range`}},
 		{"remote port negative", tunnelFile("db", "type: tcp\naddr: 1\nremote_port: -1"), []string{`tunnel "db": remote_port -1 out of range`}},
-		{"remote port on http", tunnelFile("a", "type: http\naddr: 1\nremote_port: 80"), []string{`tunnel "a": remote_port is only valid for tcp and ssh`}},
+		{"remote port on http", tunnelFile("a", "type: http\naddr: 1\nremote_port: 80"), []string{`tunnel "a": remote_port is only valid for tcp tunnels and ssh tunnels with public_port`}},
+		{"remote port on gateway ssh", tunnelFile("a", "type: ssh\nremote_port: 2222"), []string{`tunnel "a": remote_port on an ssh tunnel needs public_port: true`}},
+		{"private on tcp", tunnelFile("a", "type: tcp\naddr: 1\nprivate: true"), []string{`tunnel "a": private and public_port are only valid for ssh`}},
+		{"public_port on http", tunnelFile("a", "type: http\naddr: 1\npublic_port: true"), []string{`private and public_port are only valid for ssh`}},
+		{"private and public_port", tunnelFile("a", "type: ssh\nprivate: true\npublic_port: true"), []string{`cannot be combined`}},
 
 		{"server ftp", "version: 1\nserver: ftp://x.example.com\n", []string{"server:", "scheme must be http or https"}},
 		{"server no scheme", "version: 1\nserver: tun.example.com\n", []string{"server:"}},
@@ -290,7 +295,7 @@ func TestSpecsEnabled(t *testing.T) {
 	want := []client.TunnelSpec{
 		{Kind: proto.KindHTTP, Name: "blog", LocalAddr: "127.0.0.1:3000"},
 		{Kind: proto.KindTCP, Name: "db", LocalAddr: "nas.local:5432", RemotePort: 20017},
-		{Kind: proto.KindTCP, Name: "ssh", LocalAddr: "127.0.0.1:22"},
+		{Kind: proto.KindSSH, Name: "ssh", LocalAddr: "127.0.0.1:22"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Specs() = %+v\nwant %+v", got, want)
@@ -308,7 +313,7 @@ func TestSpecsNames(t *testing.T) {
 	want := []client.TunnelSpec{
 		{Kind: proto.KindHTTP, Name: "blog", LocalAddr: "127.0.0.1:3000"},
 		{Kind: proto.KindHTTP, Name: "old", LocalAddr: "127.0.0.1:8081"},
-		{Kind: proto.KindTCP, Name: "ssh", LocalAddr: "127.0.0.1:22"},
+		{Kind: proto.KindSSH, Name: "ssh", LocalAddr: "127.0.0.1:22"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Specs(names) = %+v\nwant %+v", got, want)
@@ -341,6 +346,26 @@ func TestSpecsEmpty(t *testing.T) {
 	}
 }
 
+func TestSSHSpecModes(t *testing.T) {
+	f, err := Parse([]byte("version: 1\ntunnels:\n  a:\n    type: ssh\n  b:\n    type: ssh\n    private: true\n" +
+		"  c:\n    type: ssh\n    public_port: true\n    remote_port: 20022\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.Specs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []client.TunnelSpec{
+		{Kind: proto.KindSSH, Name: "a", LocalAddr: DefaultSSHAddr},
+		{Kind: proto.KindSSH, Name: "b", LocalAddr: DefaultSSHAddr, Private: true},
+		{Kind: proto.KindTCP, Name: "c", LocalAddr: DefaultSSHAddr, RemotePort: 20022},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Specs() = %+v\nwant %+v", got, want)
+	}
+}
+
 func TestSpecsRevalidatesHandBuiltFile(t *testing.T) {
 	f := &File{Version: 1, Tunnels: map[string]Tunnel{
 		"ok":  {Type: "ssh"},
@@ -350,7 +375,7 @@ func TestSpecsRevalidatesHandBuiltFile(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	got, err := f.Specs("ok")
-	if err != nil || len(got) != 1 || got[0].LocalAddr != DefaultSSHAddr || got[0].Kind != proto.KindTCP {
+	if err != nil || len(got) != 1 || got[0].LocalAddr != DefaultSSHAddr || got[0].Kind != proto.KindSSH {
 		t.Fatalf("Specs(ok) = %+v, %v", got, err)
 	}
 }

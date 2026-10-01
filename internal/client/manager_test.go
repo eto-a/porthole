@@ -158,9 +158,10 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 func tunnelOf(m *Manager, name string) (TunnelState, bool) {
-	for _, ts := range m.Snapshot().Tunnels {
-		if ts.Spec.Name == name {
-			return ts, true
+	tunnels := m.Snapshot().Tunnels
+	for i := range tunnels {
+		if tunnels[i].Spec.Name == name {
+			return tunnels[i], true
 		}
 	}
 	return TunnelState{}, false
@@ -168,8 +169,8 @@ func tunnelOf(m *Manager, name string) (TunnelState, bool) {
 
 func names(st State) []string {
 	out := make([]string, 0, len(st.Tunnels))
-	for _, ts := range st.Tunnels {
-		out = append(out, ts.Spec.Name)
+	for i := range st.Tunnels {
+		out = append(out, st.Tunnels[i].Spec.Name)
 	}
 	return out
 }
@@ -561,6 +562,49 @@ func TestManagerReplaceIsAtomicAndNormalizes(t *testing.T) {
 	_, removed, _, err = h.m.Replace(nil)
 	if err != nil || !slices.Equal(removed, []string{"http-8080"}) || len(h.m.Snapshot().Tunnels) != 0 {
 		t.Fatalf("Replace(nil): %v %v", removed, err)
+	}
+}
+
+func TestManagerSSHTunnel(t *testing.T) {
+	fs := newFakeServer(t)
+	spec := TunnelSpec{Kind: proto.KindSSH, LocalAddr: "127.0.0.1:22", Private: true}
+	h := startMgr(t, fs, []TunnelSpec{spec}, testTuning())
+
+	ready := nextEv[TunnelReady](t, h)
+	if ready.Name != "ssh" || ready.SSHJump != "tun.test:2222" || ready.PublicURL != "" || !ready.Spec.Private {
+		t.Fatalf("TunnelReady %+v", ready)
+	}
+	ts := waitStatus(t, h.m, "ssh", StatusReady)
+	if ts.SSHJump != "tun.test:2222" {
+		t.Errorf("state %+v", ts)
+	}
+	regs := fs.conn(1).registrations()
+	if len(regs) != 1 || regs[0].Kind != proto.KindSSH || !regs[0].Private || regs[0].Name != "ssh" {
+		t.Errorf("register messages %+v", regs)
+	}
+}
+
+func TestManagerPrivateNotConfirmedIsAFailure(t *testing.T) {
+	fs := newFakeServer(t)
+	fs.ignorePrivate = true
+	h := startMgr(t, fs, nil, testTuning())
+	nextEv[Connected](t, h)
+	if _, err := h.m.Add(TunnelSpec{Kind: proto.KindSSH, LocalAddr: "127.0.0.1:22", Private: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := nextEv[TunnelClosed](t, h)
+	if closed.Name != "ssh" || !strings.Contains(closed.Reason, "private") {
+		t.Fatalf("TunnelClosed %+v", closed)
+	}
+	ts := waitStatus(t, h.m, "ssh", StatusFailed)
+	if ts.Err == nil || ts.SSHJump != "" {
+		t.Errorf("state %+v", ts)
+	}
+	select {
+	case <-fs.conn(1).unregCh: // the tunnel the server did create is not left behind
+	case <-time.After(waitFor):
+		t.Fatal("the unconfirmed private tunnel was not unregistered")
 	}
 }
 

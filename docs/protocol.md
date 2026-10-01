@@ -66,9 +66,10 @@ All field names are snake_case. Optional fields may be omitted.
 | field | type | notes |
 |---|---|---|
 | `req_id` | int | client-chosen, echoed in the reply |
-| `kind` | string | `http` \| `tcp` (`udp` reserved for v0.2) |
-| `name` | string | optional; `[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?`. Default chosen by the client CLI, e.g. `http-8080`, `tcp-7575`, `ssh` |
+| `kind` | string | `http` \| `tcp` \| `ssh` (`udp` reserved for v0.2). `ssh` has no public listener: it is reachable only through the server's SSH gateway (ADR 0003). It needs the scope `tunnel:tcp`, and the server answers `invalid_request` when the gateway is disabled (`ssh_gateway.listen` empty) or does not know the kind (older servers) |
+| `name` | string | optional; `[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?`. Default `http-<n>` / `tcp-<n>` (chosen by the server or the client CLI), `ssh` for kind `ssh` |
 | `remote_port` | int | optional, tcp only: requested public port; must be inside the allowed range |
+| `private` | bool | optional, `ssh` only (`invalid_request` for other kinds): the gateway must require a porthole token before it opens the tunnel |
 
 `registered` (server → client)
 
@@ -78,7 +79,9 @@ All field names are snake_case. Optional fields may be omitted.
 | `tunnel_id` | string | server-assigned, opaque |
 | `kind` | string | |
 | `name` | string | effective name |
-| `public_url` | string | `https://blog-home.tun.example.com` or `tcp://tun.example.com:20017` |
+| `public_url` | string | `https://blog-home.tun.example.com` or `tcp://tun.example.com:20017`; empty for kind `ssh` |
+| `private` | bool | optional; echoes `register.private` for kind `ssh`. A client that asked for `private: true` and gets it absent or false MUST treat the reply as a failure (and unregister the tunnel): a server that does not know the field would otherwise expose the tunnel publicly |
+| `ssh_jump` | string | optional, kind `ssh` only: `host:port` of the SSH gateway, for `ssh -J <ssh_jump> <user>@<target>`. `<target>` is the client name (tunnel `ssh`) or `<tunnel>-<client>` |
 
 `unregister` (client → server): `{tunnel_id}`. No reply; the server releases the tunnel.
 

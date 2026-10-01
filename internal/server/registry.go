@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eto-a/porthole/internal/auth"
+	"github.com/eto-a/porthole/internal/config"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/store"
 )
@@ -81,7 +82,10 @@ type tunnel struct {
 	// TCP
 	port int
 	ln   net.Listener
-	sem  chan struct{} // limits concurrent connections
+	sem  chan struct{} // limits concurrent connections (also used by ssh tunnels)
+
+	// SSH
+	private bool // the gateway requires a porthole token to reach this tunnel
 }
 
 // closeTunnel cancels the tunnel's context (which also tears down its in-flight TCP connections) and closes its
@@ -208,6 +212,12 @@ func (c *session) handleRegister(m *proto.Register) {
 		scope = auth.ScopeTunnelHTTP
 	case proto.KindTCP:
 		scope = auth.ScopeTunnelTCP
+	case proto.KindSSH:
+		if !srv.cfg.SSHGateway.Enabled() {
+			c.sendError(m.ReqID, proto.CodeInvalidRequest, "the SSH gateway is not enabled on this server (ssh_gateway.listen is empty)")
+			return
+		}
+		scope = auth.ScopeTunnelTCP
 	case proto.KindUDP:
 		c.sendError(m.ReqID, proto.CodeInvalidRequest, "udp tunnels arrive in v0.2")
 		return
@@ -219,9 +229,15 @@ func (c *session) handleRegister(m *proto.Register) {
 		c.sendError(m.ReqID, proto.CodeForbidden, "token lacks scope "+scope)
 		return
 	}
+	if m.Private && m.Kind != proto.KindSSH {
+		c.sendError(m.ReqID, proto.CodeInvalidRequest, "private applies to ssh tunnels only")
+		return
+	}
 
 	name := m.Name
 	switch {
+	case name == "" && m.Kind == proto.KindSSH:
+		name = defaultSSHTunnelName
 	case name == "":
 		name = m.Kind + "-" + randHex(2)
 	case !auth.ValidName(name):
@@ -244,6 +260,10 @@ func (c *session) handleRegister(m *proto.Register) {
 	}
 	c.log.Info("tunnel registered", "tunnel", t.id, "kind", t.kind, "name", t.name, "label", t.label, "port", t.port)
 	reply := &proto.Registered{ReqID: m.ReqID, TunnelID: t.id, Kind: t.kind, Name: t.name, PublicURL: srv.publicURL(t)}
+	if t.kind == proto.KindSSH {
+		reply.Private = t.private
+		reply.SSHJump = net.JoinHostPort(srv.cfg.Domain, strconv.Itoa(srv.cfg.SSHGateway.Port()))
+	}
 	if err := c.send(reply); err != nil {
 		c.kill("control write failed: "+err.Error(), nil)
 	}
@@ -251,6 +271,9 @@ func (c *session) handleRegister(m *proto.Register) {
 
 // publicURL is the address visitors use for t.
 func (s *Server) publicURL(t *tunnel) string {
+	if t.kind == proto.KindSSH {
+		return "" // reachable only through the SSH gateway, see Registered.SSHJump
+	}
 	if t.kind == proto.KindTCP {
 		return "tcp://" + net.JoinHostPort(s.cfg.Domain, strconv.Itoa(t.port))
 	}
@@ -269,6 +292,7 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		name:    name,
 		nameKey: m.Kind + ":" + name,
 		sess:    c,
+		private: m.Private,
 	}
 	if m.Kind == proto.KindHTTP {
 		t.label = name + "-" + c.name
@@ -312,6 +336,13 @@ func (s *Server) createTunnel(c *session, m *proto.Register, name string, limit 
 		delete(s.reserved, reservationKey(c.name, name))
 		s.holdPort(c.name, name, t.port)
 		c.wg.Go(t.acceptLoop)
+	case proto.KindSSH:
+		// No public listener: the SSH gateway looks the tunnel up with LookupSSH and opens streams itself.
+		n := s.cfg.SSHGateway.MaxConnsPerTunnel
+		if n <= 0 {
+			n = config.DefaultSSHMaxConnsPerTunnel
+		}
+		t.sem = make(chan struct{}, n)
 	}
 	c.tunnels[t.id] = t
 	c.names[t.nameKey] = t
@@ -412,7 +443,7 @@ func (c *session) enforceScopes(tok *store.Token) {
 	s.mu.Lock()
 	for _, t := range c.tunnels {
 		scope := auth.ScopeTunnelHTTP
-		if t.kind == proto.KindTCP {
+		if t.kind == proto.KindTCP || t.kind == proto.KindSSH {
 			scope = auth.ScopeTunnelTCP
 		}
 		if !tok.HasScope(scope) {

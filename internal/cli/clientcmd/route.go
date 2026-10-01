@@ -180,9 +180,10 @@ func toClientEvent(ev localapi.Event, tun localapi.Tunnel) (client.Event, bool) 
 		return client.Disconnected{Err: errors.New(msg), RetryIn: time.Duration(ev.RetryInMS) * time.Millisecond}, true
 	case localapi.EventTunnelReady:
 		return client.TunnelReady{
-			Spec:      client.TunnelSpec{Name: tun.Name, LocalAddr: tun.LocalAddr},
+			Spec:      client.TunnelSpec{Kind: tun.Type, Name: tun.Name, LocalAddr: tun.LocalAddr, Private: tun.Private},
 			Name:      ev.Name,
 			PublicURL: ev.PublicURL,
+			SSHJump:   ev.SSHJump,
 		}, true
 	case localapi.EventTunnelClosed:
 		return client.TunnelClosed{Name: ev.Name, Reason: ev.Reason}, true
@@ -197,6 +198,7 @@ func (a *app) attachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 	var tun localapi.Tunnel
 	ready, removed := false, false
 	var failure error
+	hint := tr.hint()
 
 	err := cl.Attach(ctx, tr.apiRequest(), func(ev localapi.Event) error {
 		switch ev.Type {
@@ -216,15 +218,18 @@ func (a *app) attachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 				return localapi.ErrStopStream
 			case !ready: // the server refused the registration: report and give up, like the in-process client
 				failure = explain(reasonError(ev.Reason))
+				// Free the name now: a fallback to another tunnel kind may reuse it at once.
+				removeQuietly(ctx, cl, tun.Name)
 				return localapi.ErrStopStream
 			}
 		case localapi.EventTunnelReady:
 			if ev.Name == tun.Name {
 				ready = true
+				a.learnClient(ctx, cl, hint)
 			}
 		}
 		if ce, ok := toClientEvent(ev, tun); ok {
-			printEvent(out, errOut, ce, tr.sshUser)
+			printEvent(out, errOut, ce, hint)
 		}
 		return nil
 	})
@@ -269,9 +274,12 @@ func (a *app) detachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 		if t, ok := findTunnel(tunnels, tun.Name); ok {
 			switch t.State {
 			case localapi.TunnelReady:
+				hint := tr.hint()
+				a.learnClient(ctx, cl, hint)
 				printEvent(out, cmd.ErrOrStderr(), client.TunnelReady{
-					Spec: client.TunnelSpec{Name: t.Name, LocalAddr: t.LocalAddr}, Name: t.Name, PublicURL: t.PublicURL,
-				}, tr.sshUser)
+					Spec: client.TunnelSpec{Kind: t.Type, Name: t.Name, LocalAddr: t.LocalAddr, Private: t.Private},
+					Name: t.Name, PublicURL: t.PublicURL, SSHJump: t.SSHJump,
+				}, hint)
 				fmt.Fprintf(out, "  stays until `porthole close %s` or a daemon restart\n", t.Name)
 				return nil
 			case localapi.TunnelFailed:
@@ -288,6 +296,19 @@ func (a *app) detachTunnel(ctx context.Context, cmd *cobra.Command, cl apiClient
 				tun.Name, timeout, tun.Name)
 		case <-tick.C:
 		}
+	}
+}
+
+// learnClient fills in the client name of hint from the daemon's status: an attach stream does not repeat the
+// connected event when the daemon was connected long ago. A failure only leaves a placeholder in the hint.
+func (a *app) learnClient(ctx context.Context, cl apiClient, hint *sshHint) {
+	if hint == nil || hint.client != "" {
+		return
+	}
+	sctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	if st, err := cl.Status(sctx); err == nil {
+		hint.client = st.ClientName
 	}
 }
 
