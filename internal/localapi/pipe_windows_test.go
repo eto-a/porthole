@@ -257,3 +257,34 @@ func TestWindowsEndpointPaths(t *testing.T) {
 		t.Errorf("DefaultSocketPaths = %v", paths)
 	}
 }
+
+// Somebody else's (here: wide open) pipe under our name is not "the daemon is already running": the user must be told
+// that the name is held by another account, not be sent to look for a daemon of their own.
+func TestListenPipeHeldByOtherAccount(t *testing.T) {
+	name := pipeName(t)
+	ln, err := winio.ListenPipe(name, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;WD)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	_, err = listenPipe(name, nil)
+	if err == nil {
+		t.Fatal("listenPipe succeeded over a foreign pipe")
+	}
+	if errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("a pipe of another account was reported as %v", err)
+	}
+	if !strings.Contains(err.Error(), "held by") {
+		t.Errorf("error %q does not say who holds the pipe", err)
+	}
+}

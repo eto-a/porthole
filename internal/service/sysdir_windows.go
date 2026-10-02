@@ -4,6 +4,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,21 +25,27 @@ func prepareSystemDirWindows() (string, error) {
 		return "", fmt.Errorf("find %%ProgramData%%: %w", err)
 	}
 	dir := filepath.Join(base, "porthole")
-	if err := prepareProtectedDir(dir); err != nil {
+	if err := prepareProtectedDir(dir, systemDirSDDL, adminTrust); err != nil {
 		return "", err
 	}
-	// logs\ inherits the descriptor of its parent (and SetNamedSecurityInfo on the parent propagates it to an
-	// existing one).
-	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o750); err != nil {
+	// A logs\ that was there is part of the verified tree; a missing one is made with the protected descriptor too
+	// (not left to inheritance, which an existing parent with another DACL would not give).
+	if err := prepareProtectedDir(filepath.Join(dir, "logs"), systemDirSDDL, adminTrust); err != nil {
 		return "", fmt.Errorf("create the log directory: %w", err)
 	}
 	return dir, nil
 }
 
-// prepareProtectedDir creates dir with systemDirSDDL, atomically when it does not exist, and otherwise resets the
-// owner and DACL of the existing one. A symbolic link or junction at dir is refused: someone else made it.
-func prepareProtectedDir(dir string) error {
-	sd, err := windows.SecurityDescriptorFromString(systemDirSDDL)
+// prepareProtectedDir makes sure dir exists and can be trusted by a service that runs as SYSTEM.
+//
+// A directory that is not there is created with sddl as its security descriptor in the creating call itself, so that
+// it is never visible with weaker permissions. A directory that is already there is not adopted: %ProgramData% lets
+// every user create folders, so a standard user can plant porthole\ (owned by them, or with a link or a file of
+// theirs inside) before the administrator installs the service. It is accepted only if it and everything in it is
+// owned by an administrator-class principal, has no access entry for anyone else and contains no link; otherwise the
+// error says how to proceed. Nothing is changed in a refused directory.
+func prepareProtectedDir(dir, sddl string, trusted sidTrust) error {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("parse the directory descriptor: %w", err)
 	}
@@ -50,6 +57,7 @@ func prepareProtectedDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	created := false
 	fi, err := os.Lstat(dir)
 	switch {
 	case os.IsNotExist(err):
@@ -59,20 +67,34 @@ func prepareProtectedDir(dir string) error {
 		}
 		sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
 		sa.Length = uint32(unsafe.Sizeof(*sa))
-		if err := windows.CreateDirectory(p, sa); err != nil && !os.IsExist(err) {
+		switch err := windows.CreateDirectory(p, sa); {
+		case err == nil:
+			created = true
+		case !errors.Is(err, windows.ERROR_ALREADY_EXISTS):
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	case err != nil:
 		return fmt.Errorf("check %s: %w", dir, err)
-	case !fi.IsDir() || fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0:
-		return fmt.Errorf("%s exists and is not a plain directory; remove it and run this again", dir)
+	case !fi.IsDir() || isReparse(fi):
+		return unsafeDirError(dir, &UnsafePathError{dir, "is not a plain directory"})
 	}
-	// Also on a fresh directory: it closes the gap if someone created it between the check and CreateDirectory.
-	err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		owner, nil, dacl, nil)
-	if err != nil {
-		return fmt.Errorf("set the permissions of %s: %w", dir, err)
+	if created {
+		// The directory is ours and empty: set the descriptor once more, in case the creating call dropped the owner.
+		err = windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+			owner, nil, dacl, nil)
+		if err != nil {
+			return fmt.Errorf("set the permissions of %s: %w", dir, err)
+		}
+	}
+	// Also on a directory that was just created: somebody may have won the race between the check and the creation.
+	if err := verifyProtectedTree(dir, trusted); err != nil {
+		return unsafeDirError(dir, err)
 	}
 	return nil
+}
+
+func unsafeDirError(dir string, err error) error {
+	return fmt.Errorf("%s was not made by porthole or an administrator and cannot be trusted (%w). Inspect it, delete it "+
+		"(rd /s /q \"%s\" from an elevated terminal) and run this command again", dir, err, dir)
 }

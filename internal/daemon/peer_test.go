@@ -17,6 +17,14 @@ func peer(uid int) context.Context {
 	return localapi.WithPeerCred(context.Background(), localapi.Cred{UID: uid, GID: uid, PID: 1})
 }
 
+// selfPeer is a context for the account the daemon itself runs as: its uid on Unix, its SID on Windows.
+func selfPeer(h *harness) context.Context {
+	if uid := os.Geteuid(); uid >= 0 {
+		return peer(uid)
+	}
+	return winPeer(h.d.selfSID)
+}
+
 // otherUID is a uid that is neither root nor the daemon's.
 func otherUID(not ...int) int {
 	uid := 54321
@@ -44,10 +52,9 @@ func TestLocalAPIPeerTargetPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	// root and the daemon's own user may publish anything (the allow_remote policy is not applied to them).
-	for i, uid := range []int{0, os.Geteuid()} {
-		name := []string{"root", "self"}[i]
-		if _, err := h.d.AddTunnel(peer(uid), localapi.AddTunnelRequest{Type: "tcp", Name: name, Addr: "192.168.1.1:80", Lifetime: localapi.LifetimeRuntime}); err != nil {
-			t.Errorf("uid %d: %v", uid, err)
+	for name, ctx := range map[string]context.Context{"root": peer(0), "self": selfPeer(h)} {
+		if _, err := h.d.AddTunnel(ctx, localapi.AddTunnelRequest{Type: "tcp", Name: name, Addr: "192.168.1.1:80", Lifetime: localapi.LifetimeRuntime}); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// A caller without credentials (no SO_PEERCRED on this platform) behaves as before.
@@ -94,7 +101,7 @@ func TestLocalAPIPeerOwnership(t *testing.T) {
 	if _, err := h.d.AddTunnel(peer(alice), localapi.AddTunnelRequest{Type: "http", Name: "a", Addr: "3000", Lifetime: localapi.LifetimeRuntime}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.d.RemoveTunnel(peer(os.Geteuid()), "a"); err != nil {
+	if err := h.d.RemoveTunnel(selfPeer(h), "a"); err != nil {
 		t.Fatalf("daemon user: %v", err)
 	}
 

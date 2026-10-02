@@ -4,7 +4,9 @@
 package clientcmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,8 +29,31 @@ type rotatingFile struct {
 	size int64
 }
 
-// openRotatingFile opens (appending) the log file at path, creating its directory.
+// refuseLinks returns an error if one of paths exists and is a symbolic link or a Windows reparse point (a junction,
+// a mount point). The service runs with the rights of the system: a log directory or file that has been turned into
+// a link would make it write wherever the link points. Go reports such objects as ModeSymlink or ModeIrregular
+// (os.Lstat does not follow them).
+func refuseLinks(paths ...string) error {
+	for _, p := range paths {
+		fi, err := os.Lstat(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return fmt.Errorf("check the log path %s: %w", p, err)
+		case fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0:
+			return fmt.Errorf("the log path %s is a link; refusing to write the log through it", p)
+		}
+	}
+	return nil
+}
+
+// openRotatingFile opens (appending) the log file at path, creating its directory. The file, its directory and the
+// directory above are not followed if they are links.
 func openRotatingFile(path string, limit int64) (*rotatingFile, error) {
+	dir := filepath.Dir(path)
+	if err := refuseLinks(filepath.Dir(dir), dir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create the log directory: %w", err)
 	}
@@ -40,6 +65,9 @@ func openRotatingFile(path string, limit int64) (*rotatingFile, error) {
 }
 
 func (r *rotatingFile) open() error {
+	if err := refuseLinks(r.path); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(r.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o640)
 	if err != nil {
 		return fmt.Errorf("open the log file: %w", err)

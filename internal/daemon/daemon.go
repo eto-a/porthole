@@ -86,9 +86,9 @@ func (e *ConfigError) Unwrap() error { return e.Err }
 // entry is what the daemon knows about a tunnel besides the manager's state.
 type entry struct {
 	lifetime string
-	// uid is the owner of a tunnel added through the local API; owned is false when the caller's uid is unknown.
-	uid   int
-	owned bool
+	// owner is the principal (decimal uid on Unix, SID on Windows) of the caller that added the tunnel through the
+	// local API; empty when the caller is the daemon itself, unknown, or the tunnel was opened by the server.
+	owner string
 }
 
 func (e entry) source() string {
@@ -105,7 +105,8 @@ type Daemon struct {
 	mgr       *client.Manager
 	server    string // the server URL in use; fixed for the life of the process
 	startedAt time.Time
-	selfUID   int // the user the daemon runs as (-1 on Windows)
+	selfUID   int    // the user the daemon runs as (-1 on Windows)
+	selfSID   string // the account the daemon runs as on Windows, empty elsewhere
 
 	// mu serializes every change of the tunnel set (AddTunnel, RemoveTunnel, Reload) and guards the fields below. It
 	// is held across calls into the manager, which never block on it.
@@ -163,7 +164,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, &ConfigError{Err: err}
 	}
 	d := &Daemon{
-		opts: opts, log: log, mgr: mgr, server: server, startedAt: time.Now().UTC(), selfUID: os.Geteuid(),
+		opts: opts, log: log, mgr: mgr, server: server, startedAt: time.Now().UTC(), selfUID: os.Geteuid(), selfSID: localapi.CurrentSID(),
 		meta: make(map[string]entry, len(specs)), fileExists: existed,
 	}
 	for _, sp := range specs {

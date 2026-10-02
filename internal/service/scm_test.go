@@ -45,11 +45,14 @@ func TestSpecNormalizeRejectsControlCharacters(t *testing.T) {
 	}
 }
 
+// asRoot is a statFunc that reports every file as a plain file of root.
+func asRoot(string) (fileMeta, error) { return fileMeta{Mode: 0o644}, nil }
+
 func TestPrepareDarwinDirs(t *testing.T) {
 	root := t.TempDir()
 	cfg, logs := filepath.Join(root, "Application Support", "porthole"), filepath.Join(root, "Logs", "porthole")
 	fr := &fakeRunner{}
-	if err := prepareDarwinDirs(context.Background(), fr, cfg, logs); err != nil {
+	if err := prepareDarwinDirs(context.Background(), fr, asRoot, cfg, logs); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"chown root:admin " + cfg}; !slices.Equal(fr.got(), want) {
@@ -69,7 +72,7 @@ func TestPrepareDarwinDirs(t *testing.T) {
 	}
 
 	fr = &fakeRunner{handle: func(string) ([]byte, error) { return nil, errors.New("no group admin") }}
-	if err := prepareDarwinDirs(context.Background(), fr, cfg, logs); err == nil {
+	if err := prepareDarwinDirs(context.Background(), fr, asRoot, cfg, logs); err == nil {
 		t.Error("a failing chown was ignored")
 	}
 }

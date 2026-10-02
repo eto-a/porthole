@@ -122,7 +122,7 @@ Available from v0.4. The service listens on `\\.\pipe\ProtectedPrefix\Administra
 
 ## macOS: permission denied on the socket
 
-Available from v0.4. The socket of the system LaunchDaemon, `/var/run/porthole/porthole.sock`, is owned by `root:admin` (mode `0660`), so only administrator accounts can use it. Use an admin account, or install the per-user agent instead (`porthole service uninstall`, then `porthole service install --user`), which listens on a socket only you can reach.
+Available from v0.4. The socket of the system LaunchDaemon, `/var/run/porthole/porthole.sock`, is in a directory that only root can enter (mode `0700`), so run the command with `sudo` (`sudo porthole status`). Or install the per-user agent instead (`porthole service uninstall`, then `porthole service install --user`), which listens on a socket only you can reach.
 
 ## Every visitor has the IP address of Traefik
 
