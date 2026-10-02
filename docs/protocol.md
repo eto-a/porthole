@@ -136,8 +136,10 @@ Codes: `unsupported_version`, `unauthorized` (bad/unknown token), `token_expired
 `session_replaced` (a newer session with the same token took over; sent to the old session), `client_unsupported`,
 `timeout`, `not_allowed` (the last three are used in `open_result` and by the admin API).
 
-Clients must not retry automatically on `unauthorized`, `token_expired`, `token_revoked`, `unsupported_version`,
-`session_replaced` (otherwise two processes sharing a token would evict each other forever).
+Clients must not retry automatically on `unauthorized`, `token_expired`, `token_revoked`, `unsupported_version`.
+After `session_replaced` a foreground client stops; a long-running client (the daemon) may log in again, but not
+sooner than 30 seconds later, so that two processes sharing a token take turns slowly instead of evicting each other
+in a loop.
 
 ## 4. Data streams
 

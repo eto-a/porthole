@@ -160,6 +160,9 @@ func NewManager(opts Options) (*Manager, error) {
 	return newManager(opts, defaultTuning(), false)
 }
 
+// replacedBackoff is how long a Manager that is not strict waits after session_replaced before it logs in again.
+const replacedBackoff = 30 * time.Second
+
 // newManager creates a Manager. strict selects the v0.1 semantics used by Run: the tunnel set must not be empty,
 // a registration refused during the first full registration of the process is fatal (apart from transient server
 // errors), and a session in which no tunnel is registered, or in which the server closed every tunnel, ends with
@@ -484,10 +487,19 @@ func (m *Manager) loop(ctx context.Context) error {
 		var perr *proto.Error
 		var retryAfter time.Duration
 		if errors.As(err, &perr) {
-			if !perr.Retryable() {
+			switch {
+			case perr.Code == proto.CodeSessionReplaced && !m.strict:
+				// A long-running Manager (the daemon) comes back after a pause instead of stopping for good: the
+				// newer login may be a one-off (an old `login --check`), and a daemon that stopped would leave the
+				// machine offline until somebody restarts it. Two machines sharing one token then take turns, which
+				// the log and the server's "session replaced" warnings make visible.
+				m.log.Warn("session replaced by a newer login with the same token; reconnecting later", "after", replacedBackoff)
+				retryAfter = replacedBackoff
+			case !perr.Retryable():
 				return err
+			default:
+				retryAfter = time.Duration(max(perr.RetryAfterMS, 0)) * time.Millisecond
 			}
-			retryAfter = time.Duration(max(perr.RetryAfterMS, 0)) * time.Millisecond
 		}
 
 		initialAttempt := 0
