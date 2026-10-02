@@ -167,7 +167,9 @@ func (e *env) waitNotServed(t *testing.T, label string) {
 // workspace (systemd's ProtectHome hides /home), and `service install` asks for the binary in its final place.
 func installBinary(t *testing.T) string {
 	t.Helper()
-	dir := "/usr/local/bin"
+	// Not /usr/local/bin: GitHub's runners make it world-writable (Ubuntu) or user-owned (macOS, Homebrew), and
+	// `service install` rightly refuses a binary there.
+	dir := "/opt/porthole-e2e/bin"
 	if runtime.GOOS == "windows" {
 		dir = filepath.Join(os.Getenv("ProgramFiles"), "porthole")
 	}
@@ -189,7 +191,7 @@ func installBinary(t *testing.T) string {
 		if runtime.GOOS == "windows" {
 			_ = os.RemoveAll(dir) //nolint:gosec // the path is fixed by the test
 		} else {
-			_ = os.Remove(dst) //nolint:gosec // the path is fixed by the test
+			_ = os.RemoveAll(filepath.Dir(dir)) //nolint:gosec // the path is fixed by the test
 		}
 	})
 	return dst

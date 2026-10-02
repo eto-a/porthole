@@ -102,7 +102,8 @@ func (a *app) newServiceCmd() *cobra.Command {
 			"The service runs with the rights of the system, so install refuses a binary, or an explicit --config or\n" +
 			"--tunnels file, that a user who is not an administrator could replace or edit (the file, or a directory above\n" +
 			"it, is writable by them). Put the binary where only administrators can write (C:\\Program Files\\porthole\\ on\n" +
-			"Windows, /usr/local/bin on Linux and macOS); --allow-unsafe-path overrides the check knowingly.",
+			"Windows, a root-owned directory such as /opt/porthole/bin on Linux and macOS); --allow-unsafe-path\n" +
+			"overrides the check knowingly.",
 		Example: "  sudo porthole service install\n" +
 			"  porthole service install --user\n" +
 			"  porthole service install --allow BUILTIN\\Users          (Windows, elevated terminal)",
@@ -397,16 +398,19 @@ func (a *app) checkServicePaths(f serviceFlags, exe, cfgPath, tunnelsPath string
 	return warnings, nil
 }
 
-// unsafePathAdvice explains why a file is refused for a system service and what to do about it.
+// unsafePathAdvice explains why a file is refused for a system service and what to do about it. /usr/local/bin is
+// not suggested on macOS and Unix in general: Homebrew makes it user-owned on Intel Macs, and some images (GitHub's
+// Ubuntu runners) leave it world-writable, so a fresh root-owned directory is the one advice that always holds.
 func unsafePathAdvice(goos, p string, err *service.UnsafePathError) string {
-	where := "/usr/local/bin"
+	fix := "copy it to a directory that only root can write and install from there: sudo mkdir -p /opt/porthole/bin && " +
+		"sudo cp " + p + " /opt/porthole/bin/ && sudo /opt/porthole/bin/porthole service install"
 	if goos == "windows" {
-		where = `C:\Program Files\porthole\`
+		fix = `copy it to C:\Program Files\porthole\ in an elevated terminal and run "porthole service install" from there`
 	}
 	return fmt.Sprintf("%s cannot be used by the system service: %s. A service runs with the rights of the system, so a file "+
-		"that users who are not administrators can change would give them those rights. Put the binary in a place only "+
-		"administrators can write (%s) and run `porthole service install` from there, or use --allow-unsafe-path to accept "+
-		"the risk", p, err, where)
+		"that users who are not administrators can change would give them those rights. If it is the binary, %s; for a "+
+		"--config or --tunnels file, keep it in the system configuration directory. --allow-unsafe-path accepts the risk",
+		p, err, fix)
 }
 
 func printInstall(out, errOut io.Writer, r serviceResult) error {
