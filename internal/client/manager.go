@@ -57,7 +57,9 @@ const (
 	StatusReady TunnelStatus = "ready"
 	// StatusFailed: the server refused the registration or dropped the tunnel; TunnelState.Err says why. The
 	// tunnel is not retried within the same session (except by Replace, which retries failed tunnels whose spec is
-	// unchanged); it is registered again after the next reconnect.
+	// unchanged); it is registered again after the next reconnect. A transient refusal (internal, shutting_down, or
+	// limit_exceeded / port_unavailable with a retry hint) does not fail the tunnel: it stays StatusPending and the
+	// registration is retried with a backoff.
 	StatusFailed TunnelStatus = "failed"
 )
 
@@ -68,7 +70,8 @@ type TunnelState struct {
 	PublicURL string // set when Status is StatusReady
 	// SSHJump is the host:port of the server's SSH gateway; set when Status is StatusReady for an ssh tunnel.
 	SSHJump string
-	// Err is set when Status is StatusFailed. For a refused registration it wraps the server's *proto.Error.
+	// Err is set when Status is StatusFailed. For a refused registration it wraps the server's *proto.Error. It is
+	// also set while the status is StatusPending and the registration is being retried after a transient refusal.
 	Err error
 }
 
@@ -95,6 +98,10 @@ type tunnelRec struct {
 	url    string
 	jump   string // SSH gateway address of a ready ssh tunnel
 	err    error
+	// retryAt is when a pending record whose registration was refused with a transient error may be registered again;
+	// zero if there is no such wait. retryDelay is the last backoff step (zero after a success or a reconnect).
+	retryAt    time.Time
+	retryDelay time.Duration
 }
 
 // subscriber is one Subscribe registration.
@@ -293,6 +300,7 @@ func (m *Manager) Replace(specs []TunnelSpec) (added, removed, changed []string,
 			delete(m.desired, name)
 		case rec.status == StatusFailed:
 			rec.status, rec.err, rec.url = StatusPending, nil, "" // a reload retries what failed
+			rec.retryAt, rec.retryDelay = time.Time{}, 0
 		}
 	}
 	sort.Strings(removed)
@@ -538,6 +546,7 @@ func (m *Manager) onConnected(clientName string) {
 	m.conn, m.client, m.lastErr, m.retryAt = ConnConnected, clientName, nil, time.Time{}
 	for _, rec := range m.desired {
 		rec.status, rec.url, rec.err = StatusPending, "", nil
+		rec.retryAt, rec.retryDelay = time.Time{}, 0
 	}
 	m.postLocked(Connected{ClientName: clientName})
 	m.mu.Unlock()

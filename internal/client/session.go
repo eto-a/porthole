@@ -98,6 +98,9 @@ func Check(ctx context.Context, opts Options) (CheckResult, error) {
 	if err != nil {
 		return CheckResult{}, err
 	}
+	// handshake ties the session's life to its ctx; a caller's long-lived ctx would keep the closed session around.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	sess, _, ok, err := m.handshake(ctx)
 	if err != nil {
 		return CheckResult{}, err
@@ -190,8 +193,13 @@ func (m *Manager) session(ctx context.Context, at *attemptInfo) error {
 	regTimer := time.NewTimer(m.t.registerTimeout)
 	regTimer.Stop()
 	defer regTimer.Stop()
-	var regC <-chan time.Time // non-nil while registrations are in flight
-	settled := false          // strict mode: every registration of this session has been answered
+	retryTimer := time.NewTimer(time.Hour) // fires when the earliest transiently refused registration is due again
+	retryTimer.Stop()
+	defer retryTimer.Stop()
+	var retryC <-chan time.Time // non-nil while retryTimer is armed
+	var retryArmed time.Time    // the retry time retryTimer was armed for
+	var regC <-chan time.Time   // non-nil while registrations are in flight
+	settled := false            // strict mode: every registration of this session has been answered
 
 	if err := w.reconcile(); err != nil {
 		return err
@@ -206,11 +214,25 @@ func (m *Manager) session(ctx context.Context, at *attemptInfo) error {
 			regTimer.Reset(m.t.registerTimeout)
 			regC = regTimer.C
 		}
+		// Arm the retry timer for the earliest transiently refused registration, disarm it when there is none.
+		switch {
+		case w.nextRetry.IsZero():
+			retryTimer.Stop()
+			retryC, retryArmed = nil, time.Time{}
+		case !w.nextRetry.Equal(retryArmed):
+			retryTimer.Reset(time.Until(w.nextRetry))
+			retryC, retryArmed = retryTimer.C, w.nextRetry
+		}
 		m.flush()
 
 		select {
 		case <-cctx.Done():
 			return cctx.Err()
+		case <-retryC:
+			retryC, retryArmed = nil, time.Time{}
+			if err := w.reconcile(); err != nil {
+				return err
+			}
 		case <-regC:
 			return fmt.Errorf("timed out waiting for %d tunnel registration(s)", len(w.byReq))
 		case <-hb.C:
@@ -286,6 +308,9 @@ type wire struct {
 	table  *tunnelTable
 	byName map[string]*wireTunnel
 	byReq  map[int]*wireTunnel
+	// nextRetry is the earliest retryAt of the pending records reconcile skipped, zero if none. The session loop
+	// arms a timer for it.
+	nextRetry time.Time
 }
 
 func newWire(m *Manager, ctl *ctlConn) *wire {
@@ -320,10 +345,19 @@ func (w *wire) reconcile() error {
 		delete(w.byName, name)
 	}
 	var todo []*tunnelRec
+	now := time.Now()
+	w.nextRetry = time.Time{}
 	for name, rec := range m.desired {
-		if _, busy := w.byName[name]; !busy && rec.status == StatusPending {
-			todo = append(todo, rec)
+		if _, busy := w.byName[name]; busy || rec.status != StatusPending {
+			continue
 		}
+		if rec.retryAt.After(now) { // refused with a transient error: wait for the backoff
+			if w.nextRetry.IsZero() || rec.retryAt.Before(w.nextRetry) {
+				w.nextRetry = rec.retryAt
+			}
+			continue
+		}
+		todo = append(todo, rec)
 	}
 	slices.SortFunc(todo, func(a, b *tunnelRec) int { return a.seq - b.seq })
 	for _, rec := range todo {
@@ -377,7 +411,7 @@ func (w *wire) onRegistered(msg *proto.Registered) error {
 		}
 		werr := fmt.Errorf("register tunnel %q: the server did not confirm a private tunnel (server too old?)", wt.spec.Name)
 		m.log.Warn("registration refused", "name", wt.spec.Name, "reason", "private not confirmed")
-		return w.refuse(wt, proto.CodeInvalidRequest, "private tunnel not confirmed by the server", werr)
+		return w.refuse(wt, proto.CodeInvalidRequest, "private tunnel not confirmed by the server", werr, 0)
 	}
 	if wt.spec.Inspect && !msg.Inspect {
 		// Not an error: the tunnel works, there is just nothing to inspect on an old server.
@@ -391,6 +425,7 @@ func (w *wire) onRegistered(msg *proto.Registered) error {
 	current := m.desired[wt.spec.Name] == wt.rec
 	if current && !wt.stale {
 		wt.rec.status, wt.rec.url, wt.rec.jump, wt.rec.err = StatusReady, msg.PublicURL, msg.SSHJump, nil
+		wt.rec.retryAt, wt.rec.retryDelay = time.Time{}, 0
 		m.postLocked(TunnelReady{Spec: wt.spec, Name: msg.Name, PublicURL: msg.PublicURL, SSHJump: msg.SSHJump})
 	}
 	m.mu.Unlock()
@@ -424,12 +459,13 @@ func (w *wire) onError(e *proto.Error) (handled bool, err error) {
 	if !e.Retryable() {
 		return true, werr // token problems and the like: the whole session is lost
 	}
-	return true, w.refuse(wt, e.Code, e.Error(), werr)
+	return true, w.refuse(wt, e.Code, e.Error(), werr, time.Duration(e.RetryAfterMS)*time.Millisecond)
 }
 
 // refuse records that the registration of wt failed with werr. In strict mode before the first complete round
-// the failure ends the session; otherwise the tunnel is marked failed and the loop goes on.
-func (w *wire) refuse(wt *wireTunnel, code, reason string, werr error) error {
+// the failure ends the session; otherwise the tunnel is marked failed and the loop goes on. A transient refusal (see
+// transientRefusal) only puts the tunnel back to pending with a retry time; retryAfter is the server's hint.
+func (w *wire) refuse(wt *wireTunnel, code, reason string, werr error, retryAfter time.Duration) error {
 	m := w.m
 	sp := wt.spec
 	if m.strict && !m.regDone {
@@ -441,11 +477,37 @@ func (w *wire) refuse(wt *wireTunnel, code, reason string, werr error) error {
 	}
 	m.mu.Lock()
 	if m.desired[sp.Name] == wt.rec && !wt.stale { // otherwise nobody wants this tunnel any more
-		wt.rec.status, wt.rec.url, wt.rec.err = StatusFailed, "", werr
-		m.postLocked(TunnelClosed{Name: sp.Name, Reason: reason})
+		rec := wt.rec
+		if transientRefusal(code, retryAfter) {
+			delay := retryAfter
+			if delay > 0 {
+				delay = min(delay, m.t.maxRetryAfter)
+			} else {
+				delay = min(max(rec.retryDelay*2, m.t.backoffBase), m.t.backoffMax)
+			}
+			rec.status, rec.url, rec.err = StatusPending, "", werr
+			rec.retryDelay, rec.retryAt = delay, time.Now().Add(delay)
+			m.log.Warn("registration will be retried", "name", sp.Name, "code", code, "in", delay)
+		} else {
+			rec.status, rec.url, rec.err = StatusFailed, "", werr
+			m.postLocked(TunnelClosed{Name: sp.Name, Reason: reason})
+		}
 	}
 	m.mu.Unlock()
 	return w.reconcile() // the name is free again: a replacement may be waiting for it
+}
+
+// transientRefusal reports whether a refused registration is worth retrying within the session: the server had an
+// internal problem or is shutting down, or it says when to come back (limit_exceeded, port_unavailable). Everything
+// else (bad name, forbidden, conflict...) will not change by itself.
+func transientRefusal(code string, retryAfter time.Duration) bool {
+	switch code {
+	case proto.CodeInternal, proto.CodeShuttingDown:
+		return true
+	case proto.CodeLimitExceeded, proto.CodePortUnavailable:
+		return retryAfter > 0
+	}
+	return false
 }
 
 func (w *wire) onTunnelClosed(msg *proto.TunnelClosed) {

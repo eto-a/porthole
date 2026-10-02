@@ -49,6 +49,8 @@ type fakeStore struct {
 	claims map[string]store.LabelClaim // by label
 	// delay makes the port and label calls slow, like a busy disk (nanoseconds, 0 = none).
 	delay atomic.Int64
+	// touchDelay makes TouchToken slow, like a stalled store during authentication (nanoseconds, 0 = none).
+	touchDelay atomic.Int64
 }
 
 // slow sleeps for the configured delay; it runs outside f.mu.
@@ -114,6 +116,9 @@ func (f *fakeStore) RevokeToken(_ context.Context, idOrName string, at time.Time
 }
 
 func (f *fakeStore) TouchToken(_ context.Context, id string, at time.Time) error {
+	if d := time.Duration(f.touchDelay.Load()); d > 0 {
+		time.Sleep(d)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.touched[id] = at

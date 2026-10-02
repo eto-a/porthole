@@ -183,6 +183,11 @@ func (s *Server) handshake(ctx context.Context, cancel context.CancelFunc, ts tr
 		tunnels:       make(map[string]*tunnel),
 		names:         make(map[string]*tunnel),
 	}
+	// The handshake deadline must not fire after adopt: a session that timed out never replaces a live one.
+	if !timer.Stop() {
+		s.log.Warn("handshake timed out before the session was adopted", "ip", ip)
+		return nil, errors.New("handshake timed out")
+	}
 	if err := s.adopt(sess); err != nil {
 		return nil, reject(&proto.Error{Code: proto.CodeShuttingDown, Message: "server is shutting down"})
 	}
