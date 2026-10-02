@@ -257,3 +257,27 @@ func TestLabelClaimOfLiveTunnelDoesNotExpire(t *testing.T) {
 	h.login(h.st.newToken(t, "x")).mustRegister(proto.KindHTTP, "y", 0)
 	wantNameTaken(t, h.login(h.st.newToken(t, "a-home")).registerErr(proto.KindHTTP, "w", 0))
 }
+
+// A dying session's failed registration must not take back a claim that the reconnected session of the same client
+// already serves (the second registration found the claim in place and created none of its own).
+func TestLabelClaimKeptWhenServedByAnotherSession(t *testing.T) {
+	h := newHarness(t)
+	c := h.login(h.st.newToken(t, "home"))
+	c.mustRegister(proto.KindHTTP, "one", 0)
+
+	h.srv.unclaimLabels("home", "one", []string{"one-home"}) // what the failed registration of the old session does
+	if !h.srv.persist.flush(5 * time.Second) {
+		t.Fatal("store writes did not finish")
+	}
+	h.st.mu.Lock()
+	_, ok := h.st.claims["one-home"]
+	h.st.mu.Unlock()
+	if !ok {
+		t.Error("the claim of a live tunnel was taken back")
+	}
+
+	h.srv.unclaimLabels("home", "two", []string{"two-home"}) // nobody serves it: the claim (if any) goes
+	if !h.srv.persist.flush(5 * time.Second) {
+		t.Fatal("store writes did not finish")
+	}
+}
