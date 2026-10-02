@@ -31,3 +31,6 @@ func IsService() (bool, error) { return false, nil }
 func RunService(string, func(ctx context.Context, ready func(), reload <-chan struct{}) error) error {
 	return fmt.Errorf("running as a Windows service on %s: %w", runtime.GOOS, ErrUnsupported)
 }
+
+// secureCopy has nothing to do outside Windows: the copy is created by root with mode 0755.
+func secureCopy(string) error { return nil }

@@ -10,11 +10,10 @@ import (
 )
 
 // A file that an elevated administrator writes (login --system, the tunnels file of service install, an edit in
-// Notepad) is owned by that user's own SID, not by Administrators: Windows' default "object creator" ownership. The
-// user is an administrator, so the file is safe, but the service, which runs as SYSTEM and checks its directory
-// before it opens its log, cannot tell that user from anybody else. Such files are therefore handed to Administrators
-// right after they are written, and an install run by an elevated administrator accepts that administrator as an
-// owner (and then re-owns the file).
+// Notepad) is owned by that user's own SID, not by Administrators: Windows' default "object creator" ownership. That
+// SID is not trusted, even though the user is an administrator: the owner may rewrite the file's ACL, and so may every
+// process of that user that is not elevated, which would turn any of them into SYSTEM. Such files are therefore
+// handed to Administrators right after they are written.
 
 // SetAdminOwner makes the built-in Administrators group the owner of path. An elevated administrator may do that:
 // the group carries SE_GROUP_OWNER in an elevated token.
@@ -29,17 +28,6 @@ func SetAdminOwner(path string) error {
 	return nil
 }
 
-// installerTrust is adminTrust plus the user running the command, when that user is an elevated administrator.
-func installerTrust() sidTrust {
-	if !Elevated() {
-		return adminTrust
-	}
-	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		return adminTrust
-	}
-	self := tu.User.Sid.String()
-	return func(sid *windows.SID) bool {
-		return adminTrust(sid) || (sid != nil && sid.String() == self)
-	}
-}
+// secureCopy hands the copy of the binary to Administrators, like every file porthole writes into its system
+// directory, so that the service's own check of the directory accepts it.
+func secureCopy(path string) error { return SetAdminOwner(path) }

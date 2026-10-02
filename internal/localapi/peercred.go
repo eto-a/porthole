@@ -40,7 +40,7 @@ func (c Cred) Principal() string {
 }
 
 // PeerCred returns the credentials of the peer of c: SO_PEERCRED on Linux, LOCAL_PEERCRED and LOCAL_PEERPID on
-// macOS, GetNamedPipeClientProcessId and the client process token on Windows. The second result is false when c
+// macOS, the token of the pipe client (ImpersonateNamedPipeClient) on Windows. The second result is false when c
 // is not a connection of the local API listener or the platform has no peer credentials.
 func PeerCred(c net.Conn) (Cred, bool) {
 	cred, ok := peerCred(c)

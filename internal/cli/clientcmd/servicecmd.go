@@ -326,19 +326,6 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 			map[bool]string{true: "", false: " --system"}[f.user]))
 	}
 
-	if needCopy {
-		dst, err := a.d.copyExe(exe)
-		if err != nil {
-			return serviceErr(err, "service install", f.user)
-		}
-		if err := a.d.checkPath(dst); err != nil {
-			return fmt.Errorf("the copy %s of porthole cannot be trusted by the system service: %w", dst, err)
-		}
-		res.ExeFrom, res.Exe, exe = exe, dst, dst
-	}
-
-	spec := service.Spec{Exe: exe, Args: daemonArgs(cfgPath, tunnelsPath, socket, f.allow), User: f.user}
-	res.Args = spec.Args
 	chownIfNeeded := func() (bool, error) { return false, nil }
 	if !f.user && a.d.fixOwnership != nil {
 		// Only the files of the default system directory are handed to the service account; a file elsewhere is the
@@ -353,6 +340,22 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 		chownIfNeeded = func() (bool, error) { return a.d.fixOwnership(cfgFix, tunFix) }
 	}
 
+	if needCopy {
+		// Files just written (an empty tunnels file) go to their owner first: the copy verifies the system directory
+		// again, and on Windows a file owned by the installer's own SID does not pass.
+		_, _ = chownIfNeeded()
+		dst, err := a.d.copyExe(exe)
+		if err != nil {
+			return serviceErr(err, "service install", f.user)
+		}
+		if err := a.d.checkPath(dst); err != nil {
+			return fmt.Errorf("the copy %s of porthole cannot be trusted by the system service: %w", dst, err)
+		}
+		res.ExeFrom, res.Exe, exe = exe, dst, dst
+	}
+
+	spec := service.Spec{Exe: exe, Args: daemonArgs(cfgPath, tunnelsPath, socket, f.allow), User: f.user}
+	res.Args = spec.Args
 	// The account of the service may not exist before Install; hand the files over afterwards and restart. If the
 	// service could not start for want of that, Install reports an error that the restart then cures.
 	_, _ = chownIfNeeded()
