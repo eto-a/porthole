@@ -35,7 +35,11 @@ func (a *app) newMCPCmd() *cobra.Command {
 				return cl, cl.Close, nil
 			}
 			// stdout carries the protocol: logs go to stderr.
-			srv, err := mcpclient.New(mcpclient.Options{Dial: dial, ReadOnly: readOnly, AllowRemoteTargets: allowRemote, Logger: a.logger(cmd), Version: a.version})
+			diagnose := func(ctx context.Context) mcpclient.DiagnoseResult { return a.diagnose(ctx, cmd) }
+			srv, err := mcpclient.New(mcpclient.Options{
+				Dial: dial, ReadOnly: readOnly, AllowRemoteTargets: allowRemote, Logger: a.logger(cmd), Version: a.version,
+				Diagnose: diagnose,
+			})
 			if err != nil {
 				return err
 			}
@@ -45,8 +49,23 @@ func (a *app) newMCPCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&readOnly, "read-only", false, "serve no tool that changes anything (only status and list_tunnels)")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "serve no tool that changes anything (only status, list_tunnels and diagnose)")
 	cmd.Flags().BoolVar(&allowRemote, "allow-remote-targets", false,
 		"let open_tunnel publish hosts other than this machine (LAN addresses, names); by default only 127.0.0.1, ::1 and localhost")
 	return cmd
+}
+
+// diagnose runs the checks of `porthole doctor` for the MCP tool of the same name.
+func (a *app) diagnose(ctx context.Context, cmd *cobra.Command) mcpclient.DiagnoseResult {
+	var r doctorReport
+	if p, err := a.doctorConfigPath(false); err != nil {
+		r = doctorReport{Checks: []doctorCheck{{Name: "config", Status: doctorFail, Message: err.Error()}}}
+	} else {
+		r = a.runDoctor(ctx, cmd, p, false)
+	}
+	out := mcpclient.DiagnoseResult{OK: r.OK, Checks: make([]mcpclient.DiagnoseCheck, 0, len(r.Checks))}
+	for _, c := range r.Checks {
+		out.Checks = append(out.Checks, mcpclient.DiagnoseCheck(c))
+	}
+	return out
 }

@@ -256,3 +256,26 @@ func TestOpenTunnelIsAnnotatedDestructive(t *testing.T) {
 	}
 	t.Fatal("no open_tunnel tool")
 }
+
+func TestDiagnose(t *testing.T) {
+	want := DiagnoseResult{OK: false, Checks: []DiagnoseCheck{
+		{Name: "config", Status: "ok", Message: "fine"},
+		{Name: "server", Status: "fail", Message: "token revoked", Hint: "join again"},
+	}}
+	cs := session(t, Options{Dial: dialer(&fakeDaemon{}), ReadOnly: true, Diagnose: func(context.Context) DiagnoseResult { return want }})
+	res := call(t, cs, "diagnose", map[string]any{})
+	if res.IsError {
+		t.Fatalf("diagnose failed: %+v", res.Content)
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got DiagnoseResult
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK || len(got.Checks) != 2 || got.Checks[1].Hint != "join again" {
+		t.Errorf("diagnose = %+v", got)
+	}
+}
