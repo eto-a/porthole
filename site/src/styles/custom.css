@@ -1,10 +1,10 @@
-/* One accent colour (teal), Inter for text and JetBrains Mono for code; both self-hosted via @fontsource. */
+/* One accent: signal yellow on navy in the dark theme, navy in the light theme (the colours of the icon); Inter for text and JetBrains Mono for code; both self-hosted via @fontsource. */
 :root {
   --sl-font: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --sl-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sl-color-accent-low: #0a3330;
-  --sl-color-accent: #14b8a6;
-  --sl-color-accent-high: #5eead4;
+  --sl-color-accent-low: #0b1f3a;
+  --sl-color-accent: #e0a830;
+  --sl-color-accent-high: #ffc857;
   --sl-color-white: #ffffff;
   --sl-color-gray-1: #eceef2;
   --sl-color-gray-2: #c0c2c7;
@@ -17,9 +17,9 @@
 }
 
 :root[data-theme='light'] {
-  --sl-color-accent-low: #ccfbf1;
-  --sl-color-accent: #0f766e;
-  --sl-color-accent-high: #115e59;
+  --sl-color-accent-low: #dfe6f1;
+  --sl-color-accent: #1d3a6b;
+  --sl-color-accent-high: #0b1f3a;
   --sl-color-white: #14161b;
   --sl-color-gray-1: #24272f;
   --sl-color-gray-2: #353841;
@@ -37,7 +37,7 @@
   --lp-term-bar: #1b1f27;
   --lp-term-fg: #dfe3ea;
   --lp-term-dim: #8b93a1;
-  --lp-term-accent: #5eead4;
+  --lp-term-accent: #ffc857;
 }
 
 /* Landing page: use the full width of the splash template and drop the page title (the hero has the h1). */

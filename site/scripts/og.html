@@ -8,20 +8,20 @@
   @font-face { font-family: 'Inter'; src: url('../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2'); font-weight: 100 900; }
   @font-face { font-family: 'JetBrains Mono'; src: url('../node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2'); font-weight: 400; }
   * { box-sizing: border-box; margin: 0; }
-  body { width: 1200px; height: 630px; background: #14161b; color: #fff; font-family: 'Inter', sans-serif; position: relative; overflow: hidden; }
-  .glow { position: absolute; inset: 0; background: radial-gradient(760px 420px at 88% 0%, rgba(20, 184, 166, .28), transparent 70%); }
+  body { width: 1200px; height: 630px; background: #0b1f3a; color: #f4efe4; font-family: 'Inter', sans-serif; position: relative; overflow: hidden; }
+  .glow { position: absolute; inset: 0; background: radial-gradient(760px 420px at 88% 0%, rgba(255, 200, 87, .18), transparent 70%); }
   .wrap { position: absolute; inset: 0; padding: 72px 80px; display: flex; flex-direction: column; justify-content: space-between; }
   .brand { display: flex; align-items: center; gap: 20px; font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
   .brand svg { width: 64px; height: 64px; }
   h1 { font-size: 92px; line-height: 1.02; letter-spacing: -0.04em; font-weight: 800; max-width: 900px; }
-  h1 span { color: #5eead4; }
-  p { font-size: 32px; line-height: 1.4; color: #c0c2c7; max-width: 900px; }
-  .foot { display: flex; gap: 28px; font-family: 'JetBrains Mono', monospace; font-size: 24px; color: #5eead4; }
+  h1 span { color: #ffc857; }
+  p { font-size: 32px; line-height: 1.4; color: #c9cfdb; max-width: 900px; }
+  .foot { display: flex; gap: 28px; font-family: 'JetBrains Mono', monospace; font-size: 24px; color: #ffc857; }
   .touch { display: none; }
-  body.touch-icon { width: 180px; height: 180px; background: #14161b; }
+  body.touch-icon { width: 180px; height: 180px; background: #0b1f3a; }
   body.touch-icon .glow, body.touch-icon .wrap { display: none; }
   body.touch-icon .touch { display: flex; align-items: center; justify-content: center; width: 180px; height: 180px; }
-  body.touch-icon .touch svg { width: 124px; height: 124px; }
+  body.touch-icon .touch svg { width: 180px; height: 180px; }
 </style>
 </head>
 <body>
@@ -29,11 +29,10 @@
 <div class="wrap">
   <div class="brand">
     <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <circle cx="16" cy="16" r="13.5" stroke="#14b8a6" stroke-width="3"/>
-      <circle cx="16" cy="16" r="8" fill="#14b8a6" fill-opacity=".22" stroke="#14b8a6" stroke-width="1.5"/>
-      <path d="M11.2 15a5 5 0 0 1 3.8-3.9" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round"/>
-      <circle cx="16" cy="2.6" r="1" fill="#14b8a6"/><circle cx="16" cy="29.4" r="1" fill="#14b8a6"/>
-      <circle cx="2.6" cy="16" r="1" fill="#14b8a6"/><circle cx="29.4" cy="16" r="1" fill="#14b8a6"/>
+      <rect width="32" height="32" rx="7" fill="#0b1f3a"/>
+      <path d="M4.5 28V15a11.5 11.5 0 0 1 23 0v13" stroke="#f4efe4" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M9.5 28V17a6.5 6.5 0 0 1 13 0v11" stroke="#f4efe4" stroke-opacity=".45" stroke-width="2" stroke-linecap="round"/>
+      <path d="M13.5 19.5l3 2.5-3 2.5" stroke="#ffc857" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     porthole
   </div>
@@ -45,10 +44,11 @@
 </div>
 <div class="touch">
   <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <circle cx="16" cy="16" r="13.5" stroke="#14b8a6" stroke-width="3"/>
-    <circle cx="16" cy="16" r="8" fill="#14b8a6" fill-opacity=".22" stroke="#14b8a6" stroke-width="1.5"/>
-    <path d="M11.2 15a5 5 0 0 1 3.8-3.9" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round"/>
-  </svg>
+      <rect width="32" height="32" rx="7" fill="#0b1f3a"/>
+      <path d="M4.5 28V15a11.5 11.5 0 0 1 23 0v13" stroke="#f4efe4" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M9.5 28V17a6.5 6.5 0 0 1 13 0v11" stroke="#f4efe4" stroke-opacity=".45" stroke-width="2" stroke-linecap="round"/>
+      <path d="M13.5 19.5l3 2.5-3 2.5" stroke="#ffc857" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
 </div>
 <script>if (location.hash === '#touch') document.body.classList.add('touch-icon');</script>
 </body>
