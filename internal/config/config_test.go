@@ -314,6 +314,8 @@ limits:
   http_body_idle_timeout: 15s
   max_pending_handshakes: 100
   max_pending_handshakes_per_ip: 4
+  max_label_claims_per_client: 77
+  label_claim_ttl: 48h
 tls:
   acme:
     max_new_names_per_day: 20
@@ -324,7 +326,8 @@ tls:
 	}
 	l := c.Limits
 	if l.MaxConnsPerIP != 8 || l.TCPIdleTimeout != 30*time.Minute || l.MaxHTTPRequestsPerTunnel != -1 ||
-		l.HTTPBodyIdleTimeout != 15*time.Second || l.MaxPendingHandshakes != 100 || l.MaxPendingHandshakesPerIP != 4 {
+		l.HTTPBodyIdleTimeout != 15*time.Second || l.MaxPendingHandshakes != 100 || l.MaxPendingHandshakesPerIP != 4 ||
+		l.MaxLabelClaimsPerClient != 77 || l.LabelClaimTTL != 48*time.Hour {
 		t.Errorf("limits: %+v", l)
 	}
 	if c.TLS.ACME.MaxNewNamesPerDay != 20 || c.TLS.ACME.MaxNewNamesPerClientPerHour != 5 {

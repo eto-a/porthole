@@ -678,7 +678,7 @@ func (f *fakeStore) RevokeJoinCode(context.Context, string, time.Time) error {
 	return store.ErrNotFound
 }
 
-func (f *fakeStore) ClaimLabels(_ context.Context, client, tunnel string, labels []string, at time.Time) ([]string, error) {
+func (f *fakeStore) ClaimLabels(_ context.Context, client, tunnel string, labels []string, at time.Time, maxClaims int) ([]string, error) {
 	f.slow()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -686,15 +686,68 @@ func (f *fakeStore) ClaimLabels(_ context.Context, client, tunnel string, labels
 		if c, ok := f.claims[l]; ok && (c.Client != client || c.Tunnel != tunnel) {
 			return nil, store.ErrLabelClaimed
 		}
+		if l == client {
+			continue
+		}
+		for _, t := range f.tokens {
+			if t.Name == l && t.RevokedAt == nil {
+				return nil, store.ErrLabelClaimed
+			}
+		}
 	}
 	var created []string
 	for _, l := range labels {
-		if _, ok := f.claims[l]; !ok {
-			f.claims[l] = store.LabelClaim{Label: l, Client: client, Tunnel: tunnel, ClaimedAt: at}
-			created = append(created, l)
+		if c, ok := f.claims[l]; ok {
+			c.LastUsedAt = at
+			f.claims[l] = c
+			continue
+		}
+		f.claims[l] = store.LabelClaim{Label: l, Client: client, Tunnel: tunnel, ClaimedAt: at, LastUsedAt: at}
+		created = append(created, l)
+	}
+	if maxClaims > 0 && len(created) > 0 {
+		n := 0
+		for _, c := range f.claims {
+			if c.Client == client {
+				n++
+			}
+		}
+		if n > maxClaims {
+			for _, l := range created {
+				delete(f.claims, l)
+			}
+			return nil, store.ErrLabelLimit
 		}
 	}
 	return created, nil
+}
+
+func (f *fakeStore) ExpireLabelClaims(_ context.Context, now time.Time, ttl time.Duration, live []store.ClaimOwner) (int, error) {
+	if ttl <= 0 {
+		return 0, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range live {
+		for l, c := range f.claims {
+			if c.Client == o.Client && c.Tunnel == o.Tunnel {
+				c.LastUsedAt = now
+				f.claims[l] = c
+			}
+		}
+	}
+	n := 0
+	for l, c := range f.claims {
+		used := c.LastUsedAt
+		if used.IsZero() {
+			used = c.ClaimedAt
+		}
+		if used.Before(now.Add(-ttl)) {
+			delete(f.claims, l)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *fakeStore) UnclaimLabels(_ context.Context, client, tunnel string, labels []string) error {

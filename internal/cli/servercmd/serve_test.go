@@ -33,8 +33,12 @@ func (*nopStore) LoadPortReservations(context.Context, time.Time, time.Duration)
 	return nil, nil
 }
 
-func (*nopStore) ClaimLabels(context.Context, string, string, []string, time.Time) ([]string, error) {
+func (*nopStore) ClaimLabels(context.Context, string, string, []string, time.Time, int) ([]string, error) {
 	return nil, nil
+}
+
+func (*nopStore) ExpireLabelClaims(context.Context, time.Time, time.Duration, []store.ClaimOwner) (int, error) {
+	return 0, nil
 }
 func (*nopStore) UnclaimLabels(context.Context, string, string, []string) error { return nil }
 func (*nopStore) ReleaseLabel(context.Context, string) error                    { return store.ErrNotFound }

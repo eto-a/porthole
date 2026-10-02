@@ -121,6 +121,7 @@ With no `tls` section the server gets its certificates by ACME (see [TLS](#tls))
 | `limits.max_http_requests_per_tunnel` | - | `512` | Simultaneous visitor requests (open WebSockets included) per HTTP tunnel; more get `503`; `-1` turns the limit off |
 | `limits.http_body_idle_timeout` | - | `60s` | A visitor request whose body makes no progress for this long is aborted with `408`; steady slow uploads are not affected; `-1` turns it off |
 | `limits.max_pending_handshakes`, `limits.max_pending_handshakes_per_ip` | - | `256`, `8` | Control connections that have not authenticated yet, overall and per source IP; more get `503` (see [Abuse limits](#abuse-limits)) |
+| `limits.max_label_claims_per_client`, `limits.label_claim_ttl` | - | `4 x max_tunnels_per_client` (at least `40`), `720h` | Permanent host names one client may hold, and how long an unused one is kept (see [Host names](#host-names-are-per-client-tunnel)) |
 
 ## Firewall
 
@@ -241,7 +242,14 @@ $ portholed admin release-label web-a-home
 
 (the admin API does the same with `POST /_porthole/admin/v1/labels/<label>/release`, scope `admin:tunnels`, and the call is audited as `label.release`). While a client is offline for a short time, its HTTP name also answers `502` for two minutes, so visitors see "offline" rather than "not found" during a reconnect.
 
-The gateway resolves a target by the exact name: the bare client name for the client's tunnel called `ssh`, otherwise the exact `<tunnel>-<client>`; it never guesses where the tunnel name ends. The bare names and the `<tunnel>-<client>` names of SSH tunnels are one namespace, so the claims cover both: an `ssh` tunnel of client `a-b` is refused when another client's tunnel already holds `a-b`, and the other way round. For the same reason `portholed token create` and `join create` refuse a client name that is already the claimed name of another client's tunnel. HTTP and SSH names share the claim table too, so a name used by one kind is not given to another pair for the other kind (a rare false conflict that `release-label` resolves).
+The gateway resolves a target by the exact name: the bare client name for the client's tunnel called `ssh`, otherwise the exact `<tunnel>-<client>`; it never guesses where the tunnel name ends. The bare names and the `<tunnel>-<client>` names of SSH tunnels are one namespace, so the claims cover both: an `ssh` tunnel of client `a-b` is refused when another client's tunnel already holds `a-b`, and the other way round. For the same reason `portholed token create` and `join create` refuse a client name that is already the claimed name of another client's tunnel.
+
+**A client name is reserved from the moment its token exists**, not from the first `ssh` registration: while the token of client `web-b` is active, no other client can register a tunnel whose HTTP name or SSH address would be `web-b` (client `b` with the tunnel `web`), in either order, so nobody can make `ssh web-b` land on their own machine. The reservation ends when the token is revoked and also covers tokens that were created before this rule existed. A claim of that kind made before the upgrade stays in the table, but its tunnel is refused with `name_taken` on its next registration.
+
+Claims are bounded so that a client cannot hoard names by registering and closing tunnels with ever new names (which would also reserve `*-<client>` for future clients):
+
+- `limits.max_label_claims_per_client` (default: four times `max_tunnels_per_client`, at least 40; `-1` turns it off) is the number of permanent names one client may hold. Past it the registration fails with `limit_exceeded`.
+- `limits.label_claim_ttl` (default `720h`, 30 days; negative turns it off) drops a claim that no registration has used for that long; every registration of the tunnel renews it and the claims of tunnels that are online never expire. The server sweeps expired claims at start, at most once an hour on registrations, and at once when a client reaches its limit (at most once a minute). HTTP and SSH names share the claim table too, so a name used by one kind is not given to another pair for the other kind (a rare false conflict that `release-label` resolves).
 
 ### Tenants share one registrable domain
 
