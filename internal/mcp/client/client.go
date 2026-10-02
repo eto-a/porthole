@@ -51,6 +51,22 @@ type Options struct {
 	ReadyTimeout time.Duration
 	Logger       *slog.Logger
 	Version      string
+	// Diagnose runs `porthole doctor` for this machine. Nil leaves the diagnose tool out.
+	Diagnose func(ctx context.Context) DiagnoseResult
+}
+
+// DiagnoseResult is what the diagnose tool returns: the checks of `porthole doctor`.
+type DiagnoseResult struct {
+	Checks []DiagnoseCheck `json:"checks"`
+	OK     bool            `json:"ok" jsonschema:"false when at least one check failed"`
+}
+
+// DiagnoseCheck is one check: status is ok, warn or fail; hint says what to do about warn and fail.
+type DiagnoseCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
 }
 
 type server struct {
@@ -100,6 +116,22 @@ func New(opts Options) (*mcp.Server, error) {
 		}
 		return nil, tunnelsOut{Tunnels: ts}, err
 	})
+
+	if opts.Diagnose != nil {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name: "diagnose",
+			Description: "Diagnose porthole on this machine without changing anything (like `porthole doctor`): config file and " +
+				"token, DNS of the server, login to the server, the daemon and its version, the tunnels file and the service. " +
+				"Use it when a tunnel does not come up or the daemon is unreachable; follow the hint of each warn or fail.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &t},
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, DiagnoseResult, error) {
+			r := opts.Diagnose(ctx)
+			if r.Checks == nil {
+				r.Checks = []DiagnoseCheck{}
+			}
+			return nil, r, nil
+		})
+	}
 
 	if opts.ReadOnly {
 		return srv, nil

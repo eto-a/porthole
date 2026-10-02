@@ -66,7 +66,7 @@ Operator tools, grouped in toolsets. The scope is checked on every call.
 | | `gateway_auth_failures` | `admin:read` | Recent failed SSH gateway logins with visitor IPs |
 | `audit` | `audit_log` | `admin:read` | Recent management actions: who, what, result |
 
-Machine tools (`porthole mcp`): `status`, `list_tunnels`, `open_tunnel` (type `http`, `tcp` or `ssh`, a local address, optional name and `private`), `close_tunnel`. `open_tunnel` makes a local service reachable from the internet, so the tool description tells the model to open only what the user asked for. Tunnels opened this way are runtime tunnels of the daemon: they survive reconnects, not a daemon restart.
+Machine tools (`porthole mcp`): `status`, `list_tunnels`, `diagnose` (the checks of `porthole doctor`: config and token, DNS, login to the server, daemon, tunnels file, service; read-only), `open_tunnel` (type `http`, `tcp` or `ssh`, a local address, optional name and `private`), `close_tunnel`. `open_tunnel` makes a local service reachable from the internet, so the tool description tells the model to open only what the user asked for. Tunnels opened this way are runtime tunnels of the daemon: they survive reconnects, not a daemon restart.
 
 ### Opening a tunnel on a client from the server side
 
