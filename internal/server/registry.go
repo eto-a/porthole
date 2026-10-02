@@ -152,12 +152,27 @@ func (s *Server) sweepLabelClaims(every time.Duration) int {
 	return n
 }
 
-// unclaimLabels takes back labels claimed for a registration that failed afterwards.
+// unclaimLabels takes back labels claimed for a registration that failed afterwards. A label that a tunnel of the
+// same client serves by the time the write runs is kept: a dying session's failed registration can race with the
+// reconnected session registering the same name, which found the claim already in place and relies on it.
 func (s *Server) unclaimLabels(client, tunnel string, labels []string) {
 	if len(labels) == 0 {
 		return
 	}
 	s.persist.add(func(ctx context.Context) {
+		s.mu.Lock()
+		labels = slices.DeleteFunc(slices.Clone(labels), func(l string) bool {
+			if t, ok := s.labels[l]; ok && t.sess.name == client {
+				return true
+			}
+			// Held offline: a tunnel served it since the claim, and the claim lets only this client do that.
+			_, held := s.offline[l]
+			return held
+		})
+		s.mu.Unlock()
+		if len(labels) == 0 {
+			return
+		}
 		if err := s.store.UnclaimLabels(ctx, client, tunnel, labels); err != nil {
 			s.log.Warn("cannot take back label claims", "client", client, "tunnel", tunnel, "err", err)
 		}
