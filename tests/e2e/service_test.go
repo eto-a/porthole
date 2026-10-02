@@ -393,7 +393,8 @@ func TestServiceSystemCopiesUnsafeBinary(t *testing.T) {
 			_ = os.Remove(inst.Exe)
 		})
 	}
-	if inst.ExeFrom != src || inst.Exe == "" || inst.Exe == src {
+	from, _ := filepath.EvalSymlinks(inst.ExeFrom) // macOS reports /private/var for /var
+	if want, _ := filepath.EvalSymlinks(src); from != want || inst.Exe == "" || inst.Exe == src {
 		t.Fatalf("service install: exe %q copied from %q, want a copy of %q", inst.Exe, inst.ExeFrom, src)
 	}
 	if err := service.CheckTrustedPath(inst.Exe); err != nil {
