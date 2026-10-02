@@ -427,6 +427,7 @@ The tunnel is a runtime tunnel of the daemon: it survives reconnects, not a daem
 |---|---|
 | `portholed serve [--config] [--log-level]` | Run the server |
 | `portholed join create --name N [--ttl 15m] [--scopes ...] [--max-tunnels N] [--expires 30d] [--no-remote-control]` | Create a one-time join link |
+| `portholed doctor` | Read-only diagnosis of the installation: config, data directory, DNS, ports, `/healthz`, certificates; exit status 1 when a check fails |
 | `portholed join list [--all]`, `join revoke <id>` | List and revoke join links |
 | `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N] [--no-remote-control]` | Create a token |
 | `portholed token list [--all]` | List tokens |

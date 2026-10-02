@@ -2,6 +2,7 @@
 
 Find your symptom, check the likely causes in order. The messages quoted here are the ones the programs print. On the server the log is JSON on stderr (`journalctl -u portholed`); `portholed serve --log-level debug` shows more. On the client add `-v` (`porthole -v http 3000`).
 
+- [Diagnose a server: `portholed doctor`](#diagnose-a-server-portholed-doctor)
 - [The certificate is not issued](#the-certificate-is-not-issued)
 - [`cannot connect` and exit codes](#cannot-connect-and-exit-codes)
 - [`name_taken`](#name_taken)
@@ -11,6 +12,16 @@ Find your symptom, check the likely causes in order. The messages quoted here ar
 - [The daemon: permission denied on the socket](#the-daemon-permission-denied-on-the-socket)
 - [Every visitor has the IP address of Traefik](#every-visitor-has-the-ip-address-of-traefik)
 - [Other refusals of a tunnel](#other-refusals-of-a-tunnel)
+
+## Diagnose a server: `portholed doctor`
+
+Run it on the server after the install and whenever something looks wrong. It changes nothing, prints one line per check with a hint for every warning or failure, and exits with status 1 when a check fails (warnings do not fail it). `--json` prints `{"checks":[{"name","status","message","hint"}],"ok":bool}` for scripts and agents.
+
+```
+sudo -u porthole portholed doctor -c /etc/porthole/portholed.yaml
+```
+
+Checks: `config` (loads and validates; the others are skipped if it fails), `data_dir` (exists and is writable by the current user, so run it as the service user), `dns_apex` and `dns_wildcard` (the domain and a random name under it resolve, to the same addresses), `healthz` (`GET /healthz` of the public address), `listen` (the ports can be bound, or the server is already running), `tls` (certificate files cover the domain and `*.domain` and are not expired; in `acme` mode there is nothing to check up front).
 
 ## The certificate is not issued
 
