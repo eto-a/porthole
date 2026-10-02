@@ -3,6 +3,7 @@
 Find your symptom, check the likely causes in order. The messages quoted here are the ones the programs print. On the server the log is JSON on stderr (`journalctl -u portholed`); `portholed serve --log-level debug` shows more. On the client add `-v` (`porthole -v http 3000`).
 
 - [Diagnose a server: `portholed doctor`](#diagnose-a-server-portholed-doctor)
+- [Diagnose a client: `porthole doctor`](#diagnose-a-client-porthole-doctor)
 - [The certificate is not issued](#the-certificate-is-not-issued)
 - [`cannot connect` and exit codes](#cannot-connect-and-exit-codes)
 - [`name_taken`](#name_taken)
@@ -22,6 +23,17 @@ sudo -u porthole portholed doctor -c /etc/porthole/portholed.yaml
 ```
 
 Checks: `config` (loads and validates; the others are skipped if it fails), `data_dir` (exists and is writable by the current user, so run it as the service user), `dns_apex` and `dns_wildcard` (the domain and a random name under it resolve, to the same addresses), `healthz` (`GET /healthz` of the public address), `listen` (the ports can be bound, or the server is already running), `tls` (certificate files cover the domain and `*.domain` and are not expired; in `acme` mode there is nothing to check up front).
+
+## Diagnose a client: `porthole doctor`
+
+Run it on the machine where the tunnels do not come up. It is read-only, prints one line per check with a hint for every warning or failure, and exits with status 1 when a check fails; `--json` prints the same document as `portholed doctor`. It never prints the token.
+
+```
+porthole doctor            # your own config file
+porthole doctor --system   # the config file of the system service (may need root or Administrator)
+```
+
+Checks: `config` (the file exists, parses, has a server URL and a token or `token_file`; if it fails, `dns` and `server` are skipped), `dns` (the server host resolves), `server` (connects and logs in, the same as `porthole login --check`; a revoked or expired token fails with the hint to join again), `daemon` (a local daemon answers; none is fine, a permission error or another version than this command is a warning), `tunnels_file` (`tunnels.yaml` next to the config validates), `service` (state of the system service, and of the user service if installed).
 
 ## The certificate is not issued
 

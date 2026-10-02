@@ -19,6 +19,15 @@ import (
 // of its token file, made inheritable.
 const systemDirSDDL = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 
+// systemDirWindows is %ProgramData%\porthole, or "" when %ProgramData% cannot be found.
+func systemDirWindows() string {
+	base, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "porthole")
+}
+
 func prepareSystemDirWindows() (string, error) {
 	base, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
 	if err != nil {
