@@ -1205,3 +1205,85 @@ func TestManagerStopLosesNoAcceptedChange(t *testing.T) {
 		t.Errorf("Add after Run: %v", err)
 	}
 }
+
+func TestManagerTransientRefusalIsRetriedWithoutReconnect(t *testing.T) {
+	fs := newFakeServer(t)
+	var tries atomic.Int32
+	fs.regError = func(_ int, reg *proto.Register) *proto.Error {
+		if reg.Name == "web" && tries.Add(1) == 1 {
+			return &proto.Error{Code: proto.CodeInternal, Message: "database is busy"}
+		}
+		return nil
+	}
+	tun := testTuning()
+	tun.backoffBase, tun.backoffMax = 50*time.Millisecond, 200*time.Millisecond
+	h := startMgr(t, fs, []TunnelSpec{httpSpec("web", 8080), httpSpec("other", 8081)}, tun)
+
+	// the refusal keeps the tunnel pending, with the reason visible, while the retry is waiting
+	waitStatus(t, h.m, "other", StatusReady)
+	eventually(t, "the refusal to be recorded", func() bool { return tries.Load() >= 1 })
+	if ts, _ := tunnelOf(h.m, "web"); ts.Status == StatusFailed {
+		t.Fatalf("transient refusal marked the tunnel failed: %+v", ts)
+	}
+	ts := waitStatus(t, h.m, "web", StatusReady)
+	if ts.Err != nil || ts.PublicURL == "" {
+		t.Fatalf("tunnel state %+v", ts)
+	}
+	if n, c := tries.Load(), fs.connCount(); n != 2 || c != 1 {
+		t.Fatalf("%d register attempts, %d connections", n, c)
+	}
+	noEv[Disconnected](t, h, 50*time.Millisecond)
+}
+
+func TestManagerPermanentRefusalStaysFailed(t *testing.T) {
+	fs := newFakeServer(t)
+	var tries atomic.Int32
+	fs.regError = func(_ int, reg *proto.Register) *proto.Error {
+		if reg.Name == "web" {
+			tries.Add(1)
+			return &proto.Error{Code: proto.CodeForbidden, Message: "not allowed", RetryAfterMS: 10}
+		}
+		return nil
+	}
+	tun := testTuning()
+	tun.backoffBase, tun.backoffMax = 20*time.Millisecond, 50*time.Millisecond
+	h := startMgr(t, fs, []TunnelSpec{httpSpec("web", 8080)}, tun)
+
+	ts := waitStatus(t, h.m, "web", StatusFailed)
+	var perr *proto.Error
+	if !errors.As(ts.Err, &perr) || perr.Code != proto.CodeForbidden {
+		t.Fatalf("tunnel state %+v", ts)
+	}
+	time.Sleep(300 * time.Millisecond) // several backoff periods: no retry may happen
+	if n := tries.Load(); n != 1 {
+		t.Fatalf("%d register attempts", n)
+	}
+	if ts, _ := tunnelOf(h.m, "web"); ts.Status != StatusFailed {
+		t.Fatalf("tunnel state %+v", ts)
+	}
+}
+
+func TestManagerLimitRefusalRetriedOnlyWithHint(t *testing.T) {
+	fs := newFakeServer(t)
+	var withHint, withoutHint atomic.Int32
+	fs.regError = func(_ int, reg *proto.Register) *proto.Error {
+		switch reg.Name {
+		case "hint":
+			if withHint.Add(1) == 1 {
+				return &proto.Error{Code: proto.CodeLimitExceeded, Message: "slow down", RetryAfterMS: 50}
+			}
+		case "nohint":
+			withoutHint.Add(1)
+			return &proto.Error{Code: proto.CodeLimitExceeded, Message: "quota"}
+		}
+		return nil
+	}
+	h := startMgr(t, fs, []TunnelSpec{httpSpec("hint", 8080), httpSpec("nohint", 8081)}, testTuning())
+
+	waitStatus(t, h.m, "hint", StatusReady)
+	waitStatus(t, h.m, "nohint", StatusFailed)
+	time.Sleep(150 * time.Millisecond)
+	if n := withoutHint.Load(); n != 1 {
+		t.Fatalf("%d register attempts without a retry hint", n)
+	}
+}
