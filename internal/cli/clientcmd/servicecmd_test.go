@@ -601,3 +601,18 @@ func TestHTTPWithoutADaemonRunsInProcess(t *testing.T) {
 		})
 	}
 }
+
+func TestVersionSkew(t *testing.T) {
+	st := func(v string) *apiState { return &apiState{Status: &localapi.Status{Version: v}} }
+	if w := versionSkew(st("0.4.0-alpha.3"), "0.4.0-alpha.5"); !strings.Contains(w, "0.4.0-alpha.3") || !strings.Contains(w, "service install") {
+		t.Errorf("skew not reported: %q", w)
+	}
+	for _, c := range []struct {
+		api *apiState
+		cli string
+	}{{st("1.0.0"), "1.0.0"}, {st("1.0.0"), "dev"}, {st(""), "1.0.0"}, {&apiState{Error: "x"}, "1.0.0"}, {nil, "1.0.0"}} {
+		if w := versionSkew(c.api, c.cli); w != "" {
+			t.Errorf("versionSkew(%+v, %q) = %q, want none", c.api, c.cli, w)
+		}
+	}
+}

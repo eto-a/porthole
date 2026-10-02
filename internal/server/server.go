@@ -205,6 +205,7 @@ func New(opts Options) (*Server, error) {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
+	s.persist.log = s.log
 	if s.now == nil {
 		s.now = time.Now
 	}

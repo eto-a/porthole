@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -13,18 +14,31 @@ import (
 // not keep the process from exiting; what is still queued then is lost, and port reservations are only a convenience.
 const persistDrainTimeout = 10 * time.Second
 
+const (
+	// maxPersistQueue caps queued store writes: a store that has stopped answering must not let the queue (and the
+	// memory behind it) grow without bound. A dropped write only loses a port reservation, which is a convenience.
+	maxPersistQueue = 10000
+	// persistDropLogEvery limits the "queue full" warning.
+	persistDropLogEvery = time.Minute
+)
+
 // persister runs store writes that the registry needs but does not wait for, in the order they were queued, on one
 // goroutine. The registry decides under Server.mu and queues under it (queueing never blocks); the disk is touched
 // after the lock is gone, so a slow store cannot stall other sessions (the lock is held by every lookup).
 // The goroutine exists only while the queue is not empty.
 type persister struct {
 	timeout time.Duration // per write
+	log     *slog.Logger  // nil means slog.Default()
+	maxQ    int           // queue cap; 0 means maxPersistQueue
 
 	mu      sync.Mutex
 	queue   []func(ctx context.Context)
 	running bool
 	stopped bool
 	wg      sync.WaitGroup
+
+	dropped     int       // writes dropped since the last warning
+	lastDropLog time.Time // when the last warning was logged
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -36,11 +50,29 @@ func newPersister(timeout time.Duration) *persister {
 	return p
 }
 
-// add queues fn. It never blocks and never runs fn on the caller's goroutine.
+// add queues fn. It never blocks and never runs fn on the caller's goroutine. When the queue is full, fn is dropped
+// and a warning is logged at most once per persistDropLogEvery.
 func (p *persister) add(fn func(ctx context.Context)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
+		return
+	}
+	limit := p.maxQ
+	if limit <= 0 {
+		limit = maxPersistQueue
+	}
+	if len(p.queue) >= limit {
+		p.dropped++
+		if now := time.Now(); now.Sub(p.lastDropLog) >= persistDropLogEvery {
+			log := p.log
+			if log == nil {
+				log = slog.Default()
+			}
+			log.Warn("store write queue is full, dropping writes", "queued", len(p.queue), "dropped", p.dropped)
+			p.dropped = 0
+			p.lastDropLog = now
+		}
 		return
 	}
 	p.queue = append(p.queue, fn)

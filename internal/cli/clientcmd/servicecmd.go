@@ -596,9 +596,15 @@ func (a *app) runServiceStatus(cmd *cobra.Command, user bool) error {
 	}
 	if st.Running {
 		res.API = a.probeAPI(cmd.Context(), user)
+		if w := versionSkew(res.API, a.version); w != "" {
+			res.Warnings = append(res.Warnings, w)
+		}
 	}
 	if jsonout.Enabled(cmd) {
 		return jsonout.Write(cmd.OutOrStdout(), res)
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "%s service %q: %s\n", scope(user), service.DefaultName, describeState(*res.Service))
@@ -613,6 +619,17 @@ func (a *app) runServiceStatus(cmd *cobra.Command, user bool) error {
 		}
 	}
 	return nil
+}
+
+// versionSkew warns when the service runs another porthole than this command: after an upgrade the service keeps the
+// old binary until it is restarted, and a copy made by `service install` (a Homebrew install, say) until install runs
+// again.
+func versionSkew(api *apiState, cli string) string {
+	if api == nil || api.Status == nil || api.Status.Version == "" || cli == "" || cli == "dev" || api.Status.Version == cli {
+		return ""
+	}
+	return fmt.Sprintf("the service runs porthole %s, this command is %s: run `porthole service install` again "+
+		"(it refreshes a copied binary), or `porthole service restart`", api.Status.Version, cli)
 }
 
 // probeAPI asks the daemon of the service for its status. A failure is part of the result, not an error.
