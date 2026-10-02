@@ -8,6 +8,7 @@ package localapi
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -45,11 +46,11 @@ func TestTokenIsAdminMatchesCheckTokenMembership(t *testing.T) {
 
 func TestBuildPipeCredFailsClosed(t *testing.T) {
 	boom := errors.New("access denied")
-	ok := func(uint32) (*windows.SID, bool, error) {
+	ok := func() (*windows.SID, bool, error) {
 		sid, _ := windows.StringToSid("S-1-5-21-1-2-3-1001")
 		return sid, true, nil
 	}
-	fail := func(uint32) (*windows.SID, bool, error) { return nil, false, boom }
+	fail := func() (*windows.SID, bool, error) { return nil, false, boom }
 
 	// The PID could not be read: a pipe peer without an identity, not "no credentials" (which would mean trusted).
 	c, isCred := buildPipeCred(0, boom, ok)
@@ -64,5 +65,31 @@ func TestBuildPipeCredFailsClosed(t *testing.T) {
 	c, isCred = buildPipeCred(42, nil, ok)
 	if !isCred || c.SID != "S-1-5-21-1-2-3-1001" || !c.Admin || c.Principal() != c.SID {
 		t.Errorf("ok: %+v, %v", c, isCred)
+	}
+}
+
+// A pipe client is identified by the token the pipe reports (impersonation), not by a lookup of its PID: a client from
+// this process is the current user, and is an administrator iff this process is elevated.
+func TestPipeClientIdentityIsTheClientToken(t *testing.T) {
+	name := pipeName(t)
+	ln, err := Listen(name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := serveCreds(t, ln)
+
+	c := NewClient(name)
+	defer c.Close()
+	_ = c.RemoveTunnel(ctxT(t), "x")
+	select {
+	case cred := <-got:
+		if want := CurrentSID(); want == "" || cred.SID != want {
+			t.Errorf("peer SID = %q, want %q", cred.SID, want)
+		}
+		if want := windows.GetCurrentProcessToken().IsElevated(); cred.Admin != want {
+			t.Errorf("peer Admin = %v, want %v (this process elevated)", cred.Admin, want)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("handler not called")
 	}
 }
