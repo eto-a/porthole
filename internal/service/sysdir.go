@@ -5,7 +5,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 )
@@ -33,7 +35,7 @@ func PrepareSystemDir() (string, error) {
 		}
 		return linuxSystemDir, nil
 	case "darwin":
-		return darwinSystemDir, prepareDarwinDirs(context.Background(), execRunner{}, darwinSystemDir, darwinLogDir)
+		return darwinSystemDir, prepareDarwinDirs(context.Background(), execRunner{}, lstatMeta, darwinSystemDir, darwinLogDir)
 	case "windows":
 		return prepareSystemDirWindows()
 	default:
@@ -43,7 +45,14 @@ func PrepareSystemDir() (string, error) {
 
 // prepareDarwinDirs creates the configuration directory (0750 root:admin, so that the macOS administrators can read
 // the files in it) and the log directory (0755).
-func prepareDarwinDirs(ctx context.Context, r Runner, configDir, logDir string) error {
+func prepareDarwinDirs(ctx context.Context, r Runner, lstat statFunc, configDir, logDir string) error {
+	// A directory that is already there may have been made by someone else, with a symbolic link or a file of theirs
+	// in it. The service runs as root, so such a directory is refused rather than adopted.
+	for _, dir := range []string{configDir, logDir} {
+		if err := verifyExistingDir(dir, lstat); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(configDir, 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", configDir, err)
 	}
@@ -55,6 +64,17 @@ func prepareDarwinDirs(ctx context.Context, r Runner, configDir, logDir string) 
 	}
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", logDir, err)
+	}
+	return nil
+}
+
+// verifyExistingDir returns an error if dir exists and is not a directory made by root with only root-made content.
+func verifyExistingDir(dir string, lstat statFunc) error {
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err := checkTreeUnix(dir, lstat, 0, trustedGroup); err != nil {
+		return fmt.Errorf("%s exists but was not made by root (%w); inspect it, remove it and run this again", dir, err)
 	}
 	return nil
 }

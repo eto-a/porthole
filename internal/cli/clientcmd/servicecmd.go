@@ -37,6 +37,8 @@ type serviceFlags struct {
 	user    bool
 	tunnels string
 	allow   []string
+
+	allowUnsafe bool // --allow-unsafe-path
 }
 
 // serviceResult is the --json output of the service commands. Config, Tunnels and Socket are set by install.
@@ -93,8 +95,14 @@ func (a *app) newServiceCmd() *cobra.Command {
 			"The service needs credentials: run `porthole login --system <server-url> <token>` (or `porthole join --system\n" +
 			"<link>`) first. If the system config file does not exist yet but your own does, install copies it. An existing\n" +
 			"config.yaml or tunnels.yaml is never overwritten; a missing tunnels.yaml is created empty.\n\n" +
-			"--allow admits a user or group to the service's named pipe on Windows (the twin of the porthole-client group on\n" +
-			"Linux); it may be repeated.",
+			"--allow admits a user or group to the service's named pipe on Windows; it may be repeated. Those users are\n" +
+			"unprivileged peers, like the members of the porthole-client group on Linux: they may publish loopback\n" +
+			"targets (and what allow_remote lists), close their own tunnels and nothing else. Administrators and SYSTEM\n" +
+			"keep full control.\n\n" +
+			"The service runs with the rights of the system, so install refuses a binary, or an explicit --config or\n" +
+			"--tunnels file, that a user who is not an administrator could replace or edit (the file, or a directory above\n" +
+			"it, is writable by them). Put the binary where only administrators can write (C:\\Program Files\\porthole\\ on\n" +
+			"Windows, /usr/local/bin on Linux and macOS); --allow-unsafe-path overrides the check knowingly.",
 		Example: "  sudo porthole service install\n" +
 			"  porthole service install --user\n" +
 			"  porthole service install --allow BUILTIN\\Users          (Windows, elevated terminal)",
@@ -103,6 +111,8 @@ func (a *app) newServiceCmd() *cobra.Command {
 	}
 	install.Flags().StringVar(&f.tunnels, "tunnels", "", "tunnels file (default: tunnels.yaml next to the config file)")
 	install.Flags().StringArrayVar(&f.allow, "allow", nil, "user or group admitted to the service's pipe (Windows); repeatable")
+	install.Flags().BoolVar(&f.allowUnsafe, "allow-unsafe-path", false,
+		"install although the binary or a file of the service can be changed by users who are not administrators")
 
 	cmd.AddCommand(install)
 	for _, c := range []struct {
@@ -260,7 +270,7 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 	if len(f.allow) > 0 {
 		if runtime.GOOS != "windows" {
 			return usageErr(errors.New("--allow is for the Windows pipe; on Linux add the user to the porthole-client group " +
-				"(`sudo usermod -aG porthole-client <user>`), on macOS to the admin group"))
+				"(`sudo usermod -aG porthole-client <user>`), on macOS use sudo (the socket is for root)"))
 		}
 		for _, p := range f.allow {
 			if strings.TrimSpace(p) == "" {
@@ -287,6 +297,11 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 	if w := suspiciousExe(exe, os.TempDir()); w != "" {
 		res.Warnings = append(res.Warnings, w)
 	}
+	unsafeWarnings, err := a.checkServicePaths(f, exe, cfgPath, tunnelsPath)
+	if err != nil {
+		return err
+	}
+	res.Warnings = append(res.Warnings, unsafeWarnings...)
 
 	// Check everything before the system is changed.
 	cfg, copied, err := a.ensureServiceConfig(cfgPath, !f.user && a.configPath == "")
@@ -344,6 +359,54 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 		return jsonout.Write(cmd.OutOrStdout(), res)
 	}
 	return printInstall(cmd.OutOrStdout(), cmd.ErrOrStderr(), res)
+}
+
+// checkServicePaths refuses a system service whose binary, or whose explicitly named config or tunnels file, could be
+// changed by a user who is not an administrator: the service runs with the rights of the system, so whoever can
+// change these runs code with them (or redirects the daemon to a server of their choosing and publishes what they
+// like). The files of the default system directory are checked when it is prepared. A per-user service runs as the
+// user, who can change everything it uses anyway. With --allow-unsafe-path the findings are returned as warnings.
+func (a *app) checkServicePaths(f serviceFlags, exe, cfgPath, tunnelsPath string) ([]string, error) {
+	if f.user || a.d.checkPath == nil {
+		return nil, nil
+	}
+	paths := []string{exe}
+	if a.configPath != "" {
+		paths = append(paths, cfgPath)
+	}
+	if f.tunnels != "" {
+		paths = append(paths, tunnelsPath)
+	}
+	var warnings []string
+	for _, p := range paths {
+		err := a.d.checkPath(p)
+		if err == nil {
+			continue
+		}
+		var unsafe *service.UnsafePathError
+		if !errors.As(err, &unsafe) {
+			return nil, fmt.Errorf("check that %s is safe for a system service: %w", p, err)
+		}
+		if f.allowUnsafe {
+			warnings = append(warnings, fmt.Sprintf("%s can be changed by users who are not administrators (%s); "+
+				"installed anyway because of --allow-unsafe-path", p, unsafe))
+			continue
+		}
+		return nil, &explainedError{msg: unsafePathAdvice(runtime.GOOS, p, unsafe), err: err}
+	}
+	return warnings, nil
+}
+
+// unsafePathAdvice explains why a file is refused for a system service and what to do about it.
+func unsafePathAdvice(goos, p string, err *service.UnsafePathError) string {
+	where := "/usr/local/bin"
+	if goos == "windows" {
+		where = `C:\Program Files\porthole\`
+	}
+	return fmt.Sprintf("%s cannot be used by the system service: %s. A service runs with the rights of the system, so a file "+
+		"that users who are not administrators can change would give them those rights. Put the binary in a place only "+
+		"administrators can write (%s) and run `porthole service install` from there, or use --allow-unsafe-path to accept "+
+		"the risk", p, err, where)
 }
 
 func printInstall(out, errOut io.Writer, r serviceResult) error {

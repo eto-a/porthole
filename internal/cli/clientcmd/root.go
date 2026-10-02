@@ -58,6 +58,8 @@ type deps struct {
 	prepareDir   func() (string, error)                                                                             // the system config directory
 	executable   func() (string, error)                                                                             // the running binary
 	fixOwnership func(config, tunnels string) (changed bool, err error)                                             // hand files to the service account
+	checkPath    func(path string) error                                                                            // nil error: only an administrator can change the file (system service)
+	verifyDir    func(dir string) error                                                                             // nil error: the system directory holds nothing an ordinary user made
 	isService    func() (bool, error)                                                                               // started by the Windows SCM
 	runService   func(name string, run func(ctx context.Context, ready func(), reload <-chan struct{}) error) error // Windows SCM entry
 }
@@ -77,6 +79,8 @@ func defaultDeps() deps {
 		prepareDir:   service.PrepareSystemDir,
 		executable:   selfExecutable,
 		fixOwnership: handToServiceAccount,
+		checkPath:    service.CheckTrustedPath,
+		verifyDir:    service.VerifyProtectedDir,
 		isService:    service.IsService,
 		runService:   service.RunService,
 		dial:         func(p string) apiClient { return localapi.NewClient(p) },

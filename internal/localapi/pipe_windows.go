@@ -113,7 +113,14 @@ func listenPipe(path string, allow []string) (net.Listener, error) {
 	c, err := dialPipeRaw(pctx, path)
 	cancel()
 	if err == nil {
+		// Somebody answers under this name. Only a daemon of this very user may be taken for "already running"; a pipe
+		// that somebody else created (a squatter, or another user's daemon on a name that should have been ours) is a
+		// different problem with a different cure.
+		cerr := checkPipeExclusive(c)
 		_ = c.Close()
+		if !isProtectedPipe(path) && cerr != nil {
+			return nil, fmt.Errorf("localapi: pipe %s is held by another account, not by you: %w", path, cerr)
+		}
 		return nil, ErrAlreadyRunning
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -187,7 +194,7 @@ func checkPipeExclusive(c net.Conn) error {
 		return fmt.Errorf("reading the owner of the pipe: %w", err)
 	}
 	if owner == nil || !owner.Equals(me) {
-		return fmt.Errorf("the pipe is owned by %s, not by the current user %s: refusing to talk to it", owner, me)
+		return fmt.Errorf("the pipe is held by %s, not by the current user %s: refusing to talk to it", owner, me)
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
