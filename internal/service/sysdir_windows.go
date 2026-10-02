@@ -25,12 +25,12 @@ func prepareSystemDirWindows() (string, error) {
 		return "", fmt.Errorf("find %%ProgramData%%: %w", err)
 	}
 	dir := filepath.Join(base, "porthole")
-	if err := prepareProtectedDir(dir, systemDirSDDL, adminTrust); err != nil {
+	if err := prepareProtectedDir(dir, systemDirSDDL, installerTrust()); err != nil {
 		return "", err
 	}
 	// A logs\ that was there is part of the verified tree; a missing one is made with the protected descriptor too
 	// (not left to inheritance, which an existing parent with another DACL would not give).
-	if err := prepareProtectedDir(filepath.Join(dir, "logs"), systemDirSDDL, adminTrust); err != nil {
+	if err := prepareProtectedDir(filepath.Join(dir, "logs"), systemDirSDDL, installerTrust()); err != nil {
 		return "", fmt.Errorf("create the log directory: %w", err)
 	}
 	return dir, nil

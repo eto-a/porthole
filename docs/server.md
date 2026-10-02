@@ -215,6 +215,7 @@ The admin audit log lives in the database. `audit.max_rows` (`PORTHOLED_AUDIT_MA
 | `--expires` | Lifetime: `30d`, `720h` or `0` for no expiry (default `0`) |
 | `--scopes` | Comma-separated scopes (default `tunnel:http,tunnel:tcp,tunnel:udp`) |
 | `--max-tunnels` | Maximum simultaneous tunnels (`0`: the server default `max_tunnels_per_client`) |
+| `--no-remote-control` | Do not let operators open tunnels on this machine remotely (by default they may) |
 
 A token is a client identity: every client sees and manages only its own tunnels and names. Tokens are 256-bit secrets stored only as hashes; authorization is re-checked on every tunnel registration and revocation applies to live sessions. A token of one client can also be given the scope `connect:<client>`, which lets its holder pass the [private SSH gateway](ssh.md#public-and-private-machines) of that client without owning it. `portholed token revoke` also deletes the client's [port reservations](#tcp-ports-and-reservations).
 
@@ -425,9 +426,9 @@ The tunnel is a runtime tunnel of the daemon: it survives reconnects, not a daem
 | Command | Purpose |
 |---|---|
 | `portholed serve [--config] [--log-level]` | Run the server |
-| `portholed join create --name N [--ttl 15m] [--scopes ...] [--no-remote-control]` | Create a one-time join link |
+| `portholed join create --name N [--ttl 15m] [--scopes ...] [--max-tunnels N] [--expires 30d] [--no-remote-control]` | Create a one-time join link |
 | `portholed join list [--all]`, `join revoke <id>` | List and revoke join links |
-| `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N]` | Create a token |
+| `portholed token create --name N [--expires 30d] [--scopes ...] [--max-tunnels N] [--no-remote-control]` | Create a token |
 | `portholed token list [--all]` | List tokens |
 | `portholed token revoke <id\|name>` | Revoke a token |
 | `portholed admin open <client> <http|tcp|ssh> [local] [--name] [--private] [--remote-port]` | Ask a connected client to open a tunnel; prints its address |

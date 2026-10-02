@@ -70,7 +70,7 @@ tunnels:
     addr: nas.local:5432
     remote_port: 20017    # optional
   ssh:
-    type: ssh             # TCP tunnel to 127.0.0.1:22 unless addr is given
+    type: ssh             # SSH through the gateway to 127.0.0.1:22 unless addr is given
 ```
 
 - The key of each entry is the tunnel name: 1 to 32 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`. It becomes part of the public address.
@@ -208,7 +208,7 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 - **The socket is the permission.** Whoever can open the daemon's socket may publish tunnels under this machine's identity. The user socket is mode 0600 in your own directory. The system socket belongs to the group `porthole-client`, so adding a user to that group is a grant comparable to the `docker` group, though narrower. On Linux the daemon reads the peer's uid (`SO_PEERCRED`) and, for a caller that is neither root nor the daemon's own user, (1) applies the `allow_remote` policy to the tunnels it adds (loopback only by default), (2) lets it close only the tunnels it added itself, and (3) refuses `reload`. Listing tunnels and the event stream stay open to every caller. On Windows the daemon reads the SID and the token of the pipe client instead: SYSTEM, the account of the service and elevated Administrators are trusted, everybody else that `--allow` admitted gets the same restrictions (and a client whose SID cannot be read is restricted too). On macOS the system socket is root only (directory 0700); the per-user daemon has a 0600 socket.
 - **`porthole mcp`** only opens tunnels to services on this machine (loopback, `localhost`); pass `--allow-remote-targets` to allow other hosts (link-local addresses stay refused). `open_tunnel` is annotated as destructive so that MCP hosts ask before calling it; use `--read-only` when the agent reads untrusted content.
 - **The tunnels file** can redirect the token: a `server:` key there overrides the one in `config.yaml`, and the token of `config.yaml` is sent to it. Keep it writable only by you (the package installs it as `0640 root:porthole-client`). Porthole does not check its mode.
-- **Windows:** the socket file has no POSIX mode. The default location (`%LocalAppData%\porthole`) is private to your user; do not point `--socket` into a directory shared with other users such as `C:\ProgramData`, and do not point it at a file that matters (a socket path that does not answer is treated as stale and deleted).
+- **Windows:** the endpoint is a named pipe, not a file: `\.\pipe\porthole-<your SID>` with an owner-only ACL for your own daemon, `\.\pipe\ProtectedPrefix\Administrators\porthole` for the system service (only administrators can create pipes there). `--socket` takes a pipe name on Windows.
 - **Unix sockets:** the daemon creates the socket and then sets its mode, so a custom `--socket` in a shared directory leaves a short window in which the socket has the umask's permissions. Keep it in a directory only you (or the service user) can enter, as the shipped units do (`UMask=0077`).
 - **Remote opens choose public exposure:** a server-requested ssh tunnel may ask for `private=false` or a fixed remote port; `allow_remote` limits the local target only, not these options.
 
@@ -216,14 +216,14 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 
 | Command | Purpose |
 |---|---|
-| `porthole join <link\|code> [--server] [--force] [--insecure-http] [--system]` | Enrol with a one-time join link and store credentials (`--system` as for `login`) |\|code> [--server] [--force] [--insecure-http]` | Enrol with a one-time join link and store credentials |
+| `porthole join <link\|code> [--server] [--force] [--insecure-http] [--system]` | Enrol with a one-time join link and store credentials (`--system` as for `login`) |
 | `porthole login <url> <token> [--check] [--system]` | Store credentials (`--system`: in the config file of the system service, needs root or Administrator) |
 | `porthole http <port\|host:port> [--name] [--inspect]` | Expose a local web service; `--inspect` stores bodies for the inspector |
 | `porthole tcp <port\|host:port> [--name] [--remote-port]` | Expose a local TCP service |
-| `porthole ssh [--local-port 22] [--user] [--name] [--private] [--public-port]` | Expose the local SSH server |
+| `porthole ssh [--local-port 22] [--user] [--name] [--private] [--public-port [--remote-port N]]` | Expose the local SSH server |
 | `porthole start [names...]` | Run the tunnels of the tunnels file in the foreground, without a daemon |
 | `porthole daemon`, `status`, `tunnels`, `reload`, `close <name>` | See [Talking to the daemon](#talking-to-the-daemon) |
-| `porthole service install\|uninstall\|start\|stop\|restart\|status [--user] [--tunnels] [--allow]` | Install and control the service, see [`porthole service`](#porthole-service-linux-macos-windows) |
+| `porthole service install [--user] [--tunnels F] [--allow P] [--allow-unsafe-path]`, `service uninstall\|start\|stop\|restart\|status [--user]` | Install and control the service, see [`porthole service`](#porthole-service-linux-macos-windows) |
 | `porthole version` | Print the version |
 
 Global flags: `--config` (default `<user config dir>/porthole/config.yaml`), `--socket`, `-v, --verbose`, `--json`. Run `porthole <command> --help` for everything.
