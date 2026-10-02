@@ -224,6 +224,7 @@ The socket is chosen from `--socket`, then `$PORTHOLE_SOCKET`, then the user soc
 | `porthole start [names...]` | Run the tunnels of the tunnels file in the foreground, without a daemon |
 | `porthole daemon`, `status`, `tunnels`, `reload`, `close <name>` | See [Talking to the daemon](#talking-to-the-daemon) |
 | `porthole service install [--user] [--tunnels F] [--allow P] [--allow-unsafe-path]`, `service uninstall\|start\|stop\|restart\|status [--user]` | Install and control the service, see [`porthole service`](#porthole-service-linux-macos-windows) |
+| `porthole doctor [--system]` | Read-only diagnosis of this machine: config, DNS, login, daemon, tunnels file, service. See [Troubleshooting](troubleshooting.md#diagnose-a-client-porthole-doctor) |
 | `porthole version` | Print the version |
 
 Global flags: `--config` (default `<user config dir>/porthole/config.yaml`), `--socket`, `-v, --verbose`, `--json`. Run `porthole <command> --help` for everything.

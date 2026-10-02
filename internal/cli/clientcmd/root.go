@@ -48,6 +48,8 @@ type deps struct {
 	userSocket  func() string                                        // the socket `porthole daemon` creates by default
 	dial        func(socketPath string) apiClient                    // a client of the local API at socketPath
 	runDaemon   func(ctx context.Context, opts daemon.Options) error // `porthole daemon`
+	// lookup resolves a host name for `porthole doctor`; nil means the system resolver.
+	lookup func(ctx context.Context, host string) ([]string, error)
 
 	// detachTimeout bounds how long `--detach` waits for the tunnel to become ready; zero means the default.
 	detachTimeout time.Duration
@@ -142,6 +144,7 @@ func newRoot(version string, d deps) *cobra.Command {
 		a.newReloadCmd(),
 		a.newCloseCmd(),
 		a.newMCPCmd(),
+		a.newDoctorCmd(),
 		a.newVersionCmd(),
 	)
 	return root

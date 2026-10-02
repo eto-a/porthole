@@ -19,6 +19,19 @@ const (
 	darwinLogDir    = "/Library/Logs/porthole"
 )
 
+// SystemDir returns the path of the configuration directory of the system service without creating or checking it
+// (see PrepareSystemDir).
+func SystemDir() string {
+	switch runtime.GOOS {
+	case "windows":
+		return systemDirWindows()
+	case "darwin":
+		return darwinSystemDir
+	default:
+		return linuxSystemDir
+	}
+}
+
 // PrepareSystemDir creates the configuration directory of the system service with the permissions of ADR 0006
 // section 3 and returns its path: /etc/porthole on Linux (0755; the files in it carry their own modes),
 // /Library/Application Support/porthole on macOS (0750 root:admin) and %ProgramData%\porthole on Windows (a protected
