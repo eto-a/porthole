@@ -124,7 +124,7 @@ $ docker run --rm -e PORTHOLE_SERVER=https://tun.example.com -e PORTHOLE_TOKEN=p
 
 ### Archives
 
-Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for the server, `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static binary; extract it and put it on your `PATH`. Each archive also has an SPDX SBOM (`*.sbom.json`) next to it. On Windows and on macOS without the script this is the way to install the client; see the two sections below.
+Download an archive for your platform from [Releases](https://github.com/eto-a/porthole/releases): `portholed_*` for the server (Linux, amd64 and arm64; elsewhere use the Docker image), `porthole_*` for clients (Linux, macOS and Windows; amd64 and arm64). Each archive contains a single static binary; extract it and put it on your `PATH`. The release has one SPDX SBOM of the source, `porthole_<version>_sbom.spdx.json`. On Windows and on macOS without the script this is the way to install the client; see the two sections below.
 
 ### Windows
 

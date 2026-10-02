@@ -484,6 +484,9 @@ print_next_steps() {
 main() {
   parse_args "$@"
   detect_platform
+  if [ "$want_server" = 1 ] && [ "$os" != linux ]; then
+    die "the server, portholed, is published for Linux only (amd64, arm64); on macOS run the image ghcr.io/eto-a/porthole/portholed with Docker"
+  fi
   detect_fetcher
 
   tmp=$(mktemp -d 2>/dev/null || mktemp -d -t porthole-install) || die "could not create a temporary directory"
