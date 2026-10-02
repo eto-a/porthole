@@ -67,11 +67,11 @@ func TestCheckTrustedPathSystemFileAndUserFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var u *UnsafePathError
-	if err := CheckTrustedPath(f); !errors.As(err, &u) {
+	if err := checkTrustedPath(f, adminTrust); !errors.As(err, &u) {
 		t.Errorf("a file in the temp directory of a user: error %v, want an unsafe path error", err)
 	}
 	// Not existing yet: its (user-writable) directory decides.
-	if err := CheckTrustedPath(filepath.Join(t.TempDir(), "sub", "config.yaml")); !errors.As(err, &u) {
+	if err := checkTrustedPath(filepath.Join(t.TempDir(), "sub", "config.yaml"), adminTrust); !errors.As(err, &u) {
 		t.Errorf("a missing file in a user directory: error %v", err)
 	}
 }
