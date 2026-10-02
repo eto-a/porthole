@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/eto-a/porthole/internal/client"
+	"github.com/eto-a/porthole/internal/localapi"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/service"
 )
@@ -252,5 +253,41 @@ func TestDoctorSystemAndConfigConflict(t *testing.T) {
 	_, _, err := dt.run(t, "--system")
 	if err == nil || ExitCode(err) == 0 {
 		t.Errorf("--system with --config: err = %v", err)
+	}
+}
+
+// With a daemon running, doctor must not log in itself: the server keeps one session per client, and a second login
+// with the same token replaces the daemon's session (which then does not reconnect).
+func TestDoctorDoesNotLogInWhileADaemonRuns(t *testing.T) {
+	dt := newDoctorTest(t)
+	dt.api.statusErr = nil
+	dt.api.status.Version = "1.2.3"
+	dt.api.status.State = localapi.StateConnected
+	dt.api.status.Server = "https://tun.example.com"
+	dt.api.status.ClientName = "home"
+	called := false
+	dt.d.check = func(context.Context, client.Options) (client.CheckResult, error) {
+		called = true
+		return client.CheckResult{}, nil
+	}
+	rep, _, err := dt.run(t, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Error("doctor logged in to the server although a daemon is running")
+	}
+	if c := findCheck(t, rep, "server"); c.Status != doctorOK || !strings.Contains(c.Message, `"home"`) {
+		t.Errorf("server check = %+v", c)
+	}
+
+	dt.api.status.State = "backoff"
+	dt.api.status.LastError = "dial tcp: connection refused"
+	rep, _, err = dt.run(t, "--json")
+	if err != nil {
+		t.Fatalf("a daemon that is not connected is a warning: %v", err)
+	}
+	if c := findCheck(t, rep, "server"); c.Status != doctorWarn || !strings.Contains(c.Message, "connection refused") || called {
+		t.Errorf("backoff: server check = %+v, logged in = %v", c, called)
 	}
 }

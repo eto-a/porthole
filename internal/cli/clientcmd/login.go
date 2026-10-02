@@ -25,6 +25,8 @@ type loginResult struct {
 	Server string      `json:"server"`
 	Config string      `json:"config"` // path of the file the credentials were written to
 	Check  *loginCheck `json:"check,omitempty"`
+	// CheckSkipped says why --check did not log in (a daemon is running).
+	CheckSkipped string `json:"check_skipped,omitempty"`
 }
 
 // loginCheck is what `porthole login --check` learned from the server.
@@ -80,6 +82,16 @@ func (a *app) newLoginCmd() *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(parent, checkTimeout)
 			defer cancel()
+			if _, st := a.checkDaemon(ctx); st != nil {
+				// A second login with the same token would replace the daemon's session, and a replaced daemon does
+				// not reconnect.
+				result.CheckSkipped = "a porthole daemon is running; restart it to use the new credentials, then see `porthole status`"
+				if asJSON {
+					return jsonout.Write(out, result)
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: server check skipped:", result.CheckSkipped)
+				return nil
+			}
 			res, err := a.d.check(ctx, client.Options{
 				ServerURL: server,
 				Token:     token,

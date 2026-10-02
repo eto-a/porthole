@@ -26,6 +26,7 @@ import (
 	"github.com/eto-a/porthole/internal/cli/jsonout"
 	"github.com/eto-a/porthole/internal/client"
 	"github.com/eto-a/porthole/internal/clientconfig"
+	"github.com/eto-a/porthole/internal/localapi"
 	"github.com/eto-a/porthole/internal/proto"
 	"github.com/eto-a/porthole/internal/service"
 )
@@ -127,19 +128,25 @@ func (a *app) doctorConfigPath(system bool) (string, error) {
 func (a *app) runDoctor(ctx context.Context, cmd *cobra.Command, cfgPath string, system bool) doctorReport {
 	cfgCheck, cfg, token := a.checkConfig(cfgPath, system)
 	checks := []doctorCheck{cfgCheck}
+	daemon, st := a.checkDaemon(ctx)
 	if cfgCheck.Status == doctorOK {
 		dns := a.checkDNS(ctx, cfg.Server)
 		checks = append(checks, dns)
-		if dns.Status == doctorOK {
+		switch {
+		case st != nil:
+			// Never log in while a daemon runs: the server keeps one session per client, so a second login with the
+			// same token replaces the daemon's session, and a replaced daemon does not reconnect.
+			checks = append(checks, serverFromDaemon(st))
+		case dns.Status == doctorOK:
 			checks = append(checks, a.checkServer(ctx, cmd, cfg.Server, token))
-		} else {
+		default:
 			checks = append(checks, doctorCheck{
 				Name: "server", Status: doctorWarn, Message: "not checked: the server host name does not resolve",
 				Hint: dns.Hint,
 			})
 		}
 	}
-	checks = append(checks, a.checkDaemon(ctx), a.checkTunnelsFile(filepath.Join(filepath.Dir(cfgPath), tunnelsFileName)), a.checkService())
+	checks = append(checks, daemon, a.checkTunnelsFile(filepath.Join(filepath.Dir(cfgPath), tunnelsFileName)), a.checkService())
 	return newDoctorReport(checks)
 }
 
@@ -291,24 +298,44 @@ func (a *app) checkServer(ctx context.Context, cmd *cobra.Command, server, token
 	return c
 }
 
-func (a *app) checkDaemon(ctx context.Context) doctorCheck {
+// serverFromDaemon reports the server check from what a running daemon knows, without a login of our own.
+func serverFromDaemon(st *localapi.Status) doctorCheck {
+	if st.State == localapi.StateConnected {
+		return doctorCheck{
+			Name: "server", Status: doctorOK,
+			Message: fmt.Sprintf("the daemon is connected to %s as %q (no second login: it would replace the daemon's session)", st.Server, st.ClientName),
+		}
+	}
+	c := doctorCheck{
+		Name: "server", Status: doctorWarn,
+		Message: fmt.Sprintf("the daemon is %s, not connected to %s", st.State, st.Server),
+		Hint:    "see `porthole status`; the daemon keeps retrying",
+	}
+	if st.LastError != "" {
+		c.Message += ": " + st.LastError
+	}
+	return c
+}
+
+// checkDaemon reports the local daemon; the status is non-nil when one answered.
+func (a *app) checkDaemon(ctx context.Context) (doctorCheck, *localapi.Status) {
 	const name = "daemon"
 	if a.d.dial == nil {
-		return doctorCheck{Name: name, Status: doctorOK, Message: "no local API client in this build"}
+		return doctorCheck{Name: name, Status: doctorOK, Message: "no local API client in this build"}, nil
 	}
 	cl, socket, err := a.findDaemon(ctx)
 	if err != nil {
 		var denied *deniedError
 		switch {
 		case isNoDaemon(err):
-			return doctorCheck{Name: name, Status: doctorOK, Message: "no daemon (tunnels run in the foreground)"}
+			return doctorCheck{Name: name, Status: doctorOK, Message: "no daemon (tunnels run in the foreground)"}, nil
 		case errors.As(err, &denied):
 			return doctorCheck{
 				Name: name, Status: doctorWarn,
 				Message: fmt.Sprintf("permission denied on the daemon socket %s", denied.path), Hint: accessAdvice(runtime.GOOS),
-			}
+			}, nil
 		default:
-			return doctorCheck{Name: name, Status: doctorWarn, Message: err.Error(), Hint: "restart the daemon"}
+			return doctorCheck{Name: name, Status: doctorWarn, Message: err.Error(), Hint: "restart the daemon"}, nil
 		}
 	}
 	defer cl.Close()
@@ -316,7 +343,7 @@ func (a *app) checkDaemon(ctx context.Context) doctorCheck {
 	defer cancel()
 	st, err := cl.Status(pctx)
 	if err != nil {
-		return doctorCheck{Name: name, Status: doctorWarn, Message: apiErr(err, socket).Error(), Hint: "restart the daemon"}
+		return doctorCheck{Name: name, Status: doctorWarn, Message: apiErr(err, socket).Error(), Hint: "restart the daemon"}, nil
 	}
 	c := doctorCheck{
 		Name: name, Status: doctorOK,
@@ -327,7 +354,7 @@ func (a *app) checkDaemon(ctx context.Context) doctorCheck {
 		c.Message = fmt.Sprintf("running porthole %s, but this command is %s", st.Version, a.version)
 		c.Hint = hint
 	}
-	return c
+	return c, &st
 }
 
 func (a *app) checkTunnelsFile(path string) doctorCheck {
