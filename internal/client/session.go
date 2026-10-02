@@ -98,6 +98,9 @@ func Check(ctx context.Context, opts Options) (CheckResult, error) {
 	if err != nil {
 		return CheckResult{}, err
 	}
+	// handshake ties the session's life to its ctx; a caller's long-lived ctx would keep the closed session around.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	sess, _, ok, err := m.handshake(ctx)
 	if err != nil {
 		return CheckResult{}, err
