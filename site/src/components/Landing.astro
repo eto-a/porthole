@@ -200,14 +200,14 @@ const footer = [
 <div class="lp not-content">
   <div class="banner" id="lp-banner" role="region" aria-label="Announcement">
     <p>
-      <strong>porthole is in alpha.</strong> v0.3 adds an MCP server, join links and an HTTP inspector.
+      <strong>porthole is in alpha.</strong> v0.4 adds Windows and macOS clients, <code>porthole service</code> and <code>porthole doctor</code>.
       <a href={`${repoUrl}/releases`}>Read the release notes</a>
     </p>
     <button type="button" class="banner-close" aria-label="Dismiss the announcement" data-dismiss="lp-banner">&times;</button>
   </div>
   <script is:inline>
     try {
-      if (localStorage.getItem('porthole-banner-v0.3') === '1') document.getElementById('lp-banner').hidden = true;
+      if (localStorage.getItem('porthole-banner-v0.4') === '1') document.getElementById('lp-banner').hidden = true;
     } catch (e) {}
   </script>
 
@@ -606,7 +606,7 @@ const footer = [
       const el = document.getElementById(b.dataset.dismiss ?? '');
       if (el) el.hidden = true;
       try {
-        localStorage.setItem('porthole-banner-v0.3', '1');
+        localStorage.setItem('porthole-banner-v0.4', '1');
       } catch {
         // storage unavailable: the banner returns on the next visit
       }
