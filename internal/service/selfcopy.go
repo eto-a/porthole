@@ -40,7 +40,7 @@ func InstallSelf(src string) (string, error) {
 		name += ".exe"
 	}
 	dst := filepath.Join(dir, name)
-	if err := copyFileAtomic(src, dst); err != nil {
+	if err := copyFileAtomic(src, dst, secureCopy); err != nil {
 		return "", err
 	}
 	return dst, nil
@@ -70,8 +70,9 @@ func prepareInstallDir() (string, error) {
 }
 
 // copyFileAtomic copies src to dst through a temporary file in the directory of dst (mode 0755), fsync and rename.
-func copyFileAtomic(src, dst string) (err error) {
-	in, err := os.Open(src)
+// secure, if set, fixes the ownership of the temporary file before it takes the place of dst.
+func copyFileAtomic(src, dst string, secure func(string) error) (err error) {
+	in, err := openSource(src)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
 	}
@@ -103,6 +104,12 @@ func copyFileAtomic(src, dst string) (err error) {
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp.Name(), err)
 	}
+	if secure != nil {
+		err = secure(tmp.Name())
+		if err != nil {
+			return err
+		}
+	}
 	if err = os.Rename(tmp.Name(), dst); err != nil {
 		if runtime.GOOS == "windows" && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("replace %s (is the porthole service running from it? run `porthole service stop` first): %w", dst, err)
@@ -110,4 +117,22 @@ func copyFileAtomic(src, dst string) (err error) {
 		return fmt.Errorf("replace %s: %w", dst, err)
 	}
 	return nil
+}
+
+// openSource opens the binary to copy. On Linux the running image itself (/proc/self/exe) is read when src is the
+// running executable: a user who may write src's directory could otherwise swap the file between the check that
+// sent us here and the copy. Elsewhere src is opened by path; whoever can swap it could have swapped it before the
+// administrator ran it as well.
+func openSource(src string) (*os.File, error) {
+	if runtime.GOOS == "linux" {
+		if self, err := os.Open("/proc/self/exe"); err == nil {
+			sfi, err1 := self.Stat()
+			pfi, err2 := os.Stat(src)
+			if err1 == nil && err2 == nil && os.SameFile(sfi, pfi) {
+				return self, nil
+			}
+			_ = self.Close()
+		}
+	}
+	return os.Open(src)
 }

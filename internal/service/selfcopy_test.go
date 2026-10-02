@@ -22,7 +22,7 @@ func TestCopyFileAtomic(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyFileAtomic(src, dst); err != nil {
+	if err := copyFileAtomic(src, dst, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(dst); err != nil || string(got) != "new" {
@@ -31,10 +31,10 @@ func TestCopyFileAtomic(t *testing.T) {
 	if entries, _ := os.ReadDir(filepath.Dir(dst)); len(entries) != 1 {
 		t.Errorf("a temporary file is left behind: %v", entries)
 	}
-	if err := copyFileAtomic(dst, dst); err == nil {
+	if err := copyFileAtomic(dst, dst, nil); err == nil {
 		t.Error("a file was copied onto itself")
 	}
-	if err := copyFileAtomic(filepath.Join(dir, "missing"), dst); err == nil {
+	if err := copyFileAtomic(filepath.Join(dir, "missing"), dst, nil); err == nil {
 		t.Error("a missing source was copied")
 	}
 }

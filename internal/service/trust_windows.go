@@ -155,9 +155,10 @@ func isReparse(fi fs.FileInfo) bool {
 // CheckTrustedPath returns an *[UnsafePathError] unless a user who is not an administrator can neither change the
 // file at path nor replace it through one of its directories. A path that does not exist yet is judged by its
 // closest existing parent. A link (symbolic link, junction) anywhere in the path is refused: where it points can be
-// changed by whoever may write the link's directory, which this check would have to follow forever. The elevated
-// administrator running the check counts as an administrator: a file they copied is owned by their own SID.
-func CheckTrustedPath(path string) error { return checkTrustedPath(path, installerTrust()) }
+// changed by whoever may write the link's directory, which this check would have to follow forever. A file owned by
+// the administrator's own SID (one they copied, say to Program Files) is refused too: the owner may rewrite its ACL,
+// and so may every process of that user that is not elevated. service install then copies the binary instead.
+func CheckTrustedPath(path string) error { return checkTrustedPath(path, adminTrust) }
 
 func checkTrustedPath(path string, trusted sidTrust) error {
 	abs, err := filepath.Abs(path)

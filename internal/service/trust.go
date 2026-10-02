@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 )
 
 // A system service runs with rights that its user lacks, so whatever the service starts or reads must not be
@@ -106,6 +105,7 @@ func metaFrom(fi fs.FileInfo, err error) (fileMeta, error) {
 	return m, nil
 }
 
-// trustedGroup reports whether group writes are acceptable: the group of root, and on macOS the admin group (80),
-// whose members can become root anyway.
-func trustedGroup(gid uint32) bool { return gid == 0 || (runtime.GOOS == "darwin" && gid == 80) }
+// trustedGroup reports whether group writes are acceptable: only the group of root. Not the macOS admin group (80):
+// its members need their password to become root, while any of their processes could replace a group-writable binary
+// (/Applications is root:admin 0775) that launchd then runs as root.
+func trustedGroup(gid uint32) bool { return gid == 0 }
