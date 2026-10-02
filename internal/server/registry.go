@@ -10,7 +10,9 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eto-a/porthole/internal/auth"
@@ -21,9 +23,13 @@ import (
 
 // reservation remembers the public port a TCP tunnel had, so that its client gets it back (DESIGN.md §3.4).
 type reservation struct {
-	port int
-	at   time.Time // when the tunnel went away
+	client string
+	port   int
+	at     time.Time // when the tunnel went away
 }
+
+// minReservationsPerClient is the floor of the number of released ports remembered per client.
+const minReservationsPerClient = 8
 
 // loadReservations fills the in-memory reservations from the store, so that after a restart clients get their old
 // ports back. Reservations are a convenience: a store failure is logged and the server starts with none. Ports
@@ -40,7 +46,7 @@ func (s *Server) loadReservations() {
 		if r.Port < s.portLo || r.Port > s.portHi {
 			continue
 		}
-		s.reserved[reservationKey(r.Client, r.Tunnel)] = reservation{port: r.Port, at: r.ReleasedAt}
+		s.reserved[reservationKey(r.Client, r.Tunnel)] = reservation{client: r.Client, port: r.Port, at: r.ReleasedAt}
 	}
 	s.log.Info("port reservations loaded", "loaded", len(s.reserved), "stored", len(rs))
 }
@@ -286,8 +292,9 @@ func (s *Server) removeLocked(t *tunnel, offline bool) {
 		if s.ports[t.port] == t {
 			delete(s.ports, t.port)
 		}
-		s.reserved[reservationKey(t.sess.name, t.name)] = reservation{port: t.port, at: now}
+		s.reserved[reservationKey(t.sess.name, t.name)] = reservation{client: t.sess.name, port: t.port, at: now}
 		s.releasePort(t.sess.name, t.name, now)
+		s.trimReservationsLocked(t.sess.name, now)
 	}
 	t.closeTunnel()
 }
@@ -302,6 +309,45 @@ func (s *Server) sweepOfflineLocked(now time.Time) {
 }
 
 func reservationKey(client, tunnel string) string { return client + "/" + tunnel }
+
+// trimReservationsLocked keeps at most max(minReservationsPerClient, 2*max_tunnels_per_client) remembered ports for
+// client, so that a client that cycles through TCP names cannot hold the whole port range for reservationTTL. The
+// oldest reservations go first, in memory and in the store (released far enough in the past to be expired there).
+func (s *Server) trimReservationsLocked(client string, now time.Time) {
+	limit := max(minReservationsPerClient, 2*s.cfg.MaxTunnelsPerClient)
+	var mine []string
+	for k, r := range s.reserved {
+		if r.client == client {
+			mine = append(mine, k)
+		}
+	}
+	if len(mine) <= limit {
+		return
+	}
+	slices.SortFunc(mine, func(a, b string) int { return s.reserved[a].at.Compare(s.reserved[b].at) })
+	for _, k := range mine[:len(mine)-limit] {
+		delete(s.reserved, k)
+		s.releasePort(client, strings.TrimPrefix(k, client+"/"), now.Add(-2*reservationTTL))
+	}
+}
+
+// reservedPortsLocked drops the expired reservations and returns the port -> key map of the rest; a port reserved
+// by more than one key maps to "", which is no key. Allocation uses it to test each candidate port in O(1).
+func (s *Server) reservedPortsLocked(now time.Time) map[int]string {
+	byPort := make(map[int]string, len(s.reserved))
+	for k, r := range s.reserved {
+		if now.Sub(r.at) >= reservationTTL {
+			delete(s.reserved, k)
+			continue
+		}
+		if _, dup := byPort[r.port]; dup {
+			byPort[r.port] = ""
+		} else {
+			byPort[r.port] = k
+		}
+	}
+	return byPort
+}
 
 // handleRegister processes a register request (protocol.md §3.2). Authorization is re-evaluated from the store.
 func (c *session) handleRegister(m *proto.Register) {
@@ -554,8 +600,12 @@ func (s *Server) listenTCPLocked(key string, requested int) (net.Listener, *prot
 	}
 
 	size := s.portHi - s.portLo + 1
+	byPort := s.reservedPortsLocked(now)
 	try := func(p int) net.Listener {
-		if !s.portFreeLocked(p, key, now) {
+		if s.ports[p] != nil {
+			return nil
+		}
+		if k, held := byPort[p]; held && k != key {
 			return nil
 		}
 		ln, err := s.bindTCP(p)
