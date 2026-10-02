@@ -47,6 +47,7 @@ type serviceResult struct {
 	Name     string        `json:"name"`
 	User     bool          `json:"user"`
 	Exe      string        `json:"exe,omitempty"`
+	ExeFrom  string        `json:"exe_copied_from,omitempty"` // the running binary that was copied to Exe
 	Args     []string      `json:"args,omitempty"`
 	Config   string        `json:"config,omitempty"`
 	Tunnels  string        `json:"tunnels,omitempty"`
@@ -99,11 +100,12 @@ func (a *app) newServiceCmd() *cobra.Command {
 			"unprivileged peers, like the members of the porthole-client group on Linux: they may publish loopback\n" +
 			"targets (and what allow_remote lists), close their own tunnels and nothing else. Administrators and SYSTEM\n" +
 			"keep full control.\n\n" +
-			"The service runs with the rights of the system, so install refuses a binary, or an explicit --config or\n" +
-			"--tunnels file, that a user who is not an administrator could replace or edit (the file, or a directory above\n" +
-			"it, is writable by them). Put the binary where only administrators can write (C:\\Program Files\\porthole\\ on\n" +
-			"Windows, a root-owned directory such as /opt/porthole/bin on Linux and macOS); --allow-unsafe-path\n" +
-			"overrides the check knowingly.",
+			"The service runs with the rights of the system, so a binary that a user who is not an administrator could\n" +
+			"replace (Homebrew, Downloads) is not registered as it is: install copies it to a place only administrators can\n" +
+			"write (%ProgramData%\\porthole\\bin on Windows, /Library/Application Support/porthole/bin on macOS,\n" +
+			"/usr/local/lib/porthole on Linux) and registers the copy; run install again after upgrading porthole. An\n" +
+			"explicit --config or --tunnels file that such a user could edit is refused. --allow-unsafe-path registers the\n" +
+			"running binary as it is and accepts the risk.",
 		Example: "  sudo porthole service install\n" +
 			"  porthole service install --user\n" +
 			"  porthole service install --allow BUILTIN\\Users          (Windows, elevated terminal)",
@@ -295,10 +297,15 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 		Action: "install", Name: service.DefaultName, User: f.user, Exe: exe,
 		Config: cfgPath, Tunnels: tunnelsPath, Socket: socket,
 	}
-	if w := suspiciousExe(exe, os.TempDir()); w != "" {
+	needCopy := a.exeNeedsCopy(f, exe)
+	if w := suspiciousExe(exe, os.TempDir()); w != "" && !needCopy {
 		res.Warnings = append(res.Warnings, w)
 	}
-	unsafeWarnings, err := a.checkServicePaths(f, exe, cfgPath, tunnelsPath)
+	checkExe := exe
+	if needCopy {
+		checkExe = "" // the copy is checked after it is made
+	}
+	unsafeWarnings, err := a.checkServicePaths(f, checkExe, cfgPath, tunnelsPath)
 	if err != nil {
 		return err
 	}
@@ -317,6 +324,17 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 	if cfg.Server == "" && (tf == nil || tf.Server == "") {
 		return configErr(fmt.Errorf("no server URL in %s or %s: run `porthole login%s <server-url> <token>`", cfgPath, tunnelsPath,
 			map[bool]string{true: "", false: " --system"}[f.user]))
+	}
+
+	if needCopy {
+		dst, err := a.d.copyExe(exe)
+		if err != nil {
+			return serviceErr(err, "service install", f.user)
+		}
+		if err := a.d.checkPath(dst); err != nil {
+			return fmt.Errorf("the copy %s of porthole cannot be trusted by the system service: %w", dst, err)
+		}
+		res.ExeFrom, res.Exe, exe = exe, dst, dst
 	}
 
 	spec := service.Spec{Exe: exe, Args: daemonArgs(cfgPath, tunnelsPath, socket, f.allow), User: f.user}
@@ -362,16 +380,30 @@ func (a *app) runServiceInstall(cmd *cobra.Command, f serviceFlags) error {
 	return printInstall(cmd.OutOrStdout(), cmd.ErrOrStderr(), res)
 }
 
+// exeNeedsCopy reports whether install must copy the binary to the protected location: it is a system install and
+// the running binary could be replaced by a user who is not an administrator. With --allow-unsafe-path the binary is
+// used where it is.
+func (a *app) exeNeedsCopy(f serviceFlags, exe string) bool {
+	if f.user || f.allowUnsafe || a.d.checkPath == nil || a.d.copyExe == nil {
+		return false
+	}
+	var unsafe *service.UnsafePathError
+	return errors.As(a.d.checkPath(exe), &unsafe)
+}
+
 // checkServicePaths refuses a system service whose binary, or whose explicitly named config or tunnels file, could be
 // changed by a user who is not an administrator: the service runs with the rights of the system, so whoever can
 // change these runs code with them (or redirects the daemon to a server of their choosing and publishes what they
-// like). The files of the default system directory are checked when it is prepared. A per-user service runs as the
+// like). An empty exe is not checked. The files of the default system directory are checked when it is prepared. A per-user service runs as the
 // user, who can change everything it uses anyway. With --allow-unsafe-path the findings are returned as warnings.
 func (a *app) checkServicePaths(f serviceFlags, exe, cfgPath, tunnelsPath string) ([]string, error) {
 	if f.user || a.d.checkPath == nil {
 		return nil, nil
 	}
-	paths := []string{exe}
+	var paths []string
+	if exe != "" {
+		paths = append(paths, exe)
+	}
 	if a.configPath != "" {
 		paths = append(paths, cfgPath)
 	}
@@ -419,6 +451,9 @@ func printInstall(out, errOut io.Writer, r serviceResult) error {
 	}
 	fmt.Fprintf(out, "Installed the %s service %q.\n", scope(r.User), r.Name)
 	fmt.Fprintf(out, "  command:  %s\n", strings.Join(append([]string{r.Exe}, r.Args...), " "))
+	if r.ExeFrom != "" {
+		fmt.Fprintf(out, "  binary:   copied from %s to %s (run \"porthole service install\" again after upgrading porthole)\n", r.ExeFrom, r.Exe)
+	}
 	fmt.Fprintf(out, "  config:   %s\n", r.Config)
 	if r.Copied {
 		fmt.Fprintln(out, "            (copied from your own config file)")

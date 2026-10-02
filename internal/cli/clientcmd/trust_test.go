@@ -5,6 +5,7 @@ package clientcmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,38 +31,115 @@ func recordPathChecks(s *svcTest, unsafe ...string) *[]string {
 	return &checked
 }
 
-func TestServiceInstallRefusesAWritableBinary(t *testing.T) {
+func TestServiceInstallCopiesAWritableBinary(t *testing.T) {
+	s := newSvcTest(t)
+	if _, _, err := execute(t, s.d, "login", "--system", testServer, testToken(t)); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "bin", "porthole")
+	copyTo := filepath.Join(t.TempDir(), "protected", "porthole")
+	s.d.executable = func() (string, error) { return exe, nil }
+	checked := recordPathChecks(s, exe)
+	var copied []string
+	s.d.copyExe = func(src string) (string, error) {
+		copied = append(copied, src)
+		return copyTo, nil
+	}
+
+	out, _, err := execute(t, s.d, "service", "install", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 1 || copied[0] != exe {
+		t.Errorf("copied %q, want [%q]", copied, exe)
+	}
+	if len(s.m.specs) != 1 || s.m.specs[0].Exe != copyTo {
+		t.Errorf("registered specs %+v, want the copy %q", s.m.specs, copyTo)
+	}
+	if !contains(*checked, copyTo) {
+		t.Errorf("the copy was not checked: %q", *checked)
+	}
+	var res struct {
+		Exe           string `json:"exe"`
+		ExeCopiedFrom string `json:"exe_copied_from"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Exe != copyTo || res.ExeCopiedFrom != exe {
+		t.Errorf("the result does not report the copy: %s (%v)", out, err)
+	}
+
+	// The human output says where the binary came from.
+	s2 := newSvcTest(t)
+	if _, _, err := execute(t, s2.d, "login", "--system", testServer, testToken(t)); err != nil {
+		t.Fatal(err)
+	}
+	s2.d.executable = s.d.executable
+	recordPathChecks(s2, exe)
+	s2.d.copyExe = s.d.copyExe
+	text, _, err := execute(t, s2.d, "service", "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "binary:   copied from "+exe+" to "+copyTo) {
+		t.Errorf("output lacks the copy line: %s", text)
+	}
+
+	// A copy that does not pass the check is refused and nothing is registered.
+	s3 := newSvcTest(t)
+	if _, _, err := execute(t, s3.d, "login", "--system", testServer, testToken(t)); err != nil {
+		t.Fatal(err)
+	}
+	s3.d.executable = s.d.executable
+	recordPathChecks(s3, exe, copyTo)
+	s3.d.copyExe = s.d.copyExe
+	if _, _, err := execute(t, s3.d, "service", "install"); err == nil || !strings.Contains(err.Error(), copyTo) {
+		t.Errorf("an untrusted copy: error %v", err)
+	}
+	if len(s3.m.specs) != 0 {
+		t.Errorf("an untrusted copy was registered: %v", s3.m.specs)
+	}
+}
+
+func TestServiceInstallAllowUnsafePathKeepsTheBinary(t *testing.T) {
 	s := newSvcTest(t)
 	if _, _, err := execute(t, s.d, "login", "--system", testServer, testToken(t)); err != nil {
 		t.Fatal(err)
 	}
 	exe := filepath.Join(t.TempDir(), "bin", "porthole")
 	s.d.executable = func() (string, error) { return exe, nil }
-	checked := recordPathChecks(s, exe)
-
-	_, _, err := execute(t, s.d, "service", "install")
-	if err == nil {
-		t.Fatal("a binary that any user may replace was installed as a system service")
-	}
-	for _, want := range []string{exe, "--allow-unsafe-path"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the error %q does not mention %q", err, want)
-		}
-	}
-	if len(s.m.calls) != 0 {
-		t.Errorf("the service manager was called: %v", s.m.calls)
-	}
-	if len(*checked) == 0 || (*checked)[0] != exe {
-		t.Errorf("checked paths = %q", *checked)
+	recordPathChecks(s, exe)
+	s.d.copyExe = func(string) (string, error) {
+		t.Error("the binary was copied although --allow-unsafe-path was given")
+		return "", nil
 	}
 
-	// A conscious override installs, and says so.
-	out, errOut, err := execute(t, s.d, "service", "install", "--allow-unsafe-path", "--json")
+	out, _, err := execute(t, s.d, "service", "install", "--allow-unsafe-path", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.m.specs) != 1 || !strings.Contains(out, "warnings") || !strings.Contains(out, "because of --allow-unsafe-path") {
-		t.Errorf("override: specs %d, output %s %s", len(s.m.specs), out, errOut)
+	if len(s.m.specs) != 1 || s.m.specs[0].Exe != exe {
+		t.Errorf("specs %+v, want the original %q", s.m.specs, exe)
+	}
+	if !strings.Contains(out, "warnings") || !strings.Contains(out, "because of --allow-unsafe-path") {
+		t.Errorf("no warning: %s", out)
+	}
+}
+
+func TestServiceInstallWithoutACopierRefusesAWritableBinary(t *testing.T) {
+	s := newSvcTest(t)
+	if _, _, err := execute(t, s.d, "login", "--system", testServer, testToken(t)); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "bin", "porthole")
+	s.d.executable = func() (string, error) { return exe, nil }
+	recordPathChecks(s, exe)
+	s.d.copyExe = nil
+
+	_, _, err := execute(t, s.d, "service", "install")
+	if err == nil || !strings.Contains(err.Error(), "--allow-unsafe-path") {
+		t.Fatalf("error %v", err)
+	}
+	if len(s.m.calls) != 0 {
+		t.Errorf("the service manager was called: %v", s.m.calls)
 	}
 }
 
@@ -73,6 +151,10 @@ func TestServiceInstallChecksExplicitConfigAndTunnels(t *testing.T) {
 		t.Fatal(err)
 	}
 	checked := recordPathChecks(s, tun)
+	s.d.copyExe = func(string) (string, error) {
+		t.Error("the binary was copied although the tunnels file is refused")
+		return "", nil
+	}
 	_, _, err := execute(t, s.d, "--config", cfg, "service", "install", "--tunnels", tun)
 	if err == nil || !strings.Contains(err.Error(), tun) {
 		t.Fatalf("a tunnels file that any user may edit: error %v", err)

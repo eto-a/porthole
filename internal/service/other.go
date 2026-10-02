@@ -19,6 +19,10 @@ func prepareSystemDirWindows() (string, error) {
 	return "", fmt.Errorf("%%ProgramData%% on %s: %w", runtime.GOOS, ErrUnsupported)
 }
 
+func prepareInstallDirWindows() (string, error) {
+	return "", fmt.Errorf("%%ProgramData%% on %s: %w", runtime.GOOS, ErrUnsupported)
+}
+
 // IsService reports whether the process was started by the Windows service control manager. It is always false here.
 func IsService() (bool, error) { return false, nil }
 

@@ -460,7 +460,7 @@ type tokensOut struct {
 
 type joinLinkIn struct {
 	Client      string   `json:"client" jsonschema:"name the new machine will have"`
-	Scopes      []string `json:"scopes,omitempty" jsonschema:"scopes of the machine's token; default tunnel:http, tunnel:tcp"`
+	Scopes      []string `json:"scopes,omitempty" jsonschema:"scopes of the machine's token; default tunnel:http, tunnel:tcp, tunnel:udp"`
 	TTLMinutes  int      `json:"ttl_minutes,omitempty" jsonschema:"minutes the link stays valid; default 15"`
 	AllowRemote *bool    `json:"allow_remote,omitempty" jsonschema:"let operator agents open tunnels on this machine; default true"`
 }

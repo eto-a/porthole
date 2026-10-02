@@ -98,3 +98,17 @@ func unsafeDirError(dir string, err error) error {
 	return fmt.Errorf("%s was not made by porthole or an administrator and cannot be trusted (%w). Inspect it, delete it "+
 		"(rd /s /q \"%s\" from an elevated terminal) and run this command again", dir, err, dir)
 }
+
+// prepareInstallDirWindows returns %ProgramData%\porthole\bin, made like logs\: with the protected descriptor, or
+// verified if it was there.
+func prepareInstallDirWindows() (string, error) {
+	dir, err := prepareSystemDirWindows()
+	if err != nil {
+		return "", err
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := prepareProtectedDir(bin, systemDirSDDL, installerTrust()); err != nil {
+		return "", fmt.Errorf("create the binary directory: %w", err)
+	}
+	return bin, nil
+}
