@@ -26,7 +26,7 @@ export default defineConfig({
     starlight({
       title: 'porthole',
       description,
-      logo: { src: './src/assets/logo.svg', alt: 'porthole' },
+      logo: { light: './src/assets/logo-light.svg', dark: './src/assets/logo-dark.svg', alt: 'porthole' },
       favicon: '/favicon.svg',
       social: [{ icon: 'github', label: 'GitHub', href: repoUrl }],
       editLink: { baseUrl: `${repoUrl}/edit/main/site/` },
