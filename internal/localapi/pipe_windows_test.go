@@ -106,7 +106,7 @@ func TestPipeAlreadyRunning(t *testing.T) {
 			_ = c.Close()
 		}
 	}()
-	defer func() { _ = ln.Close() }()
+	defer closeListener(t, ln)
 
 	ln2, err := Listen(name, 0)
 	if !errors.Is(err, ErrAlreadyRunning) {
@@ -136,7 +136,7 @@ func TestPipeForeignDACLRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer closeListener(t, ln)
 	go func() { // keep an instance waiting so that the dial gets as far as the check
 		for {
 			c, err := ln.Accept()
@@ -266,7 +266,7 @@ func TestListenPipeHeldByOtherAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer closeListener(t, ln)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -286,5 +286,22 @@ func TestListenPipeHeldByOtherAccount(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "held by") {
 		t.Errorf("error %q does not say who holds the pipe", err)
+	}
+}
+
+// closeListener closes a raw go-winio listener without waiting forever: its Close waits for the listener goroutine,
+// which on a CI runner once stayed in a pending ConnectNamedPipe for the whole test timeout after a client had come
+// and gone. The test's verdict is in by then; a stuck Close only leaks a handle of the test process.
+func closeListener(t *testing.T, ln net.Listener) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		_ = ln.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Log("closing the go-winio listener did not return within 5s; left behind")
 	}
 }
