@@ -57,6 +57,8 @@ type session struct {
 	sent  atomic.Uint64 // last ping seq sent
 	acked atomic.Uint64 // highest pong seq received
 
+	pendingOpens atomic.Int32 // transport Open calls that have not returned
+
 	killOnce sync.Once
 	reason   string       // why the session ended, for logs; written before cancel
 	farewell *proto.Error // sent on the control stream during teardown; written before cancel
@@ -447,14 +449,48 @@ func (c *session) rejectExtraStreams() {
 	})
 }
 
-// openStream opens a data stream towards the client for tunnel tunnelID and writes the stream header.
+// maxPendingOpens bounds the Open calls of one session that have not returned yet. yamux's OpenStream takes no
+// context and blocks while the peer does not accept streams, so each pending call holds a goroutine.
+const maxPendingOpens = 64
+
+// errTooManyOpens is returned by openStream when the peer is not accepting streams and the pending limit is reached.
+var errTooManyOpens = errors.New("too many pending stream opens")
+
+type openResult struct {
+	st  net.Conn
+	err error
+}
+
+// openStream opens a data stream towards the client for tunnel tunnelID and writes the stream header. It returns when
+// ctx is done or the session ends even if the transport's Open is still blocked; that Open is finished in the
+// background and its stream is closed.
 func (c *session) openStream(ctx context.Context, tunnelID, remote string) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	st, err := c.ts.Open()
-	if err != nil {
-		return nil, fmt.Errorf("open stream: %w", err)
+	if c.pendingOpens.Add(1) > maxPendingOpens {
+		c.pendingOpens.Add(-1)
+		return nil, errTooManyOpens
+	}
+	res := make(chan openResult, 1) // buffered: the goroutine must not wait for a reader that has gone
+	go func() {
+		st, err := c.ts.Open()
+		c.pendingOpens.Add(-1)
+		res <- openResult{st, err}
+	}()
+	var st net.Conn
+	select {
+	case r := <-res:
+		if r.err != nil {
+			return nil, fmt.Errorf("open stream: %w", r.err)
+		}
+		st = r.st
+	case <-ctx.Done():
+		go closeLate(res)
+		return nil, ctx.Err()
+	case <-c.ts.Done():
+		go closeLate(res)
+		return nil, fmt.Errorf("open stream: %w", net.ErrClosed)
 	}
 	_ = st.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if err := proto.WriteMessage(st, &proto.StreamHeader{TunnelID: tunnelID, RemoteAddr: remote}); err != nil {
@@ -463,4 +499,11 @@ func (c *session) openStream(ctx context.Context, tunnelID, remote string) (net.
 	}
 	_ = st.SetWriteDeadline(time.Time{})
 	return st, nil
+}
+
+// closeLate waits for an abandoned Open and closes the stream it produced.
+func closeLate(res <-chan openResult) {
+	if r := <-res; r.err == nil {
+		_ = r.st.Close()
+	}
 }
