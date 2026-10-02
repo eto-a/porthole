@@ -258,7 +258,7 @@ Every tunnel lives under `tun.example.com`, so a tunnel can set cookies for the 
 
 ### Taken-over sessions
 
-A new login with a client's token replaces its live session; the old connection receives `session_replaced` and stops (it does not reconnect, so two machines do not fight over the name). A stolen token is used the same way, so the server logs every replacement as a warning with the new and old addresses and whether they match (`session replaced by a newer login`). Watch for it, and revoke the token if the new address is not yours.
+A new login with a client's token replaces its live session; the old connection receives `session_replaced`. A foreground client stops; the daemon logs in again after 30 seconds, so a one-off login does not leave the machine offline and two machines sharing a token take turns slowly instead of fighting. A stolen token is used the same way, so the server logs every replacement as a warning with the new and old addresses and whether they match (`session replaced by a newer login`). Watch for it, and revoke the token if the new address is not yours.
 
 ### Directory permissions
 

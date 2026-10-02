@@ -1287,3 +1287,35 @@ func TestManagerLimitRefusalRetriedOnlyWithHint(t *testing.T) {
 		t.Fatalf("%d register attempts without a retry hint", n)
 	}
 }
+
+// A replaced daemon comes back after a pause instead of stopping for good (a one-off newer login, such as an old
+// `porthole login --check`, used to leave the machine offline until somebody restarted the service).
+func TestManagerReconnectsAfterSessionReplaced(t *testing.T) {
+	fs := newFakeServer(t)
+	fs.handler = func(c *srvConn) {
+		if c.n == 1 {
+			rejectHandler(&proto.Error{Code: proto.CodeSessionReplaced, Message: "replaced by a newer login"})(c)
+			return
+		}
+		fs.defaultHandler(c)
+	}
+	tun := testTuning()
+	tun.maxRetryAfter = 10 * time.Millisecond // the 30 s pause, shortened
+	h := newMgr(t, fs, nil, tun).start()
+	deadline := time.After(waitFor)
+	for {
+		select {
+		case e := <-h.events:
+			if _, ok := e.(Connected); ok {
+				if n := fs.connCount(); n != 2 {
+					t.Fatalf("connected on connection %d, want 2", n)
+				}
+				return
+			}
+		case <-h.finished:
+			t.Fatalf("Run returned %v after session_replaced, want a reconnect", h.err)
+		case <-deadline:
+			t.Fatal("timed out waiting for the reconnect")
+		}
+	}
+}

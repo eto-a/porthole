@@ -89,7 +89,7 @@ With `--json` a failure is `{"error":{"code":"...","message":"..."}}` on stdout 
 
 `another porthole process logged in with the same token (session_replaced: this client logged in again from another connection; this session is closed); each machine needs its own token`.
 
-A token is the identity of one machine and has one session. When the same token logs in a second time, the server closes the older session, and the client that was replaced stops instead of fighting for it. Typical causes: the same token is configured on two machines (create a join link for each: [Several machines](recipes.md#several-machines)), or a standalone `porthole http ... --no-daemon` runs next to the daemon of the same machine. Use the daemon (leave out `--no-daemon`), or stop it first.
+A token is the identity of one machine and has one session. When the same token logs in a second time, the server closes the older session. A command in the foreground (`porthole http`, `tcp`, `ssh`) then stops; the daemon logs a warning and logs in again after 30 seconds, so a one-off second login does not leave the machine offline, and two machines sharing a token take turns every 30 seconds (the server logs each `session replaced by a newer login`). Typical causes: the same token is configured on two machines (create a join link for each: [Several machines](recipes.md#several-machines)), or a standalone `porthole http ... --no-daemon` runs next to the daemon of the same machine. Use the daemon (leave out `--no-daemon`), or stop it first.
 
 ## `ssh -J` fails: Permission denied, host key, `connect failed`
 
