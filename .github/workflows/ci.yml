@@ -138,7 +138,7 @@ jobs:
         run: |
           sudo_cmd=()
           if [ "$RUNNER_OS" != Windows ]; then sudo_cmd=(sudo -E); fi
-          "${sudo_cmd[@]}" "$E2E_TEST_BIN" -test.run '^TestServiceSystem$' -test.v -test.count=1 -test.timeout=10m
+          "${sudo_cmd[@]}" "$E2E_TEST_BIN" -test.run '^TestServiceSystem(CopiesUnsafeBinary)?$' -test.v -test.count=1 -test.timeout=10m
       - name: User service (systemd user unit, LaunchAgent; skipped where the runner has no user session)
         if: runner.os != 'Windows'
         shell: bash
