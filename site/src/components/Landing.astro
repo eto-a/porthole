@@ -178,9 +178,9 @@ const compare = [
 const inline = (s: string) => s.split('`').map((p, i) => (i % 2 ? `<code>${p}</code>` : p)).join('');
 
 const roadmap = [
-  { v: 'v0.2', state: 'Done', h: 'Install and forget', t: 'Install script, deb/rpm and Docker, client daemon, SSH gateway by name, private SSH tunnels, persisted port reservations.' },
   { v: 'v0.3', state: 'Done', h: 'Management by LLM agents', t: 'Admin API, MCP servers, join links, remote tunnel requests and a traffic inspector, instead of a web UI.' },
-  { v: 'v0.4', state: 'Planned', h: 'More transports and access control', t: 'QUIC, UDP and more HTTP access control.' },
+  { v: 'v0.4', state: 'Preview', h: 'Desktops', t: 'Windows and macOS clients, and porthole service for systemd, launchd and the Windows service manager.' },
+  { v: 'v0.5', state: 'Planned', h: 'More transports and access control', t: 'QUIC, UDP and more HTTP access control.' },
 ];
 
 const footer = [
