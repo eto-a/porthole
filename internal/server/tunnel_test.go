@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -532,7 +533,8 @@ func TestTCPConnectionLimit(t *testing.T) {
 	reg := c.mustRegister(proto.KindTCP, "busy", 0)
 	hold := make(chan struct{})
 	t.Cleanup(func() { close(hold) })
-	c.serve(func(_ proto.StreamHeader, st net.Conn) { <-hold; _ = st.Close() })
+	var served atomic.Int64
+	c.serve(func(_ proto.StreamHeader, st net.Conn) { served.Add(1); <-hold; _ = st.Close() })
 	addr := fmt.Sprintf("127.0.0.1:%d", publicPort(t, reg.PublicURL))
 
 	var conns []net.Conn
@@ -541,22 +543,20 @@ func TestTCPConnectionLimit(t *testing.T) {
 			_ = c.Close()
 		}
 	})
-	for range maxTCPConnsPerTunnel {
+	// Dial in batches smaller than maxPendingOpens and wait for each batch to reach the client: a burst of opens
+	// beyond that limit is refused by the session (slow under -race), and would leave the tunnel below its limit.
+	const batch = maxPendingOpens / 2
+	for i := range maxTCPConnsPerTunnel {
 		cn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
 		conns = append(conns, cn)
-	}
-	// Wait until the server has taken all of them, then one more must be dropped.
-	waitFor(t, "connections accepted", func() bool {
-		h.srv.mu.Lock()
-		defer h.srv.mu.Unlock()
-		for _, tn := range h.srv.ports {
-			return len(tn.sem) == maxTCPConnsPerTunnel
+		if n := i + 1; n%batch == 0 || n == maxTCPConnsPerTunnel {
+			waitFor(t, fmt.Sprintf("%d connections served", n), func() bool { return served.Load() == int64(n) })
 		}
-		return false
-	})
+	}
+	// The tunnel is at its limit: one more connection must be dropped.
 	extra, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)

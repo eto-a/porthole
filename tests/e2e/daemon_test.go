@@ -137,6 +137,19 @@ func (d *daemonEnv) waitTunnel(name string) localapi.Tunnel {
 	return localapi.Tunnel{}
 }
 
+// waitConnected waits until the daemon has a session with the server, so the server can route requests to it.
+func (d *daemonEnv) waitConnected() {
+	d.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, err := d.status(); err == nil && st.State == localapi.StateConnected {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	d.t.Fatalf("the daemon did not connect; status:\n%s", d.mustCLI("status"))
+}
+
 // waitGone waits until the daemon no longer lists the tunnel.
 func (d *daemonEnv) waitGone(name string) {
 	d.t.Helper()

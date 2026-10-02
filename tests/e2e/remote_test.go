@@ -36,6 +36,7 @@ func TestRemoteOpenThroughTheAdminSocket(t *testing.T) {
 
 	// Only the backend port may be exposed on request.
 	d := startDaemon(t, e, tok, fmt.Sprintf("version: 1\nallow_remote: [%d]\n", httpPort))
+	d.waitConnected()
 
 	admin := func(args ...string) (string, error) {
 		return output(portholed, append([]string{"admin", "open", "-c", e.cfgPath, "--socket", sock}, args...)...)
@@ -89,6 +90,7 @@ func TestRemoteOpenDefaultsToThisMachine(t *testing.T) {
 	e, tok := setup(t, fmt.Sprintf("admin_socket: %q\n", sock))
 	httpPort, _ := backend(t)
 	d := startDaemon(t, e, tok, "version: 1\n")
+	d.waitConnected()
 
 	admin := func(args ...string) (string, error) {
 		return output(portholed, append([]string{"admin", "open", "-c", e.cfgPath, "--socket", sock}, args...)...)
