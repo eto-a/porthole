@@ -393,6 +393,11 @@ func (a *app) checkService() doctorCheck {
 			continue
 		}
 		st, err := m.Status(service.DefaultName)
+		if err != nil && user {
+			// No user session to ask (sudo, root, an SSH login without lingering): then there is no user service
+			// to report either.
+			continue
+		}
 		if err != nil {
 			c.Status = doctorWarn
 			parts = append(parts, fmt.Sprintf("%s service: %v", scope(user), err))
