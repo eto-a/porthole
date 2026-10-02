@@ -61,6 +61,7 @@ func newRoot() *cobra.Command {
 		servercmd.NewAdmin(load),
 		servercmd.NewJoin(load),
 		servercmd.NewMCP(load, version),
+		servercmd.NewDoctor(load),
 		tokencmd.New(load),
 		&cobra.Command{
 			Use:   "version",

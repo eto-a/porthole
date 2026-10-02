@@ -118,6 +118,8 @@ $ curl -fsS https://tun.example.com/healthz
 ok
 ```
 
+Before you start it, and whenever something is off, run `sudo -u porthole portholed doctor --json` (from v0.4.0-alpha.7): it checks the configuration, the data directory, DNS of the domain and the wildcard, the ports, `/healthz` and TLS without changing anything, and gives a hint for every `fail` or `warn`. Exit code 1 means at least one check failed.
+
 If the service does not start, read `journalctl -u portholed -n 50 --no-pager` (the log is JSON). Without a package, see "Run it" in [server.md](https://raw.githubusercontent.com/eto-a/porthole/main/docs/server.md) for the unit file; with Docker, see [deploy.md](https://raw.githubusercontent.com/eto-a/porthole/main/docs/deploy.md).
 
 ### Create a join link
@@ -242,7 +244,7 @@ Tell the person to restart Claude Code (or run `/mcp`) so the new server is load
 
 ## Step 6. Verify and report
 
-- Server: `systemctl is-active portholed` prints `active`; `curl -fsS https://tun.example.com/healthz` prints `ok`.
+- Server: `systemctl is-active portholed` prints `active`; `curl -fsS https://tun.example.com/healthz` prints `ok`; `sudo -u porthole portholed doctor` reports no `fail`.
 - Client: `porthole join` printed `joined as <name>`; a test tunnel answered over HTTPS; with the service, `porthole status` lists the tunnels of `tunnels.yaml`.
 - SSH by name (if enabled): `ssh -J tun.example.com:2222 <user>@<name> true` succeeds.
 - MCP (if added): `claude mcp list` shows the servers.
