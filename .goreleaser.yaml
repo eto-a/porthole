@@ -10,12 +10,14 @@ before:
     - go mod verify
 
 builds:
+  # The server runs on a Linux host (packages, Docker); macOS and Windows get only the client, like cloudflared and
+  # tailscale publish their server side for Linux only.
   - id: portholed
     main: ./cmd/portholed
     binary: portholed
     env:
       - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
+    goos: [linux]
     goarch: [amd64, arm64]
     flags:
       - -trimpath
@@ -379,9 +381,13 @@ checksum:
   algorithm: sha256
 
 # SBOM for every archive, generated with syft (installed by the release workflow).
+# One SPDX SBOM of the module (both binaries are built from the same go.mod and go.sum), not one per archive.
 sboms:
-  - id: archive
-    artifacts: archive
+  - id: source
+    artifacts: any
+    documents:
+      - "porthole_{{ .Version }}_sbom.spdx.json"
+    args: ["dir:.", "--output", "spdx-json=$document"]
 
 # Keyless signature of the checksum file with cosign v3 (Sigstore bundle). Needs `id-token: write` in CI.
 # Verify: cosign verify-blob --bundle checksums.txt.sigstore.json \
