@@ -15,20 +15,20 @@ func TestClaimLabels(t *testing.T) {
 	ctx := context.Background()
 	s, path := openTemp(t)
 
-	got, err := s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0)
+	got, err := s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0, 0)
 	if err != nil || !slices.Equal(got, []string{"web-a-home"}) {
 		t.Fatalf("first claim: %v %v", got, err)
 	}
 	// The same pair again: nothing new, no error.
-	got, err = s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0)
+	got, err = s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0, 0)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("repeated claim: %v %v", got, err)
 	}
 	// The other pair that composes the same label loses, and a failed call claims nothing.
-	if _, err = s.ClaimLabels(ctx, "a-home", "web", []string{"fresh-label", "web-a-home"}, t0); !errors.Is(err, ErrLabelClaimed) {
+	if _, err = s.ClaimLabels(ctx, "a-home", "web", []string{"fresh-label", "web-a-home"}, t0, 0); !errors.Is(err, ErrLabelClaimed) {
 		t.Fatalf("second pair: %v, want ErrLabelClaimed", err)
 	}
-	if _, err = s.ClaimLabels(ctx, "a-home", "other", []string{"fresh-label"}, t0); err != nil {
+	if _, err = s.ClaimLabels(ctx, "a-home", "other", []string{"fresh-label"}, t0, 0); err != nil {
 		t.Fatalf("a failed claim must not leave its other labels behind: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestClaimLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s2.Close()
-	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0); !errors.Is(err, ErrLabelClaimed) {
+	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0, 0); !errors.Is(err, ErrLabelClaimed) {
 		t.Fatalf("after reopen: %v, want ErrLabelClaimed", err)
 	}
 
@@ -49,7 +49,7 @@ func TestClaimLabels(t *testing.T) {
 	if err := s2.UnclaimLabels(ctx, "a-home", "web", []string{"web-a-home"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0); !errors.Is(err, ErrLabelClaimed) {
+	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0, 0); !errors.Is(err, ErrLabelClaimed) {
 		t.Fatalf("unclaim by a stranger removed the claim: %v", err)
 	}
 	if err := s2.ReleaseLabel(ctx, "web-a-home"); err != nil {
@@ -58,7 +58,7 @@ func TestClaimLabels(t *testing.T) {
 	if err := s2.ReleaseLabel(ctx, "web-a-home"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second release: %v, want ErrNotFound", err)
 	}
-	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0); err != nil {
+	if _, err = s2.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0, 0); err != nil {
 		t.Fatalf("after release: %v", err)
 	}
 }
@@ -69,19 +69,19 @@ func TestRevokeTokenReleasesLabels(t *testing.T) {
 	if err := s.CreateToken(ctx, newTok("aaaaaaaaaaaa", "home", t0)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0); err != nil {
+	if _, err := s.ClaimLabels(ctx, "home", "web-a", []string{"web-a-home"}, t0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimLabels(ctx, "other", "x", []string{"x-other"}, t0); err != nil {
+	if _, err := s.ClaimLabels(ctx, "other", "x", []string{"x-other"}, t0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokeToken(ctx, "home", t0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0); err != nil {
+	if _, err := s.ClaimLabels(ctx, "a-home", "web", []string{"web-a-home"}, t0, 0); err != nil {
 		t.Fatalf("the label of a revoked client must be free: %v", err)
 	}
-	if _, err := s.ClaimLabels(ctx, "y", "x", []string{"x-other"}, t0); !errors.Is(err, ErrLabelClaimed) {
+	if _, err := s.ClaimLabels(ctx, "y", "x", []string{"x-other"}, t0, 0); !errors.Is(err, ErrLabelClaimed) {
 		t.Fatalf("a revoked token released the labels of another client: %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestRevokeTokenReleasesLabels(t *testing.T) {
 func TestTokenNameMayNotBeAnotherClientsLabel(t *testing.T) {
 	ctx := context.Background()
 	s, _ := openTemp(t)
-	if _, err := s.ClaimLabels(ctx, "b", "a", []string{"a-b"}, t0); err != nil {
+	if _, err := s.ClaimLabels(ctx, "b", "a", []string{"a-b"}, t0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateToken(ctx, newTok("aaaaaaaaaaaa", "a-b", t0)); !errors.Is(err, ErrNameTaken) {

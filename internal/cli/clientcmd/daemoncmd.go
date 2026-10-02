@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -142,7 +143,7 @@ func (a *app) runDaemonService(tunnelsFlag string, allow []string) error {
 	if a.d.runService == nil {
 		return errors.New("running as a service is not available in this build")
 	}
-	logger, closeLog := a.serviceLogger()
+	logger, closeLog := a.serviceLogger(os.Stderr)
 	defer closeLog()
 	return a.d.runService(service.DefaultName, func(ctx context.Context, ready func(), reload <-chan struct{}) error {
 		opts, err := a.daemonOptions(tunnelsFlag, allow, logger)
@@ -167,15 +168,26 @@ func (a *app) runDaemonService(tunnelsFlag string, allow []string) error {
 
 // serviceLogger logs to %ProgramData%\porthole\logs\porthole.log (10 MiB, one .1 copy), or to stderr if the file
 // cannot be opened (the service then has no console, but nothing else is lost).
-func (a *app) serviceLogger() (*slog.Logger, func()) {
+//
+// The directory is verified first (see service.VerifyProtectedDir): the service runs as SYSTEM, and a log file that a
+// user could have redirected with a link would be written with its rights.
+func (a *app) serviceLogger(errOut io.Writer) (*slog.Logger, func()) {
 	level := slog.LevelInfo
 	if a.verbose {
 		level = slog.LevelDebug
 	}
 	hopts := &slog.HandlerOptions{Level: level}
-	f, err := openRotatingFile(serviceLogPath(a.d.getenv), maxLogSize)
+	logPath := serviceLogPath(a.d.getenv)
+	var f *rotatingFile
+	var err error
+	if a.d.verifyDir != nil {
+		err = a.d.verifyDir(filepath.Dir(filepath.Dir(logPath)))
+	}
+	if err == nil {
+		f, err = openRotatingFile(logPath, maxLogSize)
+	}
 	if err != nil {
-		l := slog.New(slog.NewTextHandler(os.Stderr, hopts))
+		l := slog.New(slog.NewTextHandler(errOut, hopts))
 		l.Warn("cannot open the service log file, logging to stderr", "err", err)
 		return l, func() {}
 	}

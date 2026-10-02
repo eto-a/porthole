@@ -139,6 +139,14 @@ type Limits struct {
 	// yet, overall (default 256) and per source IP (default 8).
 	MaxPendingHandshakes      int `yaml:"max_pending_handshakes"`
 	MaxPendingHandshakesPerIP int `yaml:"max_pending_handshakes_per_ip"`
+
+	// MaxLabelClaimsPerClient bounds the permanent host names (label claims) one client holds, closed tunnels
+	// included. Default: four times max_tunnels_per_client, at least 40.
+	MaxLabelClaimsPerClient int `yaml:"max_label_claims_per_client"`
+
+	// LabelClaimTTL deletes the permanent host names that no registration has used for this long, so that a client
+	// cannot keep names forever by registering them once. Default 30 days; negative = never.
+	LabelClaimTTL time.Duration `yaml:"label_claim_ttl"`
 }
 
 // DefaultAuditMaxRows is how many audit rows are kept by default.

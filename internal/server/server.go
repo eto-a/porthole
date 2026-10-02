@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eto-a/porthole/internal/config"
@@ -55,8 +56,12 @@ const (
 	maxPendingPerIP                   = 8 // default of config.Limits.MaxPendingHandshakesPerIP
 	halfClosedIdleTimeout             = 5 * time.Minute
 	defaultNewNamesPerDay             = 30
-	maxNewNamesPerClientPerHour       = 10        // default of config.ACME.MaxNewNamesPerClientPerHour
-	preAuthByteBudget           int64 = 128 << 10 // bytes an unauthenticated peer may send before hello_ok
+	defaultLabelClaimTTL              = 30 * 24 * time.Hour
+	minLabelClaimsPerClient           = 40          // floor of the default of config.Limits.MaxLabelClaimsPerClient
+	labelSweepEvery                   = time.Hour   // lazy sweep of unused label claims, from registrations
+	labelForcedSweepEvery             = time.Minute // sweep when a client hits its label claim limit
+	maxNewNamesPerClientPerHour       = 10          // default of config.ACME.MaxNewNamesPerClientPerHour
+	preAuthByteBudget           int64 = 128 << 10   // bytes an unauthenticated peer may send before hello_ok
 )
 
 // Options configures a Server.
@@ -116,6 +121,9 @@ type Server struct {
 	tcpHalfClose   time.Duration  // silence allowed after one side half-closed; 0 = none; independent of tcpIdle
 	httpMaxReqs    int            // simultaneous requests per HTTP tunnel; 0 = unlimited
 	bodyIdle       time.Duration  // stall timeout of visitor request bodies; 0 = none
+	claimTTL       time.Duration  // unused label claims older than this are deleted; 0 = never
+	maxClaims      int            // label claims per client; 0 = unlimited
+	lastSweep      atomic.Int64   // unix nanoseconds of the last label claim sweep
 	certBudget     *certBudget    // new-certificate budget (ACME mode)
 	traffic        *traffic.Log
 	metrics        *metrics.Metrics // nil = off; every hook is nil-safe
@@ -165,31 +173,34 @@ func New(opts Options) (*Server, error) {
 		tcpHalfClose: durationOrDefault(lim.TCPHalfCloseTimeout, halfClosedIdleTimeout),
 		httpMaxReqs:  limitOrDefault(lim.MaxHTTPRequestsPerTunnel, defaultMaxHTTPRequests),
 		bodyIdle:     durationOrDefault(lim.HTTPBodyIdleTimeout, defaultHTTPBodyIdleTimeout),
-		certBudget:   newCertBudget(opts.Config.TLS.ACME),
-		cfg:          opts.Config,
-		store:        opts.Store,
-		persist:      newPersister(storeTimeout),
-		log:          opts.Logger,
-		version:      opts.Version,
-		now:          opts.Now,
-		domain:       normalizeHost(opts.Config.Domain),
-		portLo:       lo,
-		portHi:       hi,
-		hb:           opts.HeartbeatInterval,
-		revalidate:   opts.RevalidateInterval,
-		hsTimeout:    opts.HandshakeTimeout,
-		openTimeout:  opts.RemoteOpenTimeout,
-		sshIdle:      opts.SSHIdleTimeout,
-		limiter:      newFailLimiter(),
-		traffic:      newTrafficLog(opts.Config.Traffic),
-		metrics:      opts.Metrics,
-		sessions:     make(map[string]*session),
-		labels:       make(map[string]*tunnel),
-		ports:        make(map[int]*tunnel),
-		sshLabels:    make(map[string]*tunnel),
-		reserved:     make(map[string]reservation),
-		offline:      make(map[string]time.Time),
-		held:         make(map[string]hold),
+		claimTTL:     durationOrDefault(lim.LabelClaimTTL, defaultLabelClaimTTL),
+		maxClaims: limitOrDefault(lim.MaxLabelClaimsPerClient,
+			max(minLabelClaimsPerClient, 4*opts.Config.MaxTunnelsPerClient)),
+		certBudget:  newCertBudget(opts.Config.TLS.ACME),
+		cfg:         opts.Config,
+		store:       opts.Store,
+		persist:     newPersister(storeTimeout),
+		log:         opts.Logger,
+		version:     opts.Version,
+		now:         opts.Now,
+		domain:      normalizeHost(opts.Config.Domain),
+		portLo:      lo,
+		portHi:      hi,
+		hb:          opts.HeartbeatInterval,
+		revalidate:  opts.RevalidateInterval,
+		hsTimeout:   opts.HandshakeTimeout,
+		openTimeout: opts.RemoteOpenTimeout,
+		sshIdle:     opts.SSHIdleTimeout,
+		limiter:     newFailLimiter(),
+		traffic:     newTrafficLog(opts.Config.Traffic),
+		metrics:     opts.Metrics,
+		sessions:    make(map[string]*session),
+		labels:      make(map[string]*tunnel),
+		ports:       make(map[int]*tunnel),
+		sshLabels:   make(map[string]*tunnel),
+		reserved:    make(map[string]reservation),
+		offline:     make(map[string]time.Time),
+		held:        make(map[string]hold),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -227,6 +238,7 @@ func New(opts Options) (*Server, error) {
 	s.metrics.SetStateSource(s.metricsState)
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.loadReservations()
+	s.sweepLabelClaims(0)
 	return s, nil
 }
 

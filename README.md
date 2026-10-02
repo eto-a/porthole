@@ -146,7 +146,8 @@ Alpha. Roadmap, from [DESIGN.md](DESIGN.md#7-roadmap):
 
 - **v0.2, install and forget:** install script, deb/rpm and Docker, client daemon, SSH gateway by name, private SSH tunnels, persisted port reservations.
 - **v0.3, management by LLM agents:** admin API, MCP servers, join links, remote tunnel requests and a traffic inspector, instead of a web UI.
-- **v0.4:** QUIC, UDP and more HTTP access control.
+- **v0.4, desktops:** Windows and macOS clients, `porthole service` for systemd, launchd and the Windows service manager.
+- **v0.5, protocols:** QUIC, UDP and more HTTP access control.
 
 ## Security
 

@@ -17,12 +17,26 @@ import (
 // Windows there is no UID or GID). SID is the Windows user SID ("S-1-5-21-..."), empty elsewhere. User is the account
 // name of the caller (the Windows account "DOMAIN\name", or the Unix user resolved from UID), empty when it cannot be
 // resolved.
+//
+// On Windows SID is empty when the token of the caller cannot be read. Admin is set on Windows when that token has the
+// BUILTIN\Administrators group enabled: a member of the group running with a UAC-filtered token (the group is "deny
+// only" there) is not an administrator for this purpose. It is always false elsewhere.
 type Cred struct {
-	UID  int
-	GID  int
-	PID  int
-	SID  string
-	User string
+	UID   int
+	GID   int
+	PID   int
+	SID   string
+	User  string
+	Admin bool
+}
+
+// Principal returns the identity of the caller as one string: the decimal uid on Unix, the SID on Windows. It is
+// empty when the platform could not tell who the caller is.
+func (c Cred) Principal() string {
+	if c.UID >= 0 {
+		return strconv.Itoa(c.UID)
+	}
+	return c.SID
 }
 
 // PeerCred returns the credentials of the peer of c: SO_PEERCRED on Linux, LOCAL_PEERCRED and LOCAL_PEERPID on

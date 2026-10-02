@@ -81,25 +81,69 @@ func claimedLabels(client, kind, name, label string) []string {
 
 // claimLabels makes labels belong to (client, name) in the store before the tunnel is registered, outside
 // Server.mu. It returns the labels this call claimed for the first time, so that a registration that then fails can
-// take them back. A label that belongs to another pair is name_taken.
+// take them back. A label that belongs to another pair, or is the name of another client, is name_taken; a client
+// that would hold more than limits.max_label_claims_per_client labels gets limit_exceeded, after the claims nobody
+// has used for limits.label_claim_ttl are dropped.
 func (s *Server) claimLabels(ctx context.Context, c *session, name string, labels []string) ([]string, *proto.Error) {
 	if len(labels) == 0 {
 		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	created, err := s.store.ClaimLabels(ctx, c.name, name, labels, s.now())
+	s.sweepLabelClaims(labelSweepEvery)
+	created, err := s.store.ClaimLabels(ctx, c.name, name, labels, s.now(), s.maxClaims)
+	if errors.Is(err, store.ErrLabelLimit) && s.sweepLabelClaims(labelForcedSweepEvery) > 0 {
+		created, err = s.store.ClaimLabels(ctx, c.name, name, labels, s.now(), s.maxClaims)
+	}
 	switch {
 	case err == nil:
 		return created, nil
 	case errors.Is(err, store.ErrLabelClaimed):
 		c.log.Warn("tunnel name refused: the label is claimed by another client", "name", name, "labels", labels)
-		return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "this name is reserved for another client's tunnel; " +
+		return nil, &proto.Error{Code: proto.CodeNameTaken, Message: "this name is reserved for another client or its tunnel; " +
 			"pick another tunnel name (the server operator can free it with `portholed admin release-label`)"}
+	case errors.Is(err, store.ErrLabelLimit):
+		c.log.Warn("tunnel name refused: too many permanent names", "name", name, "limit", s.maxClaims)
+		return nil, &proto.Error{Code: proto.CodeLimitExceeded, Message: fmt.Sprintf("this client already holds the maximum of %d "+
+			"permanent tunnel names (names unused for %s are dropped); reuse one of them or ask the server operator "+
+			"to free names with `portholed admin release-label`", s.maxClaims, s.claimTTL)}
 	default:
 		c.log.Error("cannot claim tunnel labels", "name", name, "labels", labels, "err", err)
 		return nil, &proto.Error{Code: proto.CodeInternal, Message: "internal error"}
 	}
+}
+
+// sweepLabelClaims deletes the label claims that have not been used for the claim TTL and returns how many it
+// deleted. It does nothing if the last sweep was less than every ago (0: always). The claims of live tunnels are marked as used
+// first, so they never expire while the tunnel is online. A store failure is only logged.
+func (s *Server) sweepLabelClaims(every time.Duration) int {
+	if s.claimTTL <= 0 {
+		return 0
+	}
+	now := s.now()
+	last := s.lastSweep.Load()
+	if now.UnixNano()-last < int64(every) || !s.lastSweep.CompareAndSwap(last, now.UnixNano()) {
+		return 0
+	}
+	s.mu.Lock()
+	var live []store.ClaimOwner
+	for _, c := range s.sessions {
+		for _, t := range c.tunnels {
+			live = append(live, store.ClaimOwner{Client: c.name, Tunnel: t.name})
+		}
+	}
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	n, err := s.store.ExpireLabelClaims(ctx, now, s.claimTTL, live)
+	if err != nil {
+		s.log.Warn("cannot expire unused label claims", "err", err)
+		return 0
+	}
+	if n > 0 {
+		s.log.Info("unused label claims expired", "count", n, "ttl", s.claimTTL.String())
+	}
+	return n
 }
 
 // unclaimLabels takes back labels claimed for a registration that failed afterwards.

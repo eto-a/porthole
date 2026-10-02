@@ -20,6 +20,8 @@ var (
 	ErrPortHeld  = errors.New("store: port reserved for another tunnel")
 	// ErrLabelClaimed means the hostname label (or SSH address) belongs for good to another (client, tunnel) pair.
 	ErrLabelClaimed = errors.New("store: label claimed by another tunnel")
+	// ErrLabelLimit means the client would hold more permanent labels than the server allows.
+	ErrLabelLimit = errors.New("store: too many permanent labels")
 
 	// Join code errors, from RedeemJoinCode. A wrong secret is ErrNotFound, indistinguishable from an unknown id.
 	ErrJoinUsed    = errors.New("store: join code already used")
@@ -62,6 +64,14 @@ type LabelClaim struct {
 	Client    string
 	Tunnel    string
 	ClaimedAt time.Time
+	// LastUsedAt is the last registration of the tunnel (zero: never since the claim was created).
+	LastUsedAt time.Time
+}
+
+// ClaimOwner identifies the tunnel that owns label claims.
+type ClaimOwner struct {
+	Client string
+	Tunnel string
 }
 
 // Usable returns nil if the token may be used at now, ErrRevoked or ErrExpired otherwise.
@@ -105,8 +115,14 @@ type Store interface {
 	LoadPortReservations(ctx context.Context, now time.Time, ttl time.Duration) ([]PortReservation, error)
 	// ClaimLabels makes every label belong to (client, tunnel) in one transaction. A label already claimed by the
 	// same pair is left alone; one claimed by another pair fails the whole call with ErrLabelClaimed and nothing is
-	// claimed. It returns the labels this call newly claimed.
-	ClaimLabels(ctx context.Context, client, tunnel string, labels []string, at time.Time) ([]string, error)
+	// claimed. It returns the labels this call newly claimed. A label equal to the name of another active token is
+	// refused with ErrLabelClaimed: the bare name of a client is reserved for it. maxClaims > 0 bounds the number of
+	// claims of client after the call; more fails with ErrLabelLimit. The claims the call leaves alone get
+	// last_used_at = at.
+	ClaimLabels(ctx context.Context, client, tunnel string, labels []string, at time.Time, maxClaims int) ([]string, error)
+	// ExpireLabelClaims deletes the claims that were last used more than ttl before now (ttl <= 0: none) and
+	// returns how many. The claims of the live tunnels are first marked as used at now.
+	ExpireLabelClaims(ctx context.Context, now time.Time, ttl time.Duration, live []ClaimOwner) (int, error)
 	// UnclaimLabels drops the claims of (client, tunnel) on labels; claims of other pairs are left alone.
 	UnclaimLabels(ctx context.Context, client, tunnel string, labels []string) error
 	// ReleaseLabel deletes the claim on label, whoever holds it. It returns ErrNotFound if there is none.

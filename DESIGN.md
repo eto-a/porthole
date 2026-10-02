@@ -329,7 +329,8 @@ Everything is `internal/` until someone needs a public Go API (tailscale and pro
 | **0.1** | `portholed` + `porthole`; WebSocket+yamux transport; tokens (create/list/revoke/expire) in SQLite; HTTP (incl. WebSocket) and TCP tunnels; `porthole ssh` as TCP:22; reconnect; cert from files; CI, lint, e2e tests |
 | 0.2 — install and forget | `install.sh`, deb/rpm packages, GHCR image; client daemon + systemd; client config with several tunnels; SSH gateway by name (`ssh -J`); private SSH tunnels; persisted port reservations |
 | 0.3 — managed by agents | Admin API (unix socket / localhost); MCP server with toolsets and read-only mode; `--json` everywhere; narrow admin scopes; audit log; join tokens; threat model |
-| 0.4 — protocols | QUIC transport with auto fallback; UDP tunnels; basic auth and IP allowlists for HTTP tunnels; certmagic DNS-01; Prometheus metrics; bandwidth limits; TLS passthrough |
+| 0.4 — desktops | Windows and macOS clients; `porthole service` (systemd, launchd, Windows SCM); named pipes on Windows (ADR 0006); automatic HTTPS per tunnel without a DNS provider (ADR 0004); Prometheus metrics |
+| 0.5 — protocols | QUIC transport with auto fallback; UDP tunnels; basic auth and IP allowlists for HTTP tunnels; bandwidth limits; TLS passthrough |
 
 A web UI is a non-goal (see §3.11).
 
