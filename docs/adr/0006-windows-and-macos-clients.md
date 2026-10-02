@@ -117,9 +117,9 @@ always manages the **system** service; `--user` selects the per-user variant whe
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | transport | unix socket (unchanged) | unix socket (unchanged) | **named pipe** (go-winio) |
-| system endpoint | `/run/porthole/porthole.sock`, dir 0750 group `porthole-client` | `/var/run/porthole/porthole.sock`, dir 0750 root:`admin`, socket 0660 | `\\.\pipe\ProtectedPrefix\Administrators\porthole` |
+| system endpoint | `/run/porthole/porthole.sock`, dir 0750 group `porthole-client` | `/var/run/porthole/porthole.sock`, dir 0700 root (clients use `sudo`) | `\\.\pipe\ProtectedPrefix\Administrators\porthole` |
 | user endpoint | `$XDG_RUNTIME_DIR/porthole/porthole.sock` | `~/Library/Caches/porthole/porthole.sock` (unchanged) | `\\.\pipe\porthole-<user SID>` |
-| access | file mode + group | file mode + group `admin` (macOS admins) | DACL, below |
+| access | file mode + group | file mode (root only) | DACL, below |
 | peer identity | `SO_PEERCRED` (uid, gid, pid) | `LOCAL_PEERCRED` + `LOCAL_PEERPID` | `GetNamedPipeClientProcessId` + `ImpersonateNamedPipeClient`/`OpenThreadToken` → user SID and name |
 
 Windows pipe instead of the AF_UNIX socket ADR 0002 chose, because:
@@ -158,7 +158,7 @@ New direct dependency: `github.com/Microsoft/go-winio` (MIT), Windows-only build
 | | system | user |
 |---|---|---|
 | Linux | `/etc/porthole/{config,tunnels}.yaml`, journald | `$XDG_CONFIG_HOME/porthole/` (unchanged) |
-| macOS | `/Library/Application Support/porthole/{config,tunnels}.yaml` (0750 root:admin, config 0640), logs `/Library/Logs/porthole/` | `~/Library/Application Support/porthole/` (= `os.UserConfigDir`, unchanged), logs `~/Library/Logs/porthole/` |
+| macOS | `/Library/Application Support/porthole/{config,tunnels}.yaml` (0750 root:wheel, config 0640), logs `/Library/Logs/porthole/` | `~/Library/Application Support/porthole/` (= `os.UserConfigDir`, unchanged), logs `~/Library/Logs/porthole/` |
 | Windows | `%ProgramData%\porthole\{config,tunnels}.yaml`, `logs\` | `%AppData%\porthole\` (= `os.UserConfigDir`, unchanged) |
 
 `%ProgramData%\porthole` is created by `service install` with a protected DACL
