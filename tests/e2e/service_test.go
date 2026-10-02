@@ -340,6 +340,73 @@ func TestServiceSystem(t *testing.T) {
 	}
 }
 
+// TestServiceSystemCopiesUnsafeBinary installs the system service from a binary in a directory every user may
+// write: install must copy the binary to its protected location and run the service from the copy.
+func TestServiceSystemCopiesUnsafeBinary(t *testing.T) {
+	skipUnlessService(t)
+	if !service.Elevated() {
+		t.Skip("needs root (sudo)")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		t.Skip("an elevated test owns every directory it can make; the copy is covered by unit tests")
+	case "linux":
+		if _, err := os.Stat("/run/systemd/system"); err != nil {
+			t.Skip("systemd is not the init system of this machine")
+		}
+		if err := service.CheckTrustedPath("/usr/local/lib"); err != nil {
+			t.Skipf("this machine's /usr/local/lib is not a safe place for the copy: %v", err)
+		}
+	}
+	e, tok := setup(t)
+	httpPort, _ := backend(t)
+
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil { // deliberately unsafe: that is the case under test
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(porthole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, filepath.Base(porthole))
+	if err := os.WriteFile(src, data, 0o755); err != nil { //nolint:gosec // an executable
+		t.Fatal(err)
+	}
+
+	var login struct{}
+	runJSON(t, &login, src, "login", "--system", "--json", e.server, tok)
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpServiceLogs(t)
+		}
+	})
+	var inst struct {
+		svcResult
+		Exe     string `json:"exe"`
+		ExeFrom string `json:"exe_copied_from"`
+	}
+	runJSON(t, &inst, src, "service", "install", "--json")
+	if inst.Exe != "" {
+		t.Cleanup(func() {
+			_ = exec.Command(inst.Exe, "service", "uninstall").Run() //nolint:gosec // the binary the test installed
+			_ = os.Remove(inst.Exe)
+		})
+	}
+	if inst.ExeFrom != src || inst.Exe == "" || inst.Exe == src {
+		t.Fatalf("service install: exe %q copied from %q, want a copy of %q", inst.Exe, inst.ExeFrom, src)
+	}
+	if err := service.CheckTrustedPath(inst.Exe); err != nil {
+		t.Errorf("the copy is not in a safe place: %v", err)
+	}
+	waitServiceRunning(t, inst.Exe, false)
+	d := &daemonEnv{env: e, t: t, tok: tok, sock: inst.Socket}
+	d.mustCLI("http", fmt.Sprint(httpPort), "--name", "copied", "--detach")
+	e.mustServe(t, labelOf(t, d.waitTunnel("copied")))
+	run(t, inst.Exe, "service", "uninstall")
+	serviceGone(t)
+}
+
 // TestServiceUser does the same with the per-user service (systemd user unit, LaunchAgent), as an unprivileged user.
 // It skips where there is no user service manager: a CI runner may have no systemd user session or no login session.
 func TestServiceUser(t *testing.T) {
