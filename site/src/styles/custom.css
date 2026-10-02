@@ -5,14 +5,15 @@
   --sl-color-accent-low: #0b1f3a;
   --sl-color-accent: #e0a830;
   --sl-color-accent-high: #ffc857;
+  /* Dark neutrals lean towards the navy of the icon, so the header, the banner and the logo share one palette. */
   --sl-color-white: #ffffff;
-  --sl-color-gray-1: #eceef2;
-  --sl-color-gray-2: #c0c2c7;
-  --sl-color-gray-3: #888b96;
-  --sl-color-gray-4: #545861;
-  --sl-color-gray-5: #353841;
-  --sl-color-gray-6: #24272f;
-  --sl-color-black: #14161b;
+  --sl-color-gray-1: #e9edf4;
+  --sl-color-gray-2: #bcc4d2;
+  --sl-color-gray-3: #8590a5;
+  --sl-color-gray-4: #4f5b72;
+  --sl-color-gray-5: #2c3850;
+  --sl-color-gray-6: #18243b;
+  --sl-color-black: #0e1729;
   --sl-content-width: 46rem;
 }
 
@@ -33,8 +34,8 @@
 
 /* The terminal is dark in both themes. */
 :root {
-  --lp-term-bg: #12151b;
-  --lp-term-bar: #1b1f27;
+  --lp-term-bg: #0c1424;
+  --lp-term-bar: #152038;
   --lp-term-fg: #dfe3ea;
   --lp-term-dim: #8b93a1;
   --lp-term-accent: #ffc857;
@@ -71,4 +72,10 @@ html:has(.lp) {
 .sl-markdown-content details > summary {
   cursor: pointer;
   font-weight: 600;
+}
+
+/* The site title is the name, not a link colour. */
+.site-title {
+  color: var(--sl-color-white);
+  gap: 0.6rem;
 }
